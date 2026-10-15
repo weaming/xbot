@@ -4,6 +4,7 @@
  */
 
 import type { UsageInfo } from "../types/chat.js";
+import type { ChatModelSelection } from "../types/chat-model.js";
 
 export interface UiMessage {
     id: number;
@@ -75,6 +76,7 @@ export interface SessionView {
     title?: string;
     updatedAt?: string;
     archived?: boolean;
+    modelSelection?: ChatModelSelection;
 }
 
 export interface StoreListeners {

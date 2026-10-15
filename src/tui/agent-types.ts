@@ -11,6 +11,7 @@ import type { Session } from "../types/session.js";
 import type { ToolCall } from "../types/tool-call.js";
 import type { LLMRequestKind } from "../utils/logger.js";
 import type { ImageAssetRef, UserMessageInput } from "../types/image.js";
+import type { ChatModelSelection } from "../types/chat-model.js";
 
 export interface TuiSessionSummary {
     sessionId: string;
@@ -22,6 +23,7 @@ export interface TuiSessionSummary {
     title?: string;
     archivedAt?: string;
     archived?: boolean;
+    modelSelection?: ChatModelSelection;
 }
 
 /** 本实例（进程）内真正发起过网络请求（LLM 调用）的用量聚合。 */
@@ -85,6 +87,8 @@ export interface TuiAgent {
     getSessionCwd(sessionId: string): Promise<string>;
     /** 重命名会话标题：空会话先落盘再记录，标题为空时不生效。 */
     renameSession(sessionId: string, title: string): Promise<void>;
+    getSessionModelSelection(sessionId: string): Promise<ChatModelSelection | undefined>;
+    setSessionModelSelection(sessionId: string, selection: ChatModelSelection): Promise<void>;
     /** 落盘一条会话间消息（时间线事实源；出入站各一条）。 */
     appendPeerMessage(sessionId: string, payload: AgentEventPayloads["peer_message"]): Promise<void>;
     /**

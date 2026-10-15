@@ -15,6 +15,7 @@ import { buildCompactPrompt } from "../utils/compaction-prompt.js";
 import { isAbortError } from "../tools/chat-orchestrator.js";
 import { emptyUsage, mergeUsage } from "../events/ui-events.js";
 import type { UsageInfo } from "../types/chat.js";
+import type { ChatModelSelection } from "../types/chat-model.js";
 import { getOrCreateSessionSystemPrompt, runChatQuery } from "./chat-runtime.js";
 import { DEFAULT_MEMORY_USER_ID, normalizeMemoryUserId } from "../utils/runtime-paths.js";
 
@@ -30,6 +31,7 @@ export interface AutoCompactOptions {
     model?: string;
     userId: number;
     sessionId?: string;
+    modelSelection?: ChatModelSelection;
     signal?: AbortSignal;
     onProgress?: (message: string) => void;
     onUsage?: (usage: UsageInfo) => void;
@@ -56,6 +58,7 @@ interface ActiveTurnCompactOptions {
     signal?: AbortSignal;
     onProgress?: (message: string) => void;
     sessionId?: string;
+    modelSelection?: ChatModelSelection;
     contextEpochId?: string;
     lastPromptTokens?: number;
     onUsage?: (usage: UsageInfo) => void;
@@ -82,6 +85,7 @@ export async function compactActiveTurnMessagesIfNeeded(
             userId: options.userId,
             history,
             sessionId: options.sessionId,
+            modelSelection: options.modelSelection,
             contextEpochId: options.contextEpochId,
             initialRequestKind: "context_compaction",
             signal: options.signal,
@@ -238,6 +242,7 @@ export async function autoCompactIfNeeded(
                 history: getSessionContextHistory(tempSession),
                 userId,
                 sessionId: session.sessionId,
+                modelSelection: session.modelSelection,
                 contextEpochId: session.contextEpochId,
                 initialRequestKind: "context_compaction",
                 signal: options.signal,

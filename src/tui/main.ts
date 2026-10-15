@@ -10,7 +10,7 @@ import { herdrReporter } from "./herdr-reporter.js";
 import { officialDeepSeekCostYuan } from "../pricing/deepseek.js";
 import type { ChatApp } from "./app.js";
 
-const DEFAULT_ENV_FILE = path.join(os.homedir(), ".xbot", ".env");
+const DEFAULT_ENV_FILE = path.join(os.homedir(), ".xbot", "env");
 
 function resolveEnvFile(value: string): string {
     if (value === "~") return os.homedir();

@@ -157,6 +157,7 @@ export async function runTurnCore(spec: TurnSpec, hooks: TurnHooks): Promise<Tur
             history: spec.buildHistory(),
             userId: spec.userId,
             sessionId: session.sessionId,
+            modelSelection: session.modelSelection,
             cwd: spec.cwd,
             contextEpochId: session.contextEpochId,
             initialRequestKind: spec.initialRequestKind ?? "user_request",

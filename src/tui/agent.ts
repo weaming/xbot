@@ -41,6 +41,7 @@ import { mergeUsage, type UIEvent } from "../events/ui-events.js";
 import type { UsageInfo } from "../types/chat.js";
 import type { AgentEvent, AgentEventPayloads } from "../events/agent-events.js";
 import type { Session } from "../types/session.js";
+import type { ChatModelSelection } from "../types/chat-model.js";
 import { aggregateInstanceUsage, summarizeEvents } from "./agent-summary.js";
 import { compactSessionContext, runSessionTurn, type TurnHost } from "./agent-turn.js";
 import type {
@@ -451,12 +452,16 @@ export class LocalTuiAgent implements TuiAgent {
         let lock: SessionLockHandle | undefined;
         try {
             lock = await acquireSessionLock(sessionId);
+            const session = await this.requireActiveSession(sessionId);
             if ((await this.eventLog.lastSeq(sessionId, { forceRefresh: true })) === 0) {
                 throw new Error(`会话不存在: ${sessionId}`);
             }
             await this.eventLog.truncate(sessionId, 0);
             await this.replay.deleteSnapshot(sessionId);
             await this.eventLog.append(sessionId, "session_created", { cwd: getToolCwd() });
+            if (session.modelSelection) {
+                await this.eventLog.append(sessionId, "model_selected", session.modelSelection);
+            }
             const replayed = await this.replay.replayTo(sessionId);
             this.activeSessions.set(sessionId, { session: replayed.session, lastSeq: replayed.lastSeq });
         } finally {
@@ -489,6 +494,34 @@ export class LocalTuiAgent implements TuiAgent {
             }
             const renamed = await this.eventLog.append(sessionId, "session_renamed", { title: cleanTitle });
             this.updateActiveSeq(sessionId, renamed.seq);
+        } finally {
+            try {
+                await this.releaseSessionLockSafely(lock);
+            } finally {
+                this.endSessionOperation(sessionId);
+            }
+        }
+    }
+
+    async getSessionModelSelection(sessionId: string): Promise<ChatModelSelection | undefined> {
+        return (await this.requireActiveSession(sessionId)).modelSelection;
+    }
+
+    async setSessionModelSelection(sessionId: string, selection: ChatModelSelection): Promise<void> {
+        this.beginSessionOperation(sessionId);
+        let lock: SessionLockHandle | undefined;
+        try {
+            lock = await acquireSessionLock(sessionId);
+            const session = await this.requireActiveSession(sessionId);
+            const lastSeq = await this.eventLog.lastSeq(sessionId, { forceRefresh: true });
+            if (lastSeq === 0) {
+                const created = await this.eventLog.append(sessionId, "session_created", { cwd: session.cwd });
+                this.updateActiveSeq(sessionId, created.seq);
+            }
+
+            const event = await this.eventLog.append(sessionId, "model_selected", selection);
+            session.modelSelection = selection;
+            this.updateActiveSeq(sessionId, event.seq);
         } finally {
             try {
                 await this.releaseSessionLockSafely(lock);

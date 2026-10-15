@@ -36,6 +36,11 @@ export function getTuiDraftsFile(stateRoot?: string): string {
     return path.join(resolveStateRoot(stateRoot), "sessions", "session-drafts.json");
 }
 
+/** TUI 默认模型选择：所有未单独设置模型的会话共用。 */
+export function getTuiModelPreferencesFile(stateRoot?: string): string {
+    return path.join(resolveStateRoot(stateRoot), "model-preferences.json");
+}
+
 /** 滚轮诊断日志：独立文件，便于直接 cat 复制（定位"面板外滚动仍滚面板"用）。 */
 export function getTuiWheelLogFile(stateRoot?: string): string {
     return path.join(resolveStateRoot(stateRoot), "logs", "tui-wheel.log");

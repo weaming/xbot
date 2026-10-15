@@ -1,9 +1,11 @@
 node_modules/
 dist/
 dist-bundle/
+env
+env.*
+!env.example
 .env
 .env.*
-!.env.example
 /mcp-servers.yaml
 /mcp-auth/
 /.xbot/

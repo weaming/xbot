@@ -62,6 +62,7 @@ import { SPINNER_FRAMES, type SessionOwnerState } from "./session-marker.js";
 import { SessionPanel, type SessionPanelItem } from "./session-panel.js";
 import { QuestionPanel } from "./question-panel.js";
 import { ShortcutPanel } from "./shortcut-panel.js";
+import { ModelPanel } from "./model-panel.js";
 import { TodoPanel } from "./todo-panel.js";
 import {
     setUserQuestionChannel,
@@ -89,7 +90,12 @@ import { loadRichDrafts, persistRichDrafts } from "./draft-store.js";
 import { isCmdDown, isCmdGateSupported } from "./cmd-modifier.js";
 import { herdrReporter } from "./herdr-reporter.js";
 import { notifyTurnResult } from "./notifier.js";
-import { getChatApiSettings } from "../services/chat-runtime.js";
+import {
+    getChatApiSettings,
+    getChatModelOptions,
+    setDefaultChatModelOption,
+} from "../services/chat-runtime.js";
+import type { ChatModelSelection } from "../types/chat-model.js";
 import { readSessionTodos, type TodoItem } from "../tools/todo-tool.js";
 import { deepSeekPhaseInfo, isDeepSeekPricingEndpoint, normalizeDeepSeekModel } from "../pricing/deepseek.js";
 import { getContextWindowForModel } from "../utils/token-budget.js";
@@ -103,6 +109,7 @@ type ActivePanelEntry =
     | { kind: "session"; panel: SessionPanel; handle: PanelOverlay }
     | { kind: "todo"; panel: TodoPanel; handle: PanelOverlay }
     | { kind: "shortcut"; panel: ShortcutPanel; handle: PanelOverlay }
+    | { kind: "model"; panel: ModelPanel; handle: PanelOverlay }
     | { kind: "question"; panel: QuestionPanel; handle: PanelOverlay; sessionId: string };
 
 /**
@@ -133,7 +140,7 @@ interface MessageComponents {
 }
 
 /** 需要当前会话才能执行的命令（无会话时直接提示，不静默失败）。 */
-const SESSION_REQUIRED_COMMANDS = new Set(["/clear", "/archive", "/unarchive", "/delete", "/close", "/compact", "/continue", "/system"]);
+const SESSION_REQUIRED_COMMANDS = new Set(["/clear", "/archive", "/unarchive", "/delete", "/close", "/compact", "/continue", "/system", "/model"]);
 const GLOBAL_RUNTIME_RELOAD_KEY = "__global__";
 
 /** 输入框：左侧 ❯ 提示符（前缀占 2 列，渲染宽度相应缩减）。 */
@@ -165,6 +172,7 @@ export class ChatApp {
      * 从结构上排除「两个面板同时非空」，`??` 链也不再有静默取第一个的隐患。
      */
     private activePanelEntry: ActivePanelEntry | null = null;
+    private currentModelSelection?: ChatModelSelection;
     private readonly statusBar = new StatusBar();
     /** 底部常驻任务清单条：有未完成 todo 时占位，替代事件流里的 todo 块。 */
     private readonly todoBar = new TodoBar();
@@ -606,6 +614,13 @@ export class ChatApp {
             case "/thinking":
                 this.handleEffortCommand(rest, sessionId ?? undefined);
                 break;
+            case "/model":
+                if (rest.length > 0) {
+                    this.store.pushSystemMessage("请只输入 /model，然后在面板中选择协议和模型。", sessionId ?? undefined);
+                } else {
+                    this.openModelPanel(sessionId!);
+                }
+                break;
             case "/reasoning":
                 this.toggleReasoning();
                 break;
@@ -658,6 +673,80 @@ export class ChatApp {
         }
 
         this.renderStatusBar();
+    }
+
+    private openModelPanel(sessionId: string): void {
+        if (this.activePanelEntry || this.exiting) return;
+        if (this.agent.isSessionBusy(sessionId)) {
+            this.store.pushSystemMessage("当前会话正在执行，暂不能切换模型。", sessionId);
+            return;
+        }
+
+        const options = getChatModelOptions();
+        if (options.length < 2) {
+            this.store.pushSystemMessage([
+                "当前只有一个可切换模型。",
+                "请在配置文件中为 Responses API 或 Chat Completions 配置多个模型，或配置两种协议。",
+                "模型列表使用 OPENAI_RESPONSES_MODELS 或 OPENAI_CHAT_MODELS，以逗号分隔。",
+            ].join("\n"), sessionId);
+            return;
+        }
+
+        const current = getChatApiSettings(this.currentModelSelection);
+        const panel = new ModelPanel({
+            options,
+            current: { protocol: current.protocol!, model: current.model },
+            visibleRows: panelContentRows(this.tui),
+            close: () => this.closeModelPanel(),
+            complete: (selection, makeDefault) => this.applyModelSelection(sessionId, selection, makeDefault),
+        });
+        const handle = openPanelOverlay(this.tui, panel, "model");
+        this.activePanelEntry = { kind: "model", panel, handle };
+        this.writeWheelLog("打开面板 model");
+        this.tui.requestRender();
+    }
+
+    private async applyModelSelection(
+        sessionId: string,
+        selection: ChatModelSelection,
+        makeDefault: boolean,
+    ): Promise<void> {
+        try {
+            await this.agent.setSessionModelSelection(sessionId, selection);
+        } catch (error: any) {
+            this.closeModelPanel();
+            this.store.pushSystemMessage(`模型设置保存失败：${error?.message ?? String(error)}`, sessionId);
+            return;
+        }
+
+        this.currentModelSelection = selection;
+        const sessionSummary = this.store.sessions.find(session => session.sessionId === sessionId);
+        if (sessionSummary) sessionSummary.modelSelection = selection;
+        let defaultFailure: string | undefined;
+        if (makeDefault) {
+            try {
+                await setDefaultChatModelOption(selection);
+            } catch (error: any) {
+                defaultFailure = error?.message ?? String(error);
+            }
+        }
+
+        this.closeModelPanel();
+        this.renderStatusBar();
+        this.store.pushSystemMessage(defaultFailure
+            ? `当前会话模型已切换为 ${selection.protocol} · ${selection.model}；设置默认模型失败：${defaultFailure}`
+            : `当前会话模型已切换为 ${selection.protocol} · ${selection.model}${makeDefault ? "，并设为默认" : ""}`,
+        sessionId);
+    }
+
+    private closeModelPanel(): void {
+        const entry = this.activePanelEntry;
+        if (entry?.kind !== "model") return;
+        entry.handle.handle.hide();
+        this.activePanelEntry = null;
+        this.restoreFocus();
+        this.tui.requestRender();
+        this.syncQuestionPanel();
     }
 
     private async showSystemPrompt(): Promise<void> {
@@ -748,6 +837,7 @@ export class ChatApp {
         }
 
         this.store.setCurrentSession(null);
+        this.currentModelSelection = undefined;
         this.clearMessages();
         this.renderTabBar();
         this.syncCurrentSessionState();
@@ -1309,6 +1399,7 @@ export class ChatApp {
 
         this.busy = false;
         this.store.setCurrentSession(null);
+        this.currentModelSelection = undefined;
         this.clearMessages();
         this.editor.disableSubmit = false;
         this.renderTabBar();
@@ -1326,6 +1417,7 @@ export class ChatApp {
     private async selectSession(sessionId: string): Promise<void> {
         // 打开前先取得持有权：认领成功才谈得上读写这个会话
         await this.ensureClaimed(sessionId);
+        const modelSelection = await this.agent.getSessionModelSelection(sessionId);
 
         // 切换会话时退出标题重命名态（草稿由 sessionDrafts 保存，切回时恢复）
         this.cancelRename();
@@ -1359,6 +1451,7 @@ export class ChatApp {
         this.editor.disableSubmit = true;
         try {
             this.store.setCurrentSession(sessionId);
+            this.currentModelSelection = modelSelection;
             // 切会话：todo 缓存按 sessionId 键控，但仍主动失效以立即反映目标会话
             this.todoCache = null;
             this.clearMessages();
@@ -2156,8 +2249,9 @@ export class ChatApp {
      * 第 2 行：Token 统计与容量比  ······  当前会话 ID
      */
     private renderStatusBar(): void {
-        const modelSettings = getChatApiSettings();
-        const modelName = modelSettings.model || "default";
+        const modelSettings = getChatApiSettings(this.currentModelSelection);
+        const protocolName = modelSettings.protocol === "responses" ? "Responses" : "Chat";
+        const modelName = `${modelSettings.model || "default"} (${protocolName})`;
         const sessionId = this.store.currentSessionId;
         const isDeepSeekPriced = isDeepSeekPricingEndpoint(modelSettings)
             && normalizeDeepSeekModel(modelSettings.model) !== undefined;

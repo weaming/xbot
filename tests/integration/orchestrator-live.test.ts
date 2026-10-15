@@ -3,11 +3,11 @@ import * as dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
 
-/** 从 cwd 向上查找第一个存在的 .env（bun 下 import.meta.url 为相对路径，不能据此定位文件）。 */
+/** 从 cwd 向上查找第一个存在的 env（bun 下 import.meta.url 为相对路径，不能据此定位文件）。 */
 function findEnvFile(): string | undefined {
     let dir = process.cwd();
     while (true) {
-        const candidate = path.join(dir, ".env");
+        const candidate = path.join(dir, "env");
         if (fs.existsSync(candidate)) return candidate;
         const parent = path.dirname(dir);
         if (parent === dir) return undefined;
@@ -16,7 +16,7 @@ function findEnvFile(): string | undefined {
 }
 
 const envFile = findEnvFile();
-// 集成测试以项目 .env 为权威源：即使 shell 已导出同名变量也覆盖，
+// 集成测试以项目 env 文件为权威源：即使 shell 已导出同名变量也覆盖，
 // 避免残留/不完整的 OPENAI_* 导致测试被误跳过。
 if (envFile) dotenv.config({ path: envFile, override: true });
 
@@ -30,7 +30,7 @@ const missingLiveApiKeys = ["OPENAI_API_KEY", "OPENAI_BASE_URL"]
 console.log(
     `[integration] ${hasLiveApi
         ? `真实 API 测试已启用（dotenv 源: ${envFile ?? "(环境变量)"}）`
-        : `跳过真实 API 测试：缺少 ${missingLiveApiKeys || "(未知)"}（dotenv 源: ${envFile ?? "(未找到 .env)"}）`}`,
+        : `跳过真实 API 测试：缺少 ${missingLiveApiKeys || "(未知)"}（dotenv 源: ${envFile ?? "(未找到 env)"}）`}`,
 );
 
 /** 真实 LLM API 集成测试：依赖 OPENAI_API_KEY / OPENAI_BASE_URL，仅在有凭据时运行。 */

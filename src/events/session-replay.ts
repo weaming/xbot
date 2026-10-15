@@ -301,6 +301,9 @@ function applyEvent(session: Session, event: AgentEvent): void {
         case "session_renamed":
             session.title = event.payload.title;
             break;
+        case "model_selected":
+            session.modelSelection = event.payload;
+            break;
         default:
             break;
     }

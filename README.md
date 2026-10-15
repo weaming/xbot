@@ -17,8 +17,8 @@ make build-cli
 
 ```sh
 mkdir -p ~/.xbot
-cp .env.example ~/.xbot/.env
-vi ~/.xbot/.env
+cp env.example ~/.xbot/env
+vi ~/.xbot/env
 ```
 
 填写 `OPENAI_MODEL`。使用云端服务时填写 `OPENAI_API_KEY`；本地或局域网服务可省略密钥。兼容接口可按需调整 `OPENAI_BASE_URL`。

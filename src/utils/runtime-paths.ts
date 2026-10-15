@@ -94,7 +94,7 @@ export function getUploadsDir(...parts: string[]): string {
     return getWorkspaceStateDir("uploads", ...parts);
 }
 
-/** 展开 ${VAR} 形式的环境变量引用（compose 风格 .env 值在宿主机不会自动展开）。 */
+/** 展开 ${VAR} 形式的环境变量引用（compose 风格 env 文件值在宿主机不会自动展开）。 */
 function expandEnv(value: string): string {
     return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, name: string) => process.env[name] ?? "");
 }

@@ -10,6 +10,7 @@
 import type { ChatMessage } from "../types/session.js";
 import type { UsageInfo } from "../types/chat.js";
 import type { ImageInputRef, UserMessageInput } from "../types/image.js";
+import type { ChatModelSelection } from "../types/chat-model.js";
 
 export type AgentEventType =
     | "session_created"
@@ -24,7 +25,8 @@ export type AgentEventType =
     | "usage_recorded"
     | "session_archived"
     | "session_unarchived"
-    | "session_renamed";
+    | "session_renamed"
+    | "model_selected";
 
 /** 用户消息附带的图片引用。 */
 export type UserImageRef = ImageInputRef;
@@ -118,6 +120,8 @@ export interface AgentEventPayloads {
     session_unarchived: {};
     /** 用户双击 tab 重命名会话标题（tab 显示优先于首条用户消息）。 */
     session_renamed: { title: string };
+    /** 会话固定使用的协议与模型。 */
+    model_selected: ChatModelSelection;
 }
 
 export type AgentEvent = {

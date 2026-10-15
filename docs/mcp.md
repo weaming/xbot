@@ -30,7 +30,7 @@ mcpServers:
       - MCP_REMOTE_TOKEN
 ```
 
-字符串字段支持 `${VAR}` 环境变量展开。`requiredEnv` 中任一变量缺失时，该服务会被跳过；建议把令牌放在 `~/.xbot/.env`，不要写入公开配置文件。
+字符串字段支持 `${VAR}` 环境变量展开。`requiredEnv` 中任一变量缺失时，该服务会被跳过；建议把令牌放在 `~/.xbot/env`，不要写入公开配置文件。
 
 每个服务还可设置 `disabled`、`includeTools`、`excludeTools`、`prefix`、`rename` 和 `tags` 来控制启用状态、工具筛选、命名和分组。需要 OAuth 的 HTTP 服务可设置 `oauth: true`；授权凭据会写入 `~/.xbot/mcp-auth/`。
 

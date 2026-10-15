@@ -97,6 +97,7 @@ export function isAbortError(error: any): boolean {
 // Chat Completions API 客户端
 export interface ChatClient {
   baseURL: string;
+  protocol?: "responses" | "chat_completions";
   create(params: any, options?: any): Promise<any>;
   createResponse?(params: any, options?: any): Promise<any>;
   uploadFile?(imagePath: string): Promise<{ id: string }>;
@@ -104,7 +105,11 @@ export interface ChatClient {
 }
 
 // 创建 Chat Completions 客户端
-export function createChatClient(apiKey: string, baseURL?: string): ChatClient {
+export function createChatClient(
+  apiKey: string,
+  baseURL?: string,
+  protocol?: "responses" | "chat_completions",
+): ChatClient {
   const finalURL = baseURL || "https://api.openai.com/v1";
   const normalizedApiKey = apiKey.trim();
   const client = new OpenAI({
@@ -119,6 +124,7 @@ export function createChatClient(apiKey: string, baseURL?: string): ChatClient {
   });
   return {
     baseURL: finalURL,
+    protocol,
     async create(params, options) {
       // 对于需要完整路径的 API（如 DashScope），直接调用 chat.completions.create
       // 库会自动添加 /chat/completions
@@ -205,12 +211,7 @@ function normalizeToolExecutionOutput(output: ToolExecutionResponse): ToolExecut
 
 function shouldUseResponses(client: ChatClient, model: string): boolean {
   if (!client.createResponse) return false;
-
-  const configuredProtocol = (process.env.XBOT_LLM_PROTOCOL || process.env.OPENAI_API_PROTOCOL)
-    ?.trim()
-    .toLowerCase();
-  if (configuredProtocol === "chat" || configuredProtocol === "chat_completions") return false;
-  if (configuredProtocol === "responses") return true;
+  if (client.protocol) return client.protocol === "responses";
 
   return /^(gpt(?:-|$)|codex(?:-|$))/i.test(model.trim());
 }
@@ -655,32 +656,33 @@ export async function executeWithChat(
       const reminders = iteration > 1 ? getContextReminders?.() ?? [] : [];
       const isDeepSeekProvider = model.toLowerCase().includes("deepseek")
         || endpointHost(client.baseURL) === DEEPSEEK_OFFICIAL_HOST;
-      const useResponses = !isDeepSeekProvider && shouldUseResponses(client, model);
+      const useResponses = shouldUseResponses(client, model);
       const requestSourceMessages: ChatMessage[] = reminders.length > 0
         ? [...promptMessages, ...reminders.map((content) => ({ role: "user" as const, content }))]
         : promptMessages;
       const requestMessages = useResponses
         ? requestSourceMessages
         : expandToolImageMessages(stripResponsesMetadata(requestSourceMessages));
-      const materializedRequestMessages = isDeepSeekProvider
-        ? await materializeDeepSeekImageMessages(requestMessages, async image => {
-          const uploaded = "path" in image
-            ? await (client.uploadFile
-              ? client.uploadFile(image.path)
-              : Promise.reject(new Error("当前 DeepSeek 客户端不支持 Files API")))
-            : await (client.uploadFileData
-              ? client.uploadFileData(image.data, image.filename, image.mimeType)
-              : Promise.reject(new Error("当前 DeepSeek 客户端不支持内存图片上传")));
-          return uploaded.id;
-        })
-        : useResponses
-          ? await materializeResponsesInput(requestMessages)
-        : await materializeImageMessages(requestMessages);
-      const requestTools = isDeepSeekProvider
+      const materializedRequestMessages = useResponses
+        ? await materializeResponsesInput(requestMessages)
+        : isDeepSeekProvider
+          ? await materializeDeepSeekImageMessages(requestMessages, async image => {
+              const uploaded = "path" in image
+                ? await (client.uploadFile
+                  ? client.uploadFile(image.path)
+                  : Promise.reject(new Error("当前 DeepSeek 客户端不支持 Files API")))
+                : await (client.uploadFileData
+                  ? client.uploadFileData(image.data, image.filename, image.mimeType)
+                  : Promise.reject(new Error("当前 DeepSeek 客户端不支持内存图片上传")));
+              return uploaded.id;
+            })
+          : await materializeImageMessages(requestMessages);
+      const deepSeekTools = isDeepSeekProvider
         ? normalizeToolDefinitionsForDeepSeek(currentTools)
-        : useResponses
-          ? responsesToolDefinitions(currentTools)
-          : currentTools;
+        : currentTools;
+      const requestTools = useResponses
+        ? responsesToolDefinitions(deepSeekTools)
+        : deepSeekTools;
 
       const isMiniMax = model.startsWith("MiniMax-");
       const requestBody: Record<string, any> = useResponses
@@ -709,16 +711,16 @@ export async function executeWithChat(
       const rawEffort = process.env.REASONING_EFFORT || process.env.OPENAI_REASONING_EFFORT || process.env.DEEPSEEK_REASONING_EFFORT;
       const reasoningEffort = rawEffort?.trim().toLowerCase();
       if (reasoningEffort && reasoningEffort !== "auto") {
-        if (model.toLowerCase().includes("deepseek")) {
+        if (useResponses) {
+          if (!['disabled', 'none', 'off'].includes(reasoningEffort)) {
+            requestBody.reasoning = { effort: reasoningEffort };
+          }
+        } else if (model.toLowerCase().includes("deepseek")) {
           if (reasoningEffort === "disabled" || reasoningEffort === "none" || reasoningEffort === "off") {
             requestBody.thinking = { type: "disabled" };
           } else {
             requestBody.thinking = { type: "enabled" };
             requestBody.reasoning_effort = reasoningEffort;
-          }
-        } else if (useResponses) {
-          if (!['disabled', 'none', 'off'].includes(reasoningEffort)) {
-            requestBody.reasoning = { effort: reasoningEffort };
           }
         } else {
           requestBody.reasoning_effort = (reasoningEffort === "disabled" || reasoningEffort === "off") ? "none" : reasoningEffort;

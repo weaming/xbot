@@ -132,7 +132,7 @@ export async function runSessionTurn(
             // 续跑不做预压缩：压缩会把待补的 assistant(tool_calls) 前缀摘要掉，工具结果会悬空
             autoCompact: spec.skipUserQuery ? undefined : async () => {
                 const result = await autoCompactIfNeeded(activeSession, {
-                    model: getChatApiSettings().model,
+                    model: getChatApiSettings(activeSession.modelSelection).model,
                     userId: DEFAULT_MEMORY_USER_ID,
                     sessionId,
                     signal: abortController.signal,
@@ -198,7 +198,7 @@ export async function compactSessionContext(
         session = await host.requireActiveSession(sessionId);
         // 手动压缩不保留尾部：把当前全部候选历史折叠进摘要
         const { turnsToCompact, keepFromMessageId } = await planCompaction(session, {
-            model: getChatApiSettings().model,
+            model: getChatApiSettings(session.modelSelection).model,
             retainedTailTokens: 0,
         });
         if (turnsToCompact.length === 0) throw new Error("当前没有可压缩的对话历史");
@@ -214,6 +214,7 @@ export async function compactSessionContext(
             systemPrompt: getOrCreateSessionSystemPrompt(session, { includeMemory: false, userId: DEFAULT_MEMORY_USER_ID }),
             history,
             sessionId,
+            modelSelection: session.modelSelection,
             cwd: session.cwd,
             contextEpochId: session.contextEpochId,
             userId: DEFAULT_MEMORY_USER_ID,

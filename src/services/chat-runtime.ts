@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { isIP } from "node:net";
 import { skillRegistry } from "../skills/skill-registry.js";
 import { loadCoreMemoryContext, loadDailyMemoryContext, loadWorkspaceIdentity } from "../skills/base-skill.js";
@@ -16,13 +18,57 @@ import type { UIEvent } from "../events/ui-events.js";
 import { getSessionToolNames } from "../tools/session-tools.js";
 import { getAskUserToolNames } from "../tools/ask-user-tool.js";
 import { isDeepSeekCostStatEnabled } from "../pricing/deepseek.js";
+import type { ChatApiProtocol, ChatModelSelection } from "../types/chat-model.js";
+import { getTuiModelPreferencesFile } from "../utils/tui-state-paths.js";
+import { withFileLock } from "../utils/file-lock.js";
 
 export interface ChatApiSettings {
     apiKey: string;
     apiBase: string;
     model: string;
+    protocol?: ChatApiProtocol;
     /** ENABLE_DS_COST_STAT：开启后非官方端点（局域网网关）也按官方价格表估算费用。 */
     enableCostStat: boolean;
+}
+
+export type ChatModelOption = ChatModelSelection;
+
+let defaultModelOption: ChatModelOption | null | undefined;
+
+export function getDefaultChatModelOption(): ChatModelOption | undefined {
+    if (defaultModelOption !== undefined) return defaultModelOption ?? undefined;
+    try {
+        const value = JSON.parse(fs.readFileSync(getTuiModelPreferencesFile(), "utf8")) as Partial<ChatModelOption>;
+        if (
+            (value.protocol === "responses" || value.protocol === "chat_completions")
+            && typeof value.model === "string"
+            && value.model.trim()
+        ) {
+            defaultModelOption = { protocol: value.protocol, model: value.model.trim() };
+            return defaultModelOption;
+        }
+    } catch {
+        // 缺失或损坏的偏好文件使用环境变量默认值。
+    }
+    defaultModelOption = null;
+    return undefined;
+}
+
+export async function setDefaultChatModelOption(option: ChatModelOption): Promise<void> {
+    if (!getChatModelOptions().some(candidate =>
+        candidate.protocol === option.protocol && candidate.model === option.model,
+    )) {
+        throw new Error(`模型配置不存在：${option.protocol} · ${option.model}`);
+    }
+
+    const file = getTuiModelPreferencesFile();
+    await withFileLock(file, () => {
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        const temporaryFile = `${file}.tmp`;
+        fs.writeFileSync(temporaryFile, JSON.stringify(option, null, 2), "utf8");
+        fs.renameSync(temporaryFile, file);
+    });
+    defaultModelOption = { ...option };
 }
 
 function isPrivateIPv4(hostname: string): boolean {
@@ -59,25 +105,34 @@ function isLocalApiHostname(hostname: string): boolean {
 }
 
 export function validateChatApiSettings(settings: ChatApiSettings): string | undefined {
+    const baseName = settings.protocol === "responses"
+        ? "OPENAI_RESPONSES_BASE_URL"
+        : settings.protocol === "chat_completions"
+            ? "OPENAI_CHAT_BASE_URL"
+            : "OPENAI_BASE_URL";
+
     let apiUrl: URL;
     try {
         apiUrl = new URL(settings.apiBase);
     } catch {
-        return `OPENAI_BASE_URL 不是有效 URL：${settings.apiBase}`;
+        return `${baseName} 不是有效 URL：${settings.apiBase}`;
     }
 
     if (apiUrl.protocol !== "http:" && apiUrl.protocol !== "https:") {
-        return `OPENAI_BASE_URL 只支持 http 或 https：${settings.apiBase}`;
+        return `${baseName} 只支持 http 或 https：${settings.apiBase}`;
     }
 
     if (!settings.apiKey.trim() && !isLocalApiHostname(apiUrl.hostname)) {
-        return "缺少 OPENAI_API_KEY（本地或局域网服务可省略）";
+        const keyName = settings.protocol === "responses"
+            ? "OPENAI_RESPONSES_API_KEY"
+            : "OPENAI_CHAT_API_KEY";
+        return `缺少 ${keyName} 或 OPENAI_API_KEY（本地或局域网服务可省略）`;
     }
 
     return undefined;
 }
 
-export function formatChatProviderError(error: unknown): string {
+export function formatChatProviderError(error: unknown, currentSettings = getChatApiSettings()): string {
     const message = error instanceof Error ? error.message : String(error);
     const explicitStatus = typeof error === "object" && error !== null && "status" in error
         ? Number((error as { status?: unknown }).status)
@@ -86,7 +141,10 @@ export function formatChatProviderError(error: unknown): string {
     const status = Number.isFinite(explicitStatus) ? explicitStatus : messageStatus;
 
     if (status === 401 || status === 403) {
-        return `LLM provider 请求失败（HTTP ${status}）：认证失败，请检查 OPENAI_API_KEY。`;
+        const keyName = currentSettings.protocol === "responses"
+            ? "OPENAI_RESPONSES_API_KEY"
+            : "OPENAI_CHAT_API_KEY";
+        return `LLM provider 请求失败（HTTP ${status}）：认证失败，请检查 ${keyName} 或 OPENAI_API_KEY。`;
     }
 
     if (status === 429) {
@@ -98,7 +156,10 @@ export function formatChatProviderError(error: unknown): string {
     }
 
     if (message.includes("fetch failed") || message.includes("ECONNREFUSED")) {
-        return `LLM provider 请求失败：无法连接 ${getChatApiSettings().apiBase}，请检查 OPENAI_BASE_URL 和网络代理。`;
+        const baseName = currentSettings.protocol === "responses"
+            ? "OPENAI_RESPONSES_BASE_URL"
+            : "OPENAI_CHAT_BASE_URL";
+        return `LLM provider 请求失败：无法连接 ${currentSettings.apiBase}，请检查 ${baseName} 或 OPENAI_BASE_URL 和网络代理。`;
     }
 
     return `LLM provider 请求失败：${message}`;
@@ -144,6 +205,7 @@ export interface ChatRunOptions {
     cwd?: string;
     userId: number;
     sessionId?: string;
+    modelSelection?: ChatModelSelection;
     contextEpochId?: string;
     initialRequestKind?: Exclude<LLMRequestKind, 'tool_response'>;
     signal?: AbortSignal;
@@ -166,13 +228,92 @@ export interface ChatRunOptions {
     pendingToolCalls?: ToolCall[];
 }
 
-export function getChatApiSettings(): ChatApiSettings {
+export function getChatApiSettings(sessionSelection?: ChatModelSelection): ChatApiSettings {
+    const legacyModel = process.env.OPENAI_MODEL || "";
+    const responsesModel = process.env.OPENAI_RESPONSES_MODEL || "";
+    const chatModel = process.env.OPENAI_CHAT_MODEL || "";
+    const hasResponsesSettings = [
+        process.env.OPENAI_RESPONSES_API_KEY,
+        process.env.OPENAI_RESPONSES_BASE_URL,
+        responsesModel,
+        process.env.OPENAI_RESPONSES_MODELS,
+    ].some(value => value?.trim());
+    const hasChatSettings = [
+        process.env.OPENAI_CHAT_API_KEY,
+        process.env.OPENAI_CHAT_BASE_URL,
+        chatModel,
+        process.env.OPENAI_CHAT_MODELS,
+    ].some(value => value?.trim());
+    let protocol: ChatApiProtocol;
+    if (hasResponsesSettings && !hasChatSettings) {
+        protocol = "responses";
+    } else if (hasChatSettings && !hasResponsesSettings) {
+        protocol = "chat_completions";
+    } else {
+        protocol = /^(gpt(?:-|$)|codex(?:-|$))/i.test(legacyModel.trim())
+            ? "responses"
+            : "chat_completions";
+    }
+    const profileModel = protocol === "responses"
+        ? responsesModel || parseModelList(process.env.OPENAI_RESPONSES_MODELS)[0] || ""
+        : chatModel || parseModelList(process.env.OPENAI_CHAT_MODELS)[0] || "";
+    const requestedOption = sessionSelection ?? getDefaultChatModelOption();
+    const activeOption = requestedOption && getChatModelOptions().some(option =>
+        option.protocol === requestedOption.protocol && option.model === requestedOption.model,
+    ) ? requestedOption : undefined;
+    const activeProtocol = activeOption?.protocol ?? protocol;
+    const activeProfileApiKey = activeProtocol === "responses"
+        ? process.env.OPENAI_RESPONSES_API_KEY
+        : process.env.OPENAI_CHAT_API_KEY;
+    const activeProfileApiBase = activeProtocol === "responses"
+        ? process.env.OPENAI_RESPONSES_BASE_URL
+        : process.env.OPENAI_CHAT_BASE_URL;
+
     return {
-        apiKey: process.env.OPENAI_API_KEY || "",
-        apiBase: process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
-        model: process.env.OPENAI_MODEL || "",
+        apiKey: activeProfileApiKey || process.env.OPENAI_API_KEY || "",
+        apiBase: activeProfileApiBase || process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
+        model: activeOption?.model || profileModel || legacyModel,
+        protocol: activeProtocol,
         enableCostStat: isDeepSeekCostStatEnabled(),
     };
+}
+
+function parseModelList(value?: string): string[] {
+    return [...new Set((value || "").split(",").map(model => model.trim()).filter(Boolean))];
+}
+
+function profileHasSettings(protocol: ChatApiProtocol): boolean {
+    const prefix = protocol === "responses" ? "OPENAI_RESPONSES" : "OPENAI_CHAT";
+    return [
+        process.env[`${prefix}_API_KEY`],
+        process.env[`${prefix}_BASE_URL`],
+        process.env[`${prefix}_MODEL`],
+        process.env[`${prefix}_MODELS`],
+    ].some(value => value?.trim());
+}
+
+export function getChatModelOptions(): ChatModelOption[] {
+    const legacyModel = process.env.OPENAI_MODEL?.trim() || "";
+    const configuredProtocols = (['responses', 'chat_completions'] as const)
+        .filter(protocol => profileHasSettings(protocol));
+    const legacyProtocol: ChatApiProtocol = /^(gpt(?:-|$)|codex(?:-|$))/i.test(legacyModel)
+        ? "responses"
+        : "chat_completions";
+    const protocols = new Set<ChatApiProtocol>(configuredProtocols);
+    if (legacyModel && !configuredProtocols.includes(legacyProtocol)) protocols.add(legacyProtocol);
+
+    const options: ChatModelOption[] = [];
+    for (const protocol of protocols) {
+        const prefix = protocol === "responses" ? "OPENAI_RESPONSES" : "OPENAI_CHAT";
+        const models = [
+            process.env[`${prefix}_MODEL`],
+            ...parseModelList(process.env[`${prefix}_MODELS`]),
+            ...(protocol === legacyProtocol ? [legacyModel] : []),
+        ].map(model => model?.trim()).filter((model): model is string => Boolean(model));
+        for (const model of new Set(models)) options.push({ protocol, model });
+    }
+
+    return options;
 }
 
 /** @public */
@@ -310,13 +451,13 @@ export function buildConversationHistory(
 }
 
 export async function runChatQuery(options: ChatRunOptions) {
-    const settings = getChatApiSettings();
+    const settings = getChatApiSettings(options.modelSelection);
     const settingsError = validateChatApiSettings(settings);
     if (settingsError) {
         throw new Error(`LLM provider 配置无效：${settingsError}`);
     }
 
-    const client = createChatClient(settings.apiKey, settings.apiBase);
+    const client = createChatClient(settings.apiKey, settings.apiBase, settings.protocol);
 
     try {
         return await executeWithChat({
@@ -366,6 +507,7 @@ export async function runChatQuery(options: ChatRunOptions) {
                         userId: options.userId,
                         signal: options.signal,
                         sessionId: options.sessionId,
+                        modelSelection: options.modelSelection,
                         contextEpochId: options.contextEpochId,
                         lastPromptTokens,
                         onUsage: usage => options.onEvent?.({ type: "usage", usage }),
@@ -383,7 +525,7 @@ export async function runChatQuery(options: ChatRunOptions) {
             pendingToolCalls: options.pendingToolCalls,
             onEvent: event => {
                 if (event.type === "error") {
-                    options.onEvent?.({ ...event, message: formatChatProviderError(event.message) });
+                    options.onEvent?.({ ...event, message: formatChatProviderError(event.message, settings) });
                     return;
                 }
                 options.onEvent?.(event);
@@ -394,7 +536,7 @@ export async function runChatQuery(options: ChatRunOptions) {
         if (isAbortError(error)) {
             throw error;
         }
-        const wrappedError: any = new Error(formatChatProviderError(error), { cause: error });
+        const wrappedError: any = new Error(formatChatProviderError(error, settings), { cause: error });
         if (error?.partialMessages) {
             wrappedError.partialMessages = error.partialMessages;
         }

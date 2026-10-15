@@ -6,6 +6,7 @@ export interface ToolResultPolicy {
 
 // OpenAI-compatible message types
 import type { UserContent } from './image.js';
+import type { ChatModelSelection } from './chat-model.js';
 
 /** @public */
 export type ChatMessage =
@@ -84,4 +85,6 @@ export interface Session {
     archivedAt?: string; // 会话归档时间（上海时区 ISO 字符串）
     sentSkillsMtime?: Record<string, number>; // skill name -> mtime when last injected into system prompt
     activeSkill?: string; // 用户通过 /use 命令主动激活的技能名
+    /** 会话固定使用的模型与协议；缺省时采用全局默认配置。 */
+    modelSelection?: ChatModelSelection;
 }
