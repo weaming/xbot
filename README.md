@@ -1,5 +1,32 @@
 # xbot
 
-xbot 是基于 Bun 的终端 AI 助手，仅包含 TUI。运行配置示例见 `.env.example`，默认配置和会话数据保存在 `~/.xbot/`。
+xbot 是一个基于 Bun 的终端 AI 助手，提供 TUI 界面。
 
-`package` 脚本生成当前操作系统和架构对应的 TUI 压缩包，输出到 `release/`。
+## 安装
+
+需要先安装 [Bun](https://bun.sh/)：
+
+```sh
+git clone https://github.com/weaming/xbot.git
+cd xbot
+bun install
+make build-cli
+```
+
+## 配置
+
+```sh
+mkdir -p ~/.xbot
+cp .env.example ~/.xbot/.env
+vi ~/.xbot/.env
+```
+
+在文件中填写 `OPENAI_API_KEY` 和 `OPENAI_MODEL`；如使用兼容接口，再调整 `OPENAI_BASE_URL`。
+
+## 使用
+
+```sh
+~/.bun/bin/xbot
+```
+
+MCP 多服务配置见 [docs/mcp.md](docs/mcp.md)。

@@ -1,0 +1,21 @@
+mcpServers:
+  local-files:
+    type: stdio
+    command: npx
+    args:
+      - -y
+      - '@modelcontextprotocol/server-filesystem'
+      - '${HOME}/src'
+    tags:
+      - filesystem
+
+  remote-tools:
+    type: http
+    url: '${MCP_REMOTE_URL}'
+    headers:
+      Authorization: 'Bearer ${MCP_REMOTE_TOKEN}'
+    requiredEnv:
+      - MCP_REMOTE_URL
+      - MCP_REMOTE_TOKEN
+    tags:
+      - remote

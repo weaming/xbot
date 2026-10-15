@@ -1,9 +1,11 @@
 node_modules/
 dist/
 dist-bundle/
-release/
 .env
 .env.*
 !.env.example
+/mcp-servers.yaml
+/mcp-auth/
+/.xbot/
 .DS_Store
 *.log

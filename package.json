@@ -10,7 +10,6 @@
     "start": "bun run tui",
     "tui": "bun src/tui/main.ts",
     "build": "tsgo && bun run build.mjs",
-    "package": "bun run build && mkdir -p release && tar -czf release/xbot-tui.tar.gz -C dist-bundle .",
     "dev": "bun --watch src/tui/main.ts",
     "test": "bun test tests/unit src",
     "test:render": "bun test src/tui",

@@ -69,6 +69,18 @@ describe("mcp config", () => {
         expect(normalized[0].command).toBe("npx");
     });
 
+    test("mcpServers 映射可配置多个独立客户端", () => {
+        const normalized = normalizeParsedConfig({
+            mcpServers: {
+                local: { type: "stdio", command: "node" },
+                remote: { type: "http", url: "https://example.com/mcp" },
+            },
+        });
+
+        expect(normalized.map(server => server.name)).toEqual(["local", "remote"]);
+        expect(normalized.map(server => server.type)).toEqual(["stdio", "http"]);
+    });
+
     test("loadMcpServersConfig 在 mode=tui 下，配置文件不存在时返回空数组（没有则不连）", () => {
         const nonExistentPath = path.join(os.tmpdir(), "non_existent_mcp_config.yaml");
         const configs = loadMcpServersConfig({
