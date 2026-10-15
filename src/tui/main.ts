@@ -8,6 +8,7 @@ import path from "path";
 import { configureTuiHostEnvironment, redirectTuiLogsToFile } from "./runtime-context.js";
 import { herdrReporter } from "./herdr-reporter.js";
 import { officialDeepSeekCostYuan } from "../pricing/deepseek.js";
+import type { ChatApp } from "./app.js";
 
 const DEFAULT_ENV_FILE = path.join(os.homedir(), ".xbot", ".env");
 
@@ -22,6 +23,14 @@ const envFile = resolveEnvFile(process.env.XBOT_ENV_FILE || DEFAULT_ENV_FILE);
 dotenv.config({ path: envFile, quiet: true });
 configureTuiHostEnvironment();
 
+const SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+const SIGNAL_EXIT_CODES = {
+    SIGINT: 130,
+    SIGTERM: 143,
+    SIGHUP: 129,
+} as const;
+const SHUTDOWN_GRACE_PERIOD_MS = 8_000;
+
 /**
  * TUI 全局异常护栏：把 uncaughtException / unhandledRejection 打到 tui.log，
  * 进程不主动退出（用户仍可用 ⌃D 退出）。这些通常是 MCP 重连、定时器回调、
@@ -34,6 +43,39 @@ function installGlobalErrorGuards(): void {
     process.on("unhandledRejection", (reason) => {
         console.error("[TUI] unhandledRejection:", reason);
     });
+}
+
+function installShutdownSignalHandlers(app: ChatApp): () => void {
+    let shutdownStarted = false;
+    let shutdownExitCode = 0;
+
+    const handlers = SHUTDOWN_SIGNALS.map((signal) => {
+        const handler = (): void => {
+            if (shutdownStarted) {
+                app.forceShutdown(shutdownExitCode);
+                return;
+            }
+
+            shutdownStarted = true;
+            shutdownExitCode = SIGNAL_EXIT_CODES[signal];
+            const forceTimer = setTimeout(() => app.forceShutdown(shutdownExitCode), SHUTDOWN_GRACE_PERIOD_MS);
+            forceTimer.unref();
+            void app.shutdown(shutdownExitCode)
+                .catch((error) => {
+                    console.error(`[TUI] ${signal} 优雅退出失败:`, error);
+                    app.forceShutdown(shutdownExitCode);
+                })
+                .finally(() => clearTimeout(forceTimer));
+        };
+        process.on(signal, handler);
+        return { signal, handler };
+    });
+
+    return () => {
+        for (const { signal, handler } of handlers) {
+            process.removeListener(signal, handler);
+        }
+    };
 }
 
 async function startChatApp(): Promise<void> {
@@ -59,7 +101,14 @@ async function startChatApp(): Promise<void> {
         const chatStore = new ChatStore({
             costFor: (usage, atMs) => officialDeepSeekCostYuan(usage, atMs, chatRuntime.getChatApiSettings()),
         });
-        await new ChatApp(new LocalTuiAgent(), chatStore).init(startupMessage);
+        const app = new ChatApp(new LocalTuiAgent(), chatStore);
+        const removeSignalHandlers = installShutdownSignalHandlers(app);
+        try {
+            await app.init(startupMessage);
+        } catch (error) {
+            removeSignalHandlers();
+            throw error;
+        }
         started = true;
         if (!providerError) {
             herdrReporter.report("idle");

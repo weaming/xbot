@@ -171,6 +171,7 @@ export class ChatApp {
     private readonly editor: PromptEditor;
     private readonly layout: ChatLayout;
     private readonly pendingList = new Container();
+    private terminalStarted = false;
     /** pending 列表一次最多显示的消息行数（不含 header），超出时窗口化。 */
     private static readonly PENDING_MAX_VISIBLE = 5;
     /** 按会话隔离的入队消息队列与选中索引。 */
@@ -385,6 +386,7 @@ export class ChatApp {
             onSessionsChanged: () => this.renderTabBar(),
             onStatusChanged: () => this.renderStatusBar(),
         });
+        this.terminalStarted = true;
         this.tui.start();
 
         // MCP 授权/连接通知：启动阶段积压的通知在注册时补发
@@ -2569,7 +2571,25 @@ export class ChatApp {
         });
     }
 
-    private async exit(): Promise<void> {
+    shutdown(exitCode = 0): Promise<void> {
+        return this.exit(exitCode);
+    }
+
+    forceShutdown(exitCode: number): void {
+        this.stopSpinnerTimer();
+        herdrReporter.release();
+        if (this.terminalStarted) {
+            try {
+                this.tui.stop({ preserveScreen: true });
+                this.terminalStarted = false;
+            } catch (error) {
+                console.error("⚠️ [TUI] 强制退出时恢复终端失败:", error);
+            }
+        }
+        process.exit(exitCode);
+    }
+
+    private async exit(exitCode = 0): Promise<void> {
         if (this.exiting) return;
         this.exiting = true;
         // 先释放本实例持有的会话 socket：让等待中的其他实例能立刻接管
@@ -2586,9 +2606,15 @@ export class ChatApp {
         }
         // preserveScreen：退出 alternate buffer（\x1b[?1049l）而不把 TUI 最后一帧
         // 重绘回主 buffer，避免终端残留 TUI 画面与滚动历史。
-        this.tui.stop({ preserveScreen: true });
+        try {
+            this.tui.stop({ preserveScreen: true });
+        } catch (error) {
+            console.error("⚠️ [TUI] 退出时恢复终端失败:", error);
+        } finally {
+            this.terminalStarted = false;
+        }
         this.printNetworkStats();
-        process.exit(0);
+        process.exit(exitCode);
     }
 
     /** 退出后输出本实例真实网络请求的用量统计（绕过已重定向到文件的 console）。 */
