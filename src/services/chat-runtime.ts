@@ -250,9 +250,7 @@ export function getChatApiSettings(sessionSelection?: ChatModelSelection): ChatA
     } else if (hasChatSettings && !hasResponsesSettings) {
         protocol = "chat_completions";
     } else {
-        protocol = /^(gpt(?:-|$)|codex(?:-|$))/i.test(legacyModel.trim())
-            ? "responses"
-            : "chat_completions";
+        protocol = "chat_completions";
     }
     const profileModel = protocol === "responses"
         ? responsesModel || parseModelList(process.env.OPENAI_RESPONSES_MODELS)[0] || ""
@@ -296,9 +294,7 @@ export function getChatModelOptions(): ChatModelOption[] {
     const legacyModel = process.env.OPENAI_MODEL?.trim() || "";
     const configuredProtocols = (['responses', 'chat_completions'] as const)
         .filter(protocol => profileHasSettings(protocol));
-    const legacyProtocol: ChatApiProtocol = /^(gpt(?:-|$)|codex(?:-|$))/i.test(legacyModel)
-        ? "responses"
-        : "chat_completions";
+    const legacyProtocol: ChatApiProtocol = "chat_completions";
     const protocols = new Set<ChatApiProtocol>(configuredProtocols);
     if (legacyModel && !configuredProtocols.includes(legacyProtocol)) protocols.add(legacyProtocol);
 

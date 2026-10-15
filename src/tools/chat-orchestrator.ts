@@ -209,11 +209,9 @@ function normalizeToolExecutionOutput(output: ToolExecutionResponse): ToolExecut
   return typeof output === "string" ? { content: output } : output;
 }
 
-function shouldUseResponses(client: ChatClient, model: string): boolean {
+function shouldUseResponses(client: ChatClient): boolean {
   if (!client.createResponse) return false;
-  if (client.protocol) return client.protocol === "responses";
-
-  return /^(gpt(?:-|$)|codex(?:-|$))/i.test(model.trim());
+  return client.protocol === "responses";
 }
 
 function responsesToolDefinitions(tools: any[]): any[] {
@@ -656,7 +654,7 @@ export async function executeWithChat(
       const reminders = iteration > 1 ? getContextReminders?.() ?? [] : [];
       const isDeepSeekProvider = model.toLowerCase().includes("deepseek")
         || endpointHost(client.baseURL) === DEEPSEEK_OFFICIAL_HOST;
-      const useResponses = shouldUseResponses(client, model);
+      const useResponses = shouldUseResponses(client);
       const requestSourceMessages: ChatMessage[] = reminders.length > 0
         ? [...promptMessages, ...reminders.map((content) => ({ role: "user" as const, content }))]
         : promptMessages;

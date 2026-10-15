@@ -21,7 +21,9 @@ cp env.example ~/.xbot/env
 vi ~/.xbot/env
 ```
 
-填写 `OPENAI_MODEL`。使用云端服务时填写 `OPENAI_API_KEY`；本地或局域网服务可省略密钥。兼容接口可按需调整 `OPENAI_BASE_URL`。
+填写 `OPENAI_MODEL`。旧的 `OPENAI_*` 配置按 Chat Completions 使用；云端服务填写 `OPENAI_API_KEY`，本地或局域网服务可省略密钥。兼容接口可按需调整 `OPENAI_BASE_URL`。
+
+Responses API 和 Chat Completions 可使用各自的 `OPENAI_RESPONSES_*` 与 `OPENAI_CHAT_*` 配置。DeepSeek 两种协议的 Base URL 都是 `https://api.deepseek.com`。配置多个协议或模型后，在 TUI 输入 `/model` 可为当前会话选择模型。
 
 ## 使用
 
