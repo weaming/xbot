@@ -1,0 +1,42 @@
+{
+  "name": "xbot",
+  "version": "1.0.0",
+  "description": "Terminal AI assistant",
+  "packageManager": "bun@1.3.14",
+  "main": "dist-bundle/main.js",
+  "type": "module",
+  "scripts": {
+    "preinstall": "npx only-allow bun",
+    "start": "bun run tui",
+    "tui": "bun src/tui/main.ts",
+    "build": "tsgo && bun run build.mjs",
+    "package": "bun run build && mkdir -p release && tar -czf release/xbot-tui.tar.gz -C dist-bundle .",
+    "dev": "bun --watch src/tui/main.ts",
+    "test": "bun test tests/unit src",
+    "test:render": "bun test src/tui",
+    "test:watch": "bun test --watch tests/unit src",
+    "test:integration": "bun test tests/integration"
+  },
+  "dependencies": {
+    "@earendil-works/pi-tui": "^0.85.1",
+    "@modelcontextprotocol/client": "^2.0.0",
+    "axios": "^1.15.0",
+    "chokidar": "^5.0.0",
+    "diff": "^9.0.0",
+    "dotenv": "^17.4.2",
+    "get-east-asian-width": "1.7.0",
+    "js-yaml": "^5.2.2",
+    "openai": "^7.3.0",
+    "tokenizers": "^0.23.2",
+    "uuid": "^14.0.1",
+    "ws": "^8.19.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/chokidar": "^2.1.7",
+    "@types/node": "^26.1.2",
+    "@types/ws": "^8.18.1",
+    "@typescript/native-preview": "^7.0.0-dev.20260707.2",
+    "typescript": "^7.0.2"
+  }
+}

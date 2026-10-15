@@ -1,0 +1,47 @@
+/**
+ * 测试环境隔离：把会话/状态目录指向临时目录，并在清理时恢复原值。
+ *
+ * 必须同时处理 WORKSPACE 与 XBOT_STATE_DIR：getSessionsDir 优先读后者，
+ * 只设 WORKSPACE 时若宿主 shell 导出了 XBOT_STATE_DIR，测试会写到真实 ~/.xbot。
+ * （bunfig.toml 的 preload 已全局删除一次，这里再显式处理，保证单文件直跑也安全。）
+ */
+
+import fs from "fs";
+import os from "os";
+import path from "path";
+
+export interface TmpWorkspace {
+    /** 临时目录绝对路径。 */
+    dir: string;
+    /** 删除临时目录并恢复环境变量。 */
+    cleanup: () => void;
+}
+
+/** 创建临时 workspace 并设为会话目录根。 */
+export function useTmpWorkspace(prefix: string): TmpWorkspace {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+    const previousWorkspace = process.env.WORKSPACE;
+    const previousStateDir = process.env.XBOT_STATE_DIR;
+
+    process.env.WORKSPACE = dir;
+    // logger 的 exchange 路径只认 XBOT_STATE_DIR（不读 WORKSPACE），同步指向临时目录保证两者同源。
+    process.env.XBOT_STATE_DIR = dir;
+
+    return {
+        dir,
+        cleanup: () => {
+            fs.rmSync(dir, { recursive: true, force: true });
+            restoreEnv("WORKSPACE", previousWorkspace);
+            restoreEnv("XBOT_STATE_DIR", previousStateDir);
+        },
+    };
+}
+
+/** 恢复环境变量：原值为 undefined 时删除而不是写回字符串 "undefined"。 */
+export function restoreEnv(name: string, value: string | undefined): void {
+    if (value === undefined) {
+        delete process.env[name];
+    } else {
+        process.env[name] = value;
+    }
+}

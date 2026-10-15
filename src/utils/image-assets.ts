@@ -1,0 +1,273 @@
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import axios from "axios";
+import type {
+    DeepSeekFileContent,
+    ImageAssetRef,
+    ImageDataRef,
+    UserContent,
+} from "../types/image.js";
+import { getWorkspaceStateDir } from "./runtime-paths.js";
+
+const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
+
+function getImageAssetsDir(): string {
+    return getWorkspaceStateDir("assets", "images");
+}
+
+function detectImageType(input: Buffer, filename: string): {
+    mimeType: ImageAssetRef["mimeType"];
+    extension: string;
+} {
+    if (input.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))) {
+        return { mimeType: "image/jpeg", extension: ".jpg" };
+    }
+    if (input.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
+        return { mimeType: "image/png", extension: ".png" };
+    }
+    if (input.subarray(0, 4).toString("ascii") === "GIF8") {
+        return { mimeType: "image/gif", extension: ".gif" };
+    }
+    if (input.subarray(0, 4).toString("ascii") === "RIFF" && input.subarray(8, 12).toString("ascii") === "WEBP") {
+        return { mimeType: "image/webp", extension: ".webp" };
+    }
+
+    const extension = path.extname(filename).toLowerCase();
+    const mimeTypeByExtension: Record<string, ImageAssetRef["mimeType"]> = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+    };
+    const mimeType = mimeTypeByExtension[extension];
+    if (!mimeType) throw new Error("无法识别图片格式");
+    return { mimeType, extension: extension === ".jpeg" ? ".jpg" : extension };
+}
+
+/** 将图片原文件写入资产目录，调用方只拿到可复用的本地引用。 */
+export async function createImageAsset(input: Buffer, filename = "clipboard.jpg"): Promise<ImageAssetRef> {
+    if (input.length > MAX_IMAGE_BYTES) {
+        throw new Error("图片大小超过 32 MiB");
+    }
+
+    const imageType = detectImageType(input, filename);
+    const digest = crypto.createHash("sha256").update(input).digest("hex");
+    const id = `img_${digest.slice(0, 20)}`;
+    const assetPath = path.join(getImageAssetsDir(), `${id}${imageType.extension}`);
+
+    fs.mkdirSync(path.dirname(assetPath), { recursive: true });
+    if (!fs.existsSync(assetPath)) {
+        const tempPath = `${assetPath}.${process.pid}.tmp`;
+        fs.writeFileSync(tempPath, input);
+        fs.renameSync(tempPath, assetPath);
+    }
+
+    return {
+        id,
+        path: assetPath,
+        filename: path.basename(filename) || "clipboard.jpg",
+        mimeType: imageType.mimeType,
+        sizeBytes: input.length,
+    };
+}
+
+/** 把本地图片或外部图片引用转换为 OpenAI 兼容的图片内容块。 */
+function materializeImageAsset(image: ImageAssetRef): unknown {
+    try {
+        const data = fs.readFileSync(image.path).toString("base64");
+        return {
+            type: "image_url" as const,
+            image_url: {
+                url: `data:${image.mimeType};base64,${data}`,
+                detail: "original" as const,
+            },
+        };
+    } catch (error: any) {
+        if (error?.code !== "ENOENT" && error?.code !== "ENOTDIR") throw error;
+        return {
+            type: "text" as const,
+            text: `[图片文件不可用：${image.path}]`,
+        };
+    }
+}
+
+function materializeImageContent(content: UserContent): unknown {
+    if (typeof content === "string") return content;
+
+    return Promise.all(content.map(async block => {
+        if (block.type === "text") return block;
+        if (block.type === "image_url") {
+            return {
+                type: "image_url" as const,
+                image_url: { url: block.image.url },
+            };
+        }
+        if (block.type === "image_data") {
+            return {
+                type: "image_url" as const,
+                image_url: {
+                    url: `data:${block.image.mimeType};base64,${block.image.data}`,
+                    detail: "original" as const,
+                },
+            };
+        }
+
+        return materializeImageAsset(block.image);
+    }));
+}
+
+export async function materializeImageMessages(messages: any[]): Promise<any[]> {
+    return Promise.all(messages.map(async message => {
+        if (message?.role !== "user" || typeof message.content === "string") return message;
+        return { ...message, content: await materializeImageContent(message.content) };
+    }));
+}
+
+const DEEPSEEK_FILE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const DEEPSEEK_FILE_REFRESH_MARGIN_MS = 5 * 60 * 1000;
+const DEFAULT_DEEPSEEK_FILES_API = "https://api.deepseek.com/files";
+const deepSeekFileIds = new Map<string, { promise: Promise<string>; expiresAt: number }>();
+
+interface DeepSeekFileResponse {
+    id?: string;
+    file_id?: string;
+}
+
+export interface DeepSeekFileUploadOptions {
+    filesAPI?: string;
+    apiKey?: string;
+}
+
+/** 返回 DeepSeek Files API 地址；自定义部署可通过环境变量覆盖。 */
+export function resolveDeepSeekFilesAPI(_apiBase?: string): string {
+    const configured = process.env.DEEPSEEK_FILES_API?.trim();
+    return configured || DEFAULT_DEEPSEEK_FILES_API;
+}
+
+/** 向由部署方负责鉴权的 Files API 上传原始图片。 */
+export async function uploadDeepSeekFile(
+    imagePath: string,
+    options?: DeepSeekFileUploadOptions,
+): Promise<string> {
+    const data = await fs.promises.readFile(imagePath);
+    return uploadDeepSeekFileData(
+        data,
+        path.basename(imagePath) || "image.jpg",
+        "application/octet-stream",
+        options,
+    );
+}
+
+/** 向 Files API 上传内存中的图片数据。 */
+export async function uploadDeepSeekFileData(
+    data: string | Buffer,
+    filename: string,
+    mimeType: string,
+    options?: DeepSeekFileUploadOptions,
+): Promise<string> {
+    const filesAPI = options?.filesAPI?.trim() || resolveDeepSeekFilesAPI();
+    if (!filesAPI) {
+        throw new Error("无法确定 DeepSeek Files API，请设置 DEEPSEEK_FILES_API");
+    }
+
+    const fileData = typeof data === "string" ? Buffer.from(data, "base64") : data;
+    const boundary = `xbot-${crypto.randomUUID()}`;
+    const safeFilename = path.basename(filename) || "image.jpg";
+    const escapedFilename = safeFilename.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+    const field = (name: string, value: string): Buffer => Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`,
+    );
+    const fileHeader = Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${escapedFilename}"\r\n` +
+        `Content-Type: ${mimeType || "application/octet-stream"}\r\n\r\n`,
+    );
+    const body = Buffer.concat([
+        field("purpose", "user_data"),
+        field("expires_after[anchor]", "created_at"),
+        field("expires_after[seconds]", String(7 * 24 * 60 * 60)),
+        fileHeader,
+        fileData,
+        Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]);
+
+    let response;
+    try {
+        response = await axios.post<DeepSeekFileResponse>(filesAPI, body, {
+            timeout: 10 * 60 * 1000,
+            maxBodyLength: body.length,
+            headers: {
+                "Content-Type": `multipart/form-data; boundary=${boundary}`,
+                "Content-Length": String(body.length),
+                ...(options?.apiKey?.trim() ? { Authorization: `Bearer ${options.apiKey.trim()}` } : {}),
+            },
+            proxy: false,
+        });
+    } catch (error: any) {
+        const status = error.response?.status ? `HTTP ${error.response.status}: ` : "";
+        const detail = typeof error.response?.data === "string"
+            ? error.response.data
+            : error.message;
+        throw new Error(`DeepSeek Files API 上传失败（${status}${detail}）`);
+    }
+
+    const fileID = response.data.id || response.data.file_id;
+    if (!fileID) {
+        throw new Error("DeepSeek Files API 响应缺少 file_id");
+    }
+    return fileID;
+}
+
+/** 将图片上传到 DeepSeek Files API，并在当前进程内复用七天有效的 file_id。 */
+export async function materializeDeepSeekImageMessages(
+    messages: any[],
+    uploadFile: (image: ImageAssetRef | ImageDataRef) => Promise<string>,
+): Promise<any[]> {
+    const uploadImage = async (image: ImageAssetRef | ImageDataRef): Promise<string> => {
+        const cached = deepSeekFileIds.get(image.id);
+        const now = Date.now();
+        let fileIdPromise = cached && cached.expiresAt > now
+            ? cached.promise
+            : undefined;
+        if (!fileIdPromise) {
+            fileIdPromise = uploadFile(image);
+            deepSeekFileIds.set(image.id, {
+                promise: fileIdPromise,
+                expiresAt: now + DEEPSEEK_FILE_TTL_MS - DEEPSEEK_FILE_REFRESH_MARGIN_MS,
+            });
+            void fileIdPromise.catch(() => deepSeekFileIds.delete(image.id));
+        }
+        return fileIdPromise;
+    };
+
+    return Promise.all(messages.map(async message => {
+        if (message?.role !== "user" || typeof message.content === "string") return message;
+
+        const content = await Promise.all(message.content.map(async (block: any) => {
+            if (block.type === "text") return block;
+
+            if (block.type === "image_url") {
+                return {
+                    type: "image_url" as const,
+                    image_url: { url: block.image.url },
+                };
+            }
+
+            if (block.type === "image_asset") {
+                return materializeImageAsset(block.image);
+            }
+
+            if (block.type === "image_data") {
+                const fileId = await uploadImage(block.image);
+                return {
+                    type: "file",
+                    file_id: fileId,
+                } satisfies DeepSeekFileContent;
+            }
+
+            return block;
+        }));
+        return { ...message, content };
+    }));
+}
