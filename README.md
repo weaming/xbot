@@ -31,4 +31,4 @@ Responses API 和 Chat Completions 可使用各自的 `OPENAI_RESPONSES_*` 与 `
 ~/.bun/bin/xbot
 ```
 
-MCP 多服务配置见 [docs/mcp.md](docs/mcp.md)。
+文档：[MCP 多服务配置](docs/mcp.md)、[TUI 链接与终端交互](docs/tui-links.md)。
