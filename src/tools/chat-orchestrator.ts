@@ -106,11 +106,13 @@ export interface ChatClient {
 // 创建 Chat Completions 客户端
 export function createChatClient(apiKey: string, baseURL?: string): ChatClient {
   const finalURL = baseURL || "https://api.openai.com/v1";
+  const normalizedApiKey = apiKey.trim();
   const client = new OpenAI({
-    apiKey,
+    apiKey: normalizedApiKey || "xbot-local-no-auth",
     baseURL: finalURL,
     maxRetries: 0,
     defaultHeaders: {
+      Authorization: normalizedApiKey ? undefined : null,
       "x-llm-caller": "xbot",
     },
     fetch: getOpenAIProxyFetch(),
@@ -129,14 +131,14 @@ export function createChatClient(apiKey: string, baseURL?: string): ChatClient {
     async uploadFile(imagePath: string) {
       const fileID = await uploadDeepSeekFile(imagePath, {
         filesAPI: resolveDeepSeekFilesAPI(finalURL),
-        apiKey,
+        apiKey: normalizedApiKey,
       });
       return { id: fileID };
     },
     async uploadFileData(data: string, filename: string, mimeType: string) {
       const fileID = await uploadDeepSeekFileData(data, filename, mimeType, {
         filesAPI: resolveDeepSeekFilesAPI(finalURL),
-        apiKey,
+        apiKey: normalizedApiKey,
       });
       return { id: fileID };
     },

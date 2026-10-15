@@ -10,6 +10,8 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_MODEL=your-model-name
 ```
 
+云端服务需要填写 `OPENAI_API_KEY`。如果 `OPENAI_BASE_URL` 指向本机或局域网地址，可以留空或省略密钥。
+
 可从仓库根目录的 `.env.example` 复制模板。也可以通过 `XBOT_ENV_FILE` 指定其他文件路径。不要把真实密钥提交到仓库。
 
 可选项：

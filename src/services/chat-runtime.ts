@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import { skillRegistry } from "../skills/skill-registry.js";
 import { loadCoreMemoryContext, loadDailyMemoryContext, loadWorkspaceIdentity } from "../skills/base-skill.js";
 import { DEFAULT_MEMORY_USER_ID, normalizeMemoryUserId } from "../utils/runtime-paths.js";
@@ -24,11 +25,40 @@ export interface ChatApiSettings {
     enableCostStat: boolean;
 }
 
-export function validateChatApiSettings(settings: ChatApiSettings): string | undefined {
-    if (!settings.apiKey.trim()) {
-        return "缺少 OPENAI_API_KEY";
+function isPrivateIPv4(hostname: string): boolean {
+    if (isIP(hostname) !== 4) return false;
+
+    const [first, second] = hostname.split(".").map(Number);
+    return first === 10
+        || first === 127
+        || (first === 169 && second === 254)
+        || (first === 172 && second >= 16 && second <= 31)
+        || (first === 192 && second === 168);
+}
+
+function isLocalApiHostname(hostname: string): boolean {
+    const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+    if (
+        normalized === "localhost"
+        || normalized.endsWith(".localhost")
+        || normalized.endsWith(".local")
+        || normalized.endsWith(".lan")
+        || normalized.endsWith(".internal")
+    ) {
+        return true;
     }
 
+    if (isPrivateIPv4(normalized)) return true;
+    if (isIP(normalized) === 0) return !normalized.includes(".");
+    if (isIP(normalized) !== 6) return false;
+
+    return normalized === "::1"
+        || /^f[cd]/.test(normalized)
+        || /^fe[89ab]/.test(normalized)
+        || (normalized.startsWith("::ffff:") && isPrivateIPv4(normalized.slice("::ffff:".length)));
+}
+
+export function validateChatApiSettings(settings: ChatApiSettings): string | undefined {
     let apiUrl: URL;
     try {
         apiUrl = new URL(settings.apiBase);
@@ -38,6 +68,10 @@ export function validateChatApiSettings(settings: ChatApiSettings): string | und
 
     if (apiUrl.protocol !== "http:" && apiUrl.protocol !== "https:") {
         return `OPENAI_BASE_URL 只支持 http 或 https：${settings.apiBase}`;
+    }
+
+    if (!settings.apiKey.trim() && !isLocalApiHostname(apiUrl.hostname)) {
+        return "缺少 OPENAI_API_KEY（本地或局域网服务可省略）";
     }
 
     return undefined;

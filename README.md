@@ -21,7 +21,7 @@ cp .env.example ~/.xbot/.env
 vi ~/.xbot/.env
 ```
 
-在文件中填写 `OPENAI_API_KEY` 和 `OPENAI_MODEL`；如使用兼容接口，再调整 `OPENAI_BASE_URL`。
+填写 `OPENAI_MODEL`。使用云端服务时填写 `OPENAI_API_KEY`；本地或局域网服务可省略密钥。兼容接口可按需调整 `OPENAI_BASE_URL`。
 
 ## 使用
 
