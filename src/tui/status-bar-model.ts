@@ -12,10 +12,11 @@ import type { RequestRate } from "./store.js";
 
 /** 执行阶段快照（与 app.ts 的 SessionPhaseState 结构兼容）。 */
 type StatusPhase = {
-    phase: "waiting" | "reasoning" | "tool" | "generating";
+    phase: "waiting" | "reasoning" | "tool" | "generating" | "compacting";
     startTime: number;
     toolName?: string;
     toolStartTime?: number;
+    message?: string;
 };
 
 export interface StatusBarInput {
@@ -63,6 +64,8 @@ function buildPhaseHint(phase: StatusPhase | undefined, spinnerIndex: number, no
         phaseText = `执行工具 ${phase.toolName || ""}...`;
     } else if (phase.phase === "generating") {
         phaseText = "生成回复...";
+    } else if (phase.phase === "compacting") {
+        phaseText = phase.message || "压缩上下文...";
     }
 
     let timingText = elapsed;

@@ -48,6 +48,7 @@ export type UIEvent =
     // 回合边界
     | { type: "turn_start"; iteration: number }
     | { type: "turn_end"; iteration: number }
+    | { type: "progress"; message: string }
     // 流式增量（来自 OpenAI stream chunk 的 delta）
     | { type: "text_delta"; delta: string }
     | { type: "reasoning_delta"; delta: string }

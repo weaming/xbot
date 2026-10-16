@@ -136,6 +136,7 @@ export async function runSessionTurn(
                     userId: DEFAULT_MEMORY_USER_ID,
                     sessionId,
                     signal: abortController.signal,
+                    onProgress: message => host.notify(requestId, sessionId, { type: "progress", message }),
                     onUsage: usage => host.notify(requestId, sessionId, { type: "usage", usage }),
                     persistCompactedEvent: async ({ compactedContext, keepFromMessageId, usage }) => {
                         await host.replay.appendAgentEvent(activeSession, "context_compacted", {
@@ -209,6 +210,7 @@ export async function compactSessionContext(
             lastSeq: host.activeSessions.get(sessionId)?.lastSeq ?? 0,
             abortController,
         });
+        host.notify(requestId, sessionId, { type: "progress", message: "🗜️ 正在压缩会话上下文..." });
         const response = await runChatQuery({
             query: buildCompactPrompt(instruction),
             systemPrompt: getOrCreateSessionSystemPrompt(session, { includeMemory: false, userId: DEFAULT_MEMORY_USER_ID }),
@@ -221,6 +223,7 @@ export async function compactSessionContext(
             initialRequestKind: "context_compaction",
             stream: true,
             signal: abortController.signal,
+            onProgress: message => host.notify(requestId, sessionId, { type: "progress", message }),
             onEvent: event => {
                 if (event.type === "usage") usage = mergeUsage(usage, event.usage);
                 host.notify(requestId, sessionId, event);
@@ -246,6 +249,7 @@ export async function compactSessionContext(
         }
         throw error;
     } finally {
+        host.notify(requestId, sessionId, { type: "progress", message: "" });
         try {
             if (session) {
                 host.accumulateInstanceUsage(sessionId, usage);
