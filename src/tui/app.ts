@@ -176,13 +176,14 @@ function formatBackgroundTaskNotification(task: BackgroundTaskSummary): string {
 }
 
 /** 输入框：左侧 ❯ 提示符（前缀占 2 列，渲染宽度相应缩减）。 */
-type SessionPhaseType = "waiting" | "reasoning" | "tool" | "generating";
+type SessionPhaseType = "waiting" | "reasoning" | "tool" | "generating" | "compacting";
 
 interface SessionPhaseState {
     phase: SessionPhaseType;
     toolName?: string;
     startTime: number;
     toolStartTime?: number;
+    message?: string;
 }
 
 export class ChatApp {
@@ -402,6 +403,10 @@ export class ChatApp {
             switch (event.type) {
                 case "turn_start":
                     this.setSessionPhase(sessionId, "waiting");
+                    break;
+                case "progress":
+                    if (event.message) this.setSessionProgress(sessionId, event.message);
+                    else this.clearSessionPhase(sessionId);
                     break;
                 case "reasoning_delta":
                     this.setSessionPhase(sessionId, "reasoning");
@@ -1237,6 +1242,18 @@ export class ChatApp {
         if (sessionId === this.store.currentSessionId) {
             this.renderStatusBar();
         }
+        this.renderTabBar();
+    }
+
+    private setSessionProgress(sessionId: string, message: string): void {
+        const current = this.sessionPhases.get(sessionId);
+        this.sessionPhases.set(sessionId, {
+            phase: "compacting",
+            startTime: current?.startTime ?? Date.now(),
+            message,
+        });
+        this.startSpinnerTimer();
+        if (sessionId === this.store.currentSessionId) this.renderStatusBar();
         this.renderTabBar();
     }
 

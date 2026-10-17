@@ -97,6 +97,8 @@ export function applyAgentEvent(
     deps: ProjectionDeps,
 ): void {
     switch (event.type) {
+        case "progress":
+            break;
         case "peer_message":
             insertPeerEntry(state, event.text, {
                 direction: event.direction,

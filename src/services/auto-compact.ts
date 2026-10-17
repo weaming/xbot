@@ -91,6 +91,7 @@ export async function compactActiveTurnMessagesIfNeeded(
             initialRequestKind: "context_compaction",
             stream: true,
             signal: options.signal,
+            onProgress: options.onProgress,
             onEvent: event => {
                 if (event.type === "usage") options.onUsage?.(event.usage);
             },
@@ -116,8 +117,9 @@ export async function compactActiveTurnMessagesIfNeeded(
     } catch (error: any) {
         if (isAbortError(error)) throw error;
         options.onFailure?.();
-        console.error("❌ [ActiveTurnCompact] Failed:", error.message);
-        return undefined;
+        const reason = error instanceof Error ? error.message : String(error);
+        console.error("❌ [ActiveTurnCompact] Failed:", reason);
+        throw new Error(`本轮上下文压缩失败，已停止请求以避免继续发送超长上下文：${reason}`);
     }
 }
 
@@ -248,6 +250,7 @@ export async function autoCompactIfNeeded(
                 modelSelection: session.modelSelection,
                 contextEpochId: session.contextEpochId,
                 initialRequestKind: "context_compaction",
+                stream: true,
                 signal: options.signal,
                 onEvent: event => {
                     if (event.type !== "usage") return;
@@ -284,10 +287,8 @@ export async function autoCompactIfNeeded(
             usage: usage.requestCount ? usage : undefined,
         };
     } catch (error: any) {
-        console.error("❌ [AutoCompact] Failed:", error.message);
-        return {
-            wasCompacted: false,
-            usage: usage.requestCount ? usage : undefined,
-        };
+        const reason = error instanceof Error ? error.message : String(error);
+        console.error("❌ [AutoCompact] Failed:", reason);
+        throw new Error(`会话上下文压缩失败，已停止请求以避免继续发送超长上下文：${reason}`);
     }
 }
