@@ -62,6 +62,7 @@ interface ActiveTurnCompactOptions {
     contextEpochId?: string;
     lastPromptTokens?: number;
     onUsage?: (usage: UsageInfo) => void;
+    onFailure?: () => void;
 }
 
 /** 工具循环中压缩仅用于后续请求的临时上下文，完整消息由编排器另行保留。 */
@@ -113,6 +114,7 @@ export async function compactActiveTurnMessagesIfNeeded(
         ];
     } catch (error: any) {
         if (isAbortError(error)) throw error;
+        options.onFailure?.();
         console.error("❌ [ActiveTurnCompact] Failed:", error.message);
         return undefined;
     }

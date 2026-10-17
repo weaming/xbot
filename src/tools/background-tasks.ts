@@ -107,7 +107,13 @@ function killProcessGroup(pgid: number | undefined, child: ChildProcess, signal:
 class BackgroundTaskManager {
     private readonly tasks = new Map<string, BackgroundTaskRecord>();
     private readonly foregroundRuns = new Set<ForegroundShellRun>();
+    private readonly completionListeners = new Set<(task: BackgroundTaskSummary) => void>();
     private nextTaskId = 1;
+
+    onTaskCompleted(listener: (task: BackgroundTaskSummary) => void): () => void {
+        this.completionListeners.add(listener);
+        return () => this.completionListeners.delete(listener);
+    }
 
     startShell(options: ShellProcessOptions): ShellProcessHandle {
         const child = spawn(options.shellPath, ["-c", options.command], {
@@ -195,6 +201,7 @@ class BackgroundTaskManager {
                 ...(backgroundTask.outputTruncated ? { outputTruncated: true } : {}),
             };
             backgroundTask.resolveDone(backgroundTask.summary);
+            this.notifyTaskCompleted(this.toSummary(backgroundTask, true));
         };
 
         child.stdout?.on("data", (chunk: Buffer) => {
@@ -391,6 +398,16 @@ class BackgroundTaskManager {
             ...(includeOutput && stderr ? { stderr: trimOutput(stderr) } : {}),
             ...(task.outputTruncated ? { outputTruncated: true } : {}),
         };
+    }
+
+    private notifyTaskCompleted(task: BackgroundTaskSummary): void {
+        for (const listener of this.completionListeners) {
+            try {
+                listener(task);
+            } catch (error) {
+                console.error("后台任务完成通知失败", error);
+            }
+        }
     }
 
     private prune(): void {

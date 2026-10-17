@@ -125,6 +125,18 @@ function formatBashToolResult(result: string, isError = false): string {
     }
 
     if (isRecord(parsed)) {
+        if (parsed.background === true && typeof parsed.task_id === "string") {
+            const status = typeof parsed.status === "string" ? parsed.status : "running";
+            const command = typeof parsed.command === "string" ? parsed.command : "";
+            const message = typeof parsed.message === "string" ? parsed.message : "可使用 /tasks 查看和管理";
+            const statusLabel = status === "running" ? "运行中" : status;
+            return [
+                theme.statusOk(`↗ 后台任务 ${parsed.task_id} · ${statusLabel}`),
+                ...(command ? [theme.toolArgs(command)] : []),
+                theme.dim(message),
+            ].join("\n");
+        }
+
         const stdout = typeof parsed.stdout === "string" ? parsed.stdout.trim() : "";
         const stderr = typeof parsed.stderr === "string" ? parsed.stderr.trim() : "";
         const output = typeof parsed.output === "string" ? parsed.output.trim() : "";

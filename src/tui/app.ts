@@ -102,7 +102,7 @@ import { getContextWindowForModel } from "../utils/token-budget.js";
 import { buildMcpStatusHelpText, setMcpNoticeHandler, type McpNotice } from "../mcp/client-manager.js";
 import { StreamingReasoningBlock } from "./streaming-reasoning.js";
 import type { ImageAssetRef, TuiDraft } from "../types/image.js";
-import { backgroundTaskManager } from "../tools/background-tasks.js";
+import { backgroundTaskManager, type BackgroundTaskSummary } from "../tools/background-tasks.js";
 
 /** 当前打开的浮层面板：kind 用于派发输入，panel 提供 handleInput，handle 控制显隐。 */
 type ActivePanelEntry =
@@ -142,6 +142,38 @@ interface MessageComponents {
 /** 需要当前会话才能执行的命令（无会话时直接提示，不静默失败）。 */
 const SESSION_REQUIRED_COMMANDS = new Set(["/clear", "/archive", "/unarchive", "/delete", "/close", "/compact", "/continue", "/system", "/model"]);
 const GLOBAL_RUNTIME_RELOAD_KEY = "__global__";
+
+function formatBackgroundTaskDetails(task: BackgroundTaskSummary): string {
+    const statusLabels: Record<BackgroundTaskSummary["status"], string> = {
+        running: "运行中",
+        completed: "已完成",
+        failed: "失败",
+        stopped: "已终止",
+        timed_out: "超时",
+    };
+    const lines = [`后台任务 ${task.id} · ${statusLabels[task.status]}`, `命令：${task.command}`];
+    if (task.exitCode !== undefined && task.exitCode !== null) lines.push(`退出码：${task.exitCode}`);
+    if (task.stdout) lines.push(`stdout：\n${task.stdout}`);
+    if (task.stderr) lines.push(`stderr：\n${task.stderr}`);
+    if (task.outputTruncated) lines.push("（输出过长，已截断）");
+    return lines.join("\n");
+}
+
+function formatBackgroundTaskNotification(task: BackgroundTaskSummary): string {
+    return JSON.stringify({
+        type: "background_task_completed",
+        instruction: "请结合任务结果继续推进原请求；如需更多信息，可调用 background_task 查询任务。",
+        task_id: task.id,
+        status: task.status,
+        command: task.command,
+        exit_code: task.exitCode ?? null,
+        signal: task.signal ?? null,
+        reason: task.reason ?? null,
+        stdout: task.stdout ?? "",
+        stderr: task.stderr ?? "",
+        output_truncated: task.outputTruncated ?? false,
+    }, null, 2);
+}
 
 /** 输入框：左侧 ❯ 提示符（前缀占 2 列，渲染宽度相应缩减）。 */
 type SessionPhaseType = "waiting" | "reasoning" | "tool" | "generating";
@@ -184,6 +216,10 @@ export class ChatApp {
     private static readonly PENDING_MAX_VISIBLE = 5;
     /** 按会话隔离的入队消息队列与选中索引。 */
     private readonly sessionPending = new Map<string, { messages: Array<string | { text: string; images: ImageAssetRef[] }>; index: number }>();
+    /** 只在现有回合仍运行时注入的后台任务完成通知。 */
+    private readonly activeTurnSessions = new Set<string>();
+    private readonly pendingBackgroundResults = new Map<string, Array<{ text: string; trigger: "pending" }>>();
+    private readonly unsubscribeBackgroundTaskCompletion: () => void;
     /** 等待用户作答的提问（按会话；同一个会话同时只会有一个回合在跑）。 */
     private readonly pendingQuestions = new Map<string, PendingQuestion>();
     /** 按会话隔离的未发送输入草稿内容。 */
@@ -344,6 +380,13 @@ export class ChatApp {
         this.bindEditor();
         bindGlobalKeys(this.tui, this.createKeyHost());
         this.agent.onTurnFinished = (sessionId) => this.onAgentTurnFinished(sessionId);
+        this.unsubscribeBackgroundTaskCompletion = backgroundTaskManager.onTaskCompleted(task => {
+            const sessionId = task.sessionId;
+            if (!sessionId || this.exiting || !this.activeTurnSessions.has(sessionId)) return;
+            const pending = this.pendingBackgroundResults.get(sessionId) ?? [];
+            pending.push({ text: formatBackgroundTaskNotification(task), trigger: "pending" });
+            this.pendingBackgroundResults.set(sessionId, pending);
+        });
         // 提问通道装配后 `ask_user` 才会下发给模型。
         setUserQuestionChannel({ ask: (request, signal) => this.askUser(request, signal) });
     }
@@ -572,7 +615,7 @@ export class ChatApp {
                 this.openTodoPanel();
                 break;
             case "/tasks":
-                this.showBackgroundTasks();
+                await this.showBackgroundTasks(rest, sessionId);
                 break;
             case "/reload":
                 await this.requestRuntimeReload(sessionId);
@@ -930,20 +973,59 @@ export class ChatApp {
         return true;
     }
 
-    /** 显示当前会话仍在运行的后台 shell 任务。 */
-    private showBackgroundTasks(): void {
-        const sessionId = this.store.currentSessionId;
-        const tasks = backgroundTaskManager.list(sessionId ?? undefined);
-        if (tasks.length === 0) {
-            this.store.pushSystemMessage("当前没有后台任务", sessionId ?? undefined);
+    /** 查看或管理当前会话的后台 shell 任务。 */
+    private async showBackgroundTasks(args: string[], sessionId: string | null): Promise<void> {
+        const [rawAction, taskId, rawWaitSeconds] = args;
+        const action = (rawAction ?? "list").toLowerCase();
+        const scope = sessionId ?? undefined;
+
+        if (action === "list") {
+            const tasks = backgroundTaskManager.list(scope);
+            if (tasks.length === 0) {
+                this.store.pushSystemMessage("当前没有后台任务", sessionId ?? undefined);
+                return;
+            }
+            const lines = tasks.map(task => {
+                const command = task.command.replace(/\s+/g, " ").trim();
+                const suffix = task.status === "running" ? "运行中" : task.status;
+                return `- ${task.id} [${suffix}] ${command}`;
+            });
+            this.store.pushSystemMessage(`后台任务：\n${lines.join("\n")}\n\n用法：/tasks status|wait|stop <task_id>`, sessionId ?? undefined);
             return;
         }
-        const lines = tasks.map(task => {
-            const command = task.command.replace(/\s+/g, " ").trim();
-            const suffix = task.status === "running" ? "运行中" : task.status;
-            return `- ${task.id} [${suffix}] ${command}`;
-        });
-        this.store.pushSystemMessage(`后台任务（可让模型调用 background_task 查询、等待或终止）：\n${lines.join("\n")}`, sessionId ?? undefined);
+
+        if (!taskId) {
+            this.store.pushSystemMessage(`/tasks ${action} 需要 task_id；用法：/tasks ${action} <task_id>`, sessionId ?? undefined);
+            return;
+        }
+
+        if (action === "status") {
+            const task = backgroundTaskManager.get(taskId, scope);
+            this.store.pushSystemMessage(task ? formatBackgroundTaskDetails(task) : `后台任务不存在或不属于当前会话：${taskId}`, sessionId ?? undefined);
+            return;
+        }
+
+        if (action === "wait") {
+            const parsedSeconds = Number(rawWaitSeconds);
+            const waitSeconds = Number.isFinite(parsedSeconds) && parsedSeconds > 0 ? Math.min(600, Math.round(parsedSeconds)) : 10;
+            const task = await backgroundTaskManager.wait(taskId, waitSeconds * 1_000, scope);
+            this.store.pushSystemMessage(task ? formatBackgroundTaskDetails(task) : `后台任务不存在或不属于当前会话：${taskId}`, sessionId ?? undefined);
+            return;
+        }
+
+        if (action === "stop") {
+            const wasRunning = backgroundTaskManager.stop(taskId, scope);
+            const task = backgroundTaskManager.get(taskId, scope);
+            const message = !task
+                ? `后台任务不存在或不属于当前会话：${taskId}`
+                : wasRunning
+                    ? `已请求终止后台任务 ${taskId}`
+                    : `后台任务 ${taskId} 当前状态：${task.status}`;
+            this.store.pushSystemMessage(message, sessionId ?? undefined);
+            return;
+        }
+
+        this.store.pushSystemMessage("用法：/tasks [list|status|wait|stop] [task_id] [wait_seconds]", sessionId ?? undefined);
     }
 
     /** 判断所有本实例会话是否都已结束当前回合。 */
@@ -1253,6 +1335,7 @@ export class ChatApp {
         let success = false;
         let turnError: string | undefined;
         herdrReporter.report("working");
+        this.activeTurnSessions.add(sessionId);
         try {
             const result = await this.agent.sendMessage(sessionId, text, {
                 images,
@@ -1260,7 +1343,9 @@ export class ChatApp {
                     const state = this.getPendingState(sessionId);
                     // 回合执行中到达的会话间结果：本轮后续请求直接带上（下一次 HTTP 请求时附加）
                     const peerResults = this.agent.takePeerResults(sessionId);
-                    if (state.messages.length === 0 && peerResults.length === 0) return undefined;
+                    const backgroundResults = this.pendingBackgroundResults.get(sessionId) ?? [];
+                    this.pendingBackgroundResults.delete(sessionId);
+                    if (state.messages.length === 0 && peerResults.length === 0 && backgroundResults.length === 0) return undefined;
                     const consumed = state.messages.splice(0);
                     state.index = 0;
                     if (this.store.currentSessionId === sessionId) {
@@ -1275,6 +1360,7 @@ export class ChatApp {
                     const pendingInputs = consumed.map(message => this.toPendingMessage(message));
                     return [
                         ...peerResults,
+                        ...backgroundResults,
                         ...pendingInputs.map(message => message.images.length > 0 ? message : message.text),
                     ];
                 },
@@ -1291,6 +1377,8 @@ export class ChatApp {
                 this.store.pushSystemMessage(errorMessage, sessionId);
             }
         } finally {
+            this.activeTurnSessions.delete(sessionId);
+            this.pendingBackgroundResults.delete(sessionId);
             const durationMs = Date.now() - sendStartTime;
             herdrReporter.report("idle");
             // 先复位 busy 再清 phase：clearSessionPhase 按 busy 判定并重绘 tab，
@@ -2686,6 +2774,7 @@ export class ChatApp {
     private async exit(exitCode = 0): Promise<void> {
         if (this.exiting) return;
         this.exiting = true;
+        this.unsubscribeBackgroundTaskCompletion();
         // 先释放本实例持有的会话 socket：让等待中的其他实例能立刻接管
         herdrReporter.release();
         this.stopSpinnerTimer();

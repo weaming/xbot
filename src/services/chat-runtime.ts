@@ -454,6 +454,7 @@ export async function runChatQuery(options: ChatRunOptions) {
     }
 
     const client = createChatClient(settings.apiKey, settings.apiBase, settings.protocol);
+    let activeTurnCompactionFailed = false;
 
     try {
         return await executeWithChat({
@@ -496,6 +497,7 @@ export async function runChatQuery(options: ChatRunOptions) {
             onConsumePending: options.onConsumePending,
             compactMessagesIfNeeded: options.autoCompactActiveTurn
                 ? async (messages, lastPromptTokens) => {
+                    if (activeTurnCompactionFailed) return undefined;
                     const { compactActiveTurnMessagesIfNeeded } = await import("./auto-compact.js");
                     return compactActiveTurnMessagesIfNeeded(messages, {
                         model: settings.model,
@@ -508,6 +510,7 @@ export async function runChatQuery(options: ChatRunOptions) {
                         lastPromptTokens,
                         onUsage: usage => options.onEvent?.({ type: "usage", usage }),
                         onProgress: options.onProgress,
+                        onFailure: () => { activeTurnCompactionFailed = true; },
                     });
                 }
                 : undefined,
