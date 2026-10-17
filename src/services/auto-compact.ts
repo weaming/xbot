@@ -89,6 +89,7 @@ export async function compactActiveTurnMessagesIfNeeded(
             modelSelection: options.modelSelection,
             contextEpochId: options.contextEpochId,
             initialRequestKind: "context_compaction",
+            stream: true,
             signal: options.signal,
             onEvent: event => {
                 if (event.type === "usage") options.onUsage?.(event.usage);
