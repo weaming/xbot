@@ -13,7 +13,6 @@ import {
     moveFileTool,
     searchFilesTool,
     getFileInfoTool,
-    listAllowedDirectoriesTool,
 } from "../../src/tools/file-ops.js";
 import { toolResultToText } from "../../src/tools/tool-interface.js";
 import { useTmpWorkspace, type TmpWorkspace } from "./test-env.js";
@@ -58,7 +57,9 @@ describe("filesystem tools", () => {
         const headResult = await readTextFileTool.execute({ path: "notes.txt", head: 2 });
         const tailResult = await readTextFileTool.execute({ path: "notes.txt", tail: 1 });
         const invalidResult = await readTextFileTool.execute({ path: "notes.txt", head: 1, tail: 1 });
-        const blockedResult = await readTextFileTool.execute({ path: "../../etc/passwd" });
+        const outsideFile = path.join(outsideDir, "outside.txt");
+        fs.writeFileSync(outsideFile, "outside");
+        const outsideResult = await readTextFileTool.execute({ path: outsideFile });
 
         expect(isError(fullResult)).toBe(false);
         expect(resultText(fullResult)).toBe("alpha\nbeta\ngamma\n");
@@ -66,8 +67,8 @@ describe("filesystem tools", () => {
         expect(resultText(tailResult)).toBe("gamma");
         expect(isError(invalidResult)).toBe(true);
         expect(resultText(invalidResult)).toContain("Cannot specify both head and tail");
-        expect(isError(blockedResult)).toBe(true);
-        expect(resultText(blockedResult)).toContain("outside allowed directories");
+        expect(isError(outsideResult)).toBe(false);
+        expect(resultText(outsideResult)).toBe("outside");
     });
 
     test("cat supports offset/limit paging", async () => {
@@ -86,7 +87,7 @@ describe("filesystem tools", () => {
         expect(resultText(conflict)).toContain("Cannot specify offset/limit together with head/tail");
     });
 
-    test("拒绝通过指向 workspace 外部的符号链接访问文件", async () => {
+    test("允许通过 workspace 外部的符号链接访问文件", async () => {
         fs.writeFileSync(path.join(outsideDir, "secret.txt"), "secret");
         fs.symlinkSync(outsideDir, path.join(tmpDir, "outside-link"));
 
@@ -94,8 +95,8 @@ describe("filesystem tools", () => {
         const treeResult = await directoryTreeTool.execute({ path: "." });
         const listResult = await listDirectoryTool.execute({ path: "." });
 
-        expect(isError(readResult)).toBe(true);
-        expect(resultText(readResult)).toContain("outside allowed directories");
+        expect(isError(readResult)).toBe(false);
+        expect(resultText(readResult)).toBe("secret");
         expect(resultText(treeResult)).toBe(".\n└── outside-link@");
         expect(resultText(listResult)).toContain("[SYMLINK] outside-link");
     });
@@ -270,18 +271,4 @@ describe("filesystem tools", () => {
         expect(resultText(result)).toContain("modified:");
     });
 
-    test("list_allowed_directories returns workspace and src roots", async () => {
-        const srcDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-src-test-"));
-        process.env.SRC_ROOT = srcDir;
-        try {
-            const result = await listAllowedDirectoriesTool.execute({});
-
-            expect(isError(result)).toBe(false);
-            expect(resultText(result)).toContain(tmpDir);
-            expect(resultText(result)).toContain(srcDir);
-        } finally {
-            delete process.env.SRC_ROOT;
-            fs.rmSync(srcDir, { recursive: true, force: true });
-        }
-    });
 });

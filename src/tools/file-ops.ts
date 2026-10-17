@@ -9,8 +9,8 @@ import { promisify } from "util";
 import { createTwoFilesPatch } from "diff";
 import type { ExecutableTool, ToolContentBlock, ToolExecutionResult } from "./tool-interface.js";
 import { ok, err } from "./tool-interface.js";
-import { getSrcRoot, getToolCwd, getWorkspaceRoot } from "../utils/runtime-paths.js";
-import { resolveSafePath } from "./path-utils.js";
+import { getToolCwd } from "../utils/runtime-paths.js";
+import { resolvePath } from "./path-utils.js";
 import { grepFileTool, resolveRgBinary } from "./grep-tool.js";
 
 const execFileAsync = promisify(execFileCallback);
@@ -20,16 +20,8 @@ type FileEdit = {
     newText: string;
 };
 
-function getAllowedDirectories(): string[] {
-    return [...new Set([getWorkspaceRoot(), getSrcRoot(), getToolCwd()])];
-}
-
 function validatePath(inputPath: string, cwdRoot?: string): string {
-    const allowedDirs = getAllowedDirectories();
-    const resolved = resolveSafePath(inputPath, cwdRoot);
-    if (resolved) return resolved;
-
-    throw new Error(`Access denied - path outside allowed directories: ${inputPath} not in ${allowedDirs.join(", ")}`);
+    return resolvePath(inputPath, cwdRoot);
 }
 
 function requireExistingFile(inputPath: string, cwdRoot?: string): string {
@@ -537,10 +529,6 @@ async function executeGetFileInfo(
     }
 }
 
-async function executeListAllowedDirectories(): Promise<ToolExecutionResult> {
-    return ok(`Allowed directories:\n${getAllowedDirectories().join("\n")}`);
-}
-
 const catSchema = {
     type: "object",
     properties: {
@@ -728,17 +716,6 @@ export const getFileInfoTool: ExecutableTool = {
     execute: executeGetFileInfo,
 };
 
-export const listAllowedDirectoriesTool: ExecutableTool = {
-    name: "allowed_dirs",
-    description: "Returns the list of directories that this server is allowed to access.",
-    tags: ["core", "filesystem"],
-    inputSchema: {
-        type: "object",
-        properties: {},
-    },
-    execute: executeListAllowedDirectories,
-};
-
 export const FILE_OPS_TOOLS: ExecutableTool[] = [
     readTextFileTool,
     readMediaFileTool,
@@ -750,6 +727,5 @@ export const FILE_OPS_TOOLS: ExecutableTool[] = [
     moveFileTool,
     searchFilesTool,
     getFileInfoTool,
-    listAllowedDirectoriesTool,
     grepFileTool,
 ];

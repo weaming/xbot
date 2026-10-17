@@ -102,21 +102,29 @@ describe("read_json", () => {
         expect(isError(result)).toBe(true);
     });
 
-    test("路径穿越被拒绝", async () => {
-        const result = await readJsonTool.execute({ path: "../../etc/passwd" });
-        expect(isError(result)).toBe(true);
-        expect(resultText(result)).toContain("不在允许范围");
+    test("允许读取允许目录外的 JSON", async () => {
+        const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-data-outside-test-"));
+        const outsideFile = path.join(outsideDir, "outside.json");
+        fs.writeFileSync(outsideFile, JSON.stringify({ accessible: true }));
+
+        try {
+            const result = await readJsonTool.execute({ path: outsideFile });
+            expect(isError(result)).toBe(false);
+            expect(JSON.parse(resultText(result))).toEqual({ accessible: true });
+        } finally {
+            fs.rmSync(outsideDir, { recursive: true, force: true });
+        }
     });
 
-    test("拒绝通过外部符号链接读取", async () => {
+    test("允许通过外部符号链接读取", async () => {
         const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-data-ops-outside-test-"));
         fs.writeFileSync(path.join(outsideDir, "secret.json"), '{"secret":true}');
         fs.symlinkSync(outsideDir, path.join(tmpDir, "outside-link"));
 
         try {
             const result = await readJsonTool.execute({ path: "outside-link/secret.json" });
-            expect(isError(result)).toBe(true);
-            expect(resultText(result)).toContain("不在允许范围");
+            expect(isError(result)).toBe(false);
+            expect(JSON.parse(resultText(result))).toEqual({ secret: true });
         } finally {
             fs.rmSync(outsideDir, { recursive: true, force: true });
         }

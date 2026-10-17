@@ -10,7 +10,7 @@ import path from "path";
 import readline from "readline";
 import type { ExecutableTool, ToolExecutionResult } from "./tool-interface.js";
 import { ok, err } from "./tool-interface.js";
-import { resolveSafePath } from "./path-utils.js";
+import { resolvePath } from "./path-utils.js";
 import { getWorkspaceRoot } from "../utils/runtime-paths.js";
 
 const DEFAULT_LIMIT = 200;
@@ -169,16 +169,14 @@ async function executeGrep(
     if (!args.pattern) return err("Missing required argument: pattern");
 
     const limit = Math.min(Math.max(args.limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT);
-    const cwdRoot = resolveSafePath(args.cwd, getWorkspaceRoot());
-    if (!cwdRoot || !fs.existsSync(cwdRoot) || !fs.statSync(cwdRoot).isDirectory()) {
+    const cwdRoot = resolvePath(args.cwd, getWorkspaceRoot());
+    if (!fs.existsSync(cwdRoot) || !fs.statSync(cwdRoot).isDirectory()) {
         return err(`Invalid cwd: ${args.cwd}`);
     }
 
     let searchPath = cwdRoot;
     if (args.path) {
-        const resolved = resolveSafePath(args.path, cwdRoot);
-        if (!resolved) return err(`Access denied - path outside allowed directories: ${args.path}`);
-        searchPath = resolved;
+        searchPath = resolvePath(args.path, cwdRoot);
     }
 
     const rgArgs = [

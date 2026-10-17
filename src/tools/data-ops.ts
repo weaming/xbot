@@ -8,7 +8,7 @@ import * as path from "path";
 import { execFileSync } from "child_process";
 import type { ExecutableTool, ToolExecutionResult } from "./tool-interface.js";
 import { ok, err } from "./tool-interface.js";
-import { resolveSafePath } from "./path-utils.js";
+import { resolvePath } from "./path-utils.js";
 import { getWorkspaceRoot } from "../utils/runtime-paths.js";
 
 // ─── JSON key-path helpers ────────────────────────────────────────────────────
@@ -67,8 +67,7 @@ export const readJsonTool: ExecutableTool = {
         required: ["path"],
     },
     execute: async (args: { path: string; key_path?: string }): Promise<ToolExecutionResult> => {
-        const resolved = resolveSafePath(args.path);
-        if (!resolved) return err(`路径不在允许范围内：${args.path}`);
+        const resolved = resolvePath(args.path);
         if (!fs.existsSync(resolved)) return err(`文件不存在：${resolved}`);
 
         let data: any;
@@ -105,8 +104,7 @@ export const writeJsonTool: ExecutableTool = {
         required: ["path", "value"],
     },
     execute: async (args: { path: string; value: any; indent?: number }): Promise<ToolExecutionResult> => {
-        const resolved = resolveSafePath(args.path);
-        if (!resolved) return err(`路径不在允许范围内：${args.path}`);
+        const resolved = resolvePath(args.path);
 
         fs.mkdirSync(path.dirname(resolved), { recursive: true });
         const content = JSON.stringify(args.value, null, args.indent ?? 2);
@@ -140,8 +138,7 @@ export const editJsonTool: ExecutableTool = {
         operation?: "set" | "delete";
         indent?: number;
     }): Promise<ToolExecutionResult> => {
-        const resolved = resolveSafePath(args.path);
-        if (!resolved) return err(`路径不在允许范围内：${args.path}`);
+        const resolved = resolvePath(args.path);
         if (!fs.existsSync(resolved)) return err(`文件不存在：${resolved}`);
 
         let data: any;
@@ -262,8 +259,7 @@ export const readCsvTool: ExecutableTool = {
         filter?: Record<string, string>;
         fields?: string[];
     }): Promise<ToolExecutionResult> => {
-        const resolved = resolveSafePath(args.path);
-        if (!resolved) return err(`路径不在允许范围内：${args.path}`);
+        const resolved = resolvePath(args.path);
         if (!fs.existsSync(resolved)) return err(`文件不存在：${resolved}`);
 
         const delimiter = args.delimiter ?? ",";
@@ -311,8 +307,7 @@ export const writeCsvTool: ExecutableTool = {
         records: Record<string, any>[];
         delimiter?: string;
     }): Promise<ToolExecutionResult> => {
-        const resolved = resolveSafePath(args.path);
-        if (!resolved) return err(`路径不在允许范围内：${args.path}`);
+        const resolved = resolvePath(args.path);
 
         if (!Array.isArray(args.records) || args.records.length === 0) {
             return err("records 必须是非空数组");
@@ -410,8 +405,7 @@ export const runJqTool: ExecutableTool = {
         time_before?: string;
         time_unit?: "s" | "ms" | "iso";
     }): Promise<ToolExecutionResult> => {
-        const resolved = resolveSafePath(args.input_path);
-        if (!resolved) return err(`路径不在允许范围内：${args.input_path}`);
+        const resolved = resolvePath(args.input_path);
         if (!fs.existsSync(resolved)) return err(`文件不存在：${resolved}`);
 
         let timePrefix = "";
@@ -448,8 +442,7 @@ export const runJqTool: ExecutableTool = {
         }
 
         if (args.output_path) {
-            const outResolved = resolveSafePath(args.output_path);
-            if (!outResolved) return err(`输出路径不在允许范围内：${args.output_path}`);
+            const outResolved = resolvePath(args.output_path);
             fs.mkdirSync(path.dirname(outResolved), { recursive: true });
             fs.writeFileSync(outResolved, output, "utf-8");
             const lineCount = output.trim() ? output.trim().split("\n").length : 0;
