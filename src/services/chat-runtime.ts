@@ -27,6 +27,8 @@ export interface ChatApiSettings {
     apiBase: string;
     model: string;
     protocol?: ChatApiProtocol;
+    reasoningEffort?: string;
+    reasoningEfforts?: string[];
     /** ENABLE_DS_COST_STAT：开启后非官方端点（局域网网关）也按官方价格表估算费用。 */
     enableCostStat: boolean;
 }
@@ -44,7 +46,11 @@ export function getDefaultChatModelOption(): ChatModelOption | undefined {
             && typeof value.model === "string"
             && value.model.trim()
         ) {
-            defaultModelOption = { protocol: value.protocol, model: value.model.trim() };
+            defaultModelOption = {
+                protocol: value.protocol,
+                model: value.model.trim(),
+                ...(typeof value.reasoningEffort === "string" ? { reasoningEffort: value.reasoningEffort } : {}),
+            };
             return defaultModelOption;
         }
     } catch {
@@ -266,12 +272,17 @@ export function getChatApiSettings(sessionSelection?: ChatModelSelection): ChatA
     const activeProfileApiBase = activeProtocol === "responses"
         ? process.env.OPENAI_RESPONSES_BASE_URL
         : process.env.OPENAI_CHAT_BASE_URL;
+    const configuredEfforts = parseModelList(activeProtocol === "responses"
+        ? process.env.OPENAI_RESPONSES_EFFORTS
+        : process.env.OPENAI_CHAT_EFFORTS);
 
     return {
         apiKey: activeProfileApiKey || process.env.OPENAI_API_KEY || "",
         apiBase: activeProfileApiBase || process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
         model: activeOption?.model || profileModel || legacyModel,
         protocol: activeProtocol,
+        reasoningEffort: activeOption?.reasoningEffort,
+        reasoningEfforts: configuredEfforts.length > 0 ? configuredEfforts : undefined,
         enableCostStat: isDeepSeekCostStatEnabled(),
     };
 }
@@ -462,6 +473,8 @@ export async function runChatQuery(options: ChatRunOptions) {
             queryContent: options.queryContent,
             client,
             model: settings.model,
+            reasoningEffort: settings.reasoningEffort,
+            reasoningEfforts: settings.reasoningEfforts,
             executeTool: async (name: string, args: any) => {
                 if (options.signal?.aborted) {
                     throw new DOMException("User terminated the request", "AbortError");

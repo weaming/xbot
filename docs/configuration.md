@@ -16,12 +16,14 @@ OPENAI_RESPONSES_API_KEY=your-api-key
 OPENAI_RESPONSES_BASE_URL=https://api.deepseek.com
 OPENAI_RESPONSES_MODEL=deepseek-flash
 OPENAI_RESPONSES_MODELS=
+OPENAI_RESPONSES_EFFORTS=
 
 # Independent Chat Completions profile
 OPENAI_CHAT_API_KEY=your-api-key
 OPENAI_CHAT_BASE_URL=https://api.deepseek.com
 OPENAI_CHAT_MODEL=deepseek-flash
 OPENAI_CHAT_MODELS=
+OPENAI_CHAT_EFFORTS=
 ```
 
 云端服务需要填写 `OPENAI_API_KEY`。如果 `OPENAI_BASE_URL` 指向本机或局域网地址，可以留空或省略密钥。
@@ -32,12 +34,37 @@ OPENAI_CHAT_MODELS=
 
 TUI 中只需输入 `/model`，再依次选择协议、模型，以及是否设为默认（默认选“否”）。当前选择会保存到该会话，重新打开会话时自动恢复；选择“是”会同时更新默认模型，供没有单独设置模型的会话使用。只有一个可选组合时，命令会提示配置多个协议或模型。默认模型保存在 TUI 状态目录的 `model-preferences.json`。
 
+### 思考强度
+
+在 TUI 中输入 `/effort` 查看当前值，或输入 `/effort <值>` 设置当前会话的思考强度。设置会随会话保存；`auto` 表示本次请求不发送思考强度参数，使用服务端默认值，并优先于全局 effort 环境变量。未设置会话值时，环境变量按 `REASONING_EFFORT`、`OPENAI_REASONING_EFFORT`、`DEEPSEEK_REASONING_EFFORT` 的顺序读取。
+
+`/effort` 按当前协议和厂家提供上游实际接收的值，选中的值会原样用于对应请求字段。未配置或留空时使用按协议和厂家区分的内置列表；列表不会逐个查询模型元数据，同一厂家内不同模型仍可能支持不同值。配置 `*_EFFORTS` 后，`/effort` 只允许配置中的值，发送前会校验并按原值发送。请确保这些值被所选模型支持。`auto` 始终可选，表示省略思考强度参数；不要把它写入 `*_EFFORTS`。
+
+```dotenv
+OPENAI_CHAT_EFFORTS=low,high,max
+OPENAI_RESPONSES_EFFORTS=low,high,max
+```
+
+各协议字段和厂家支持的值不同，具体还受所选模型限制：
+
+| 协议 | 厂家 / 模型 | 请求字段 | 厂家支持的值 | xbot 处理 |
+| --- | --- | --- | --- | --- |
+| Responses | OpenAI | `reasoning.effort` | `none`、`minimal`、`low`、`medium`、`high`、`xhigh`；具体模型支持范围不同 | 直接发送选择值 |
+| Responses | Codex Responses 服务（当前 3060 endpoint） | `reasoning.effort` | `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`（按该服务返回的错误提示） | 直接发送选择值 |
+| Responses | DeepSeek | `reasoning.effort` | 原生值：`none`、`low`、`high`、`max` | 直接发送选择值 |
+| Chat Completions | OpenAI 及兼容服务 | `reasoning_effort` | OpenAI 模型支持 `none`、`minimal`、`low`、`medium`、`high`、`xhigh`；具体模型支持范围不同 | 直接发送选择值 |
+| Chat Completions | DeepSeek | `reasoning_effort` 和 `thinking.type` | `reasoning_effort` 原生值：`none`、`low`、`high`、`max`；`thinking.type` 为 `enabled` 或 `disabled` | `none` 原样发送以关闭思考；其他值通过 `reasoning_effort` 原样发送并设置 `thinking.type=enabled` |
+
+`auto` 不发送强度设置，由服务端使用默认值。DeepSeek 也为兼容旧客户端接受 `minimal`、`medium`、`xhigh`、`ultra` 等别名并在服务端映射；内置候选只展示原生值。字段格式和兼容行为见其 [思考模式文档](https://api-docs.deepseek.com/guides/thinking_mode/) 与 [Responses API 文档](https://api-docs.deepseek.com/api/create-response/)。OpenAI 的值也会因模型而异，详见 [Responses API](https://platform.openai.com/docs/api-reference/responses/create) 和 [Chat Completions](https://platform.openai.com/docs/api-reference/chat/create) 文档。兼容服务可能采用不同的字段或支持范围。
+
 可从仓库根目录的 `env.example` 复制模板。也可以通过 `XBOT_ENV_FILE` 指定其他文件路径。不要把真实密钥提交到仓库。
 
 可选项：
 
 | 变量 | 用途 |
 | --- | --- |
+| `OPENAI_CHAT_EFFORTS` | Chat Completions 可选思考强度，逗号分隔 |
+| `OPENAI_RESPONSES_EFFORTS` | Responses API 可选思考强度，逗号分隔 |
 | `XBOT_MEMORY_USER_ID` | 记忆用户标识，默认 `0` |
 | `NETWORK_PROXY` | 网络和命令行工具使用的代理；TUI 会将容器默认代理地址调整为 `http://localhost:7890` |
 | `OPENAI_PROXY` | 模型 API 请求使用的代理 |

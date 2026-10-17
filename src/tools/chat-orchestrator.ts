@@ -25,6 +25,7 @@ import { projectChatMessagesForPrompt } from "../utils/tool-result-context.js";
 import { estimateTextTokens } from "../utils/token-estimator.js";
 import { countMessagesTokens, countTextTokens } from "../utils/tokenizer.js";
 import { toUserContent, type UserContent, type UserMessageInput } from "../types/image.js";
+import { buildReasoningEffortParams, getReasoningProvider } from "../utils/reasoning-effort.js";
 import {
   materializeDeepSeekImageMessages,
   materializeImageMessages,
@@ -161,6 +162,8 @@ export interface OrchestratorOptions {
   queryContent?: UserContent;
   client: ChatClient;
   model: string;
+  reasoningEffort?: string;
+  reasoningEfforts?: string[];
   tools?: any[];
   // 执行工具的函数
   executeTool?: (name: string, args: any) => Promise<ToolExecutionResponse>;
@@ -705,25 +708,18 @@ export async function executeWithChat(
         requestBody.reasoning_split = true;
       }
 
-      // 思考模式与思考强度：优先 REASONING_EFFORT / OPENAI_REASONING_EFFORT / DEEPSEEK_REASONING_EFFORT
-      const rawEffort = process.env.REASONING_EFFORT || process.env.OPENAI_REASONING_EFFORT || process.env.DEEPSEEK_REASONING_EFFORT;
-      const reasoningEffort = rawEffort?.trim().toLowerCase();
-      if (reasoningEffort && reasoningEffort !== "auto") {
-        if (useResponses) {
-          if (!['disabled', 'none', 'off'].includes(reasoningEffort)) {
-            requestBody.reasoning = { effort: reasoningEffort };
-          }
-        } else if (model.toLowerCase().includes("deepseek")) {
-          if (reasoningEffort === "disabled" || reasoningEffort === "none" || reasoningEffort === "off") {
-            requestBody.thinking = { type: "disabled" };
-          } else {
-            requestBody.thinking = { type: "enabled" };
-            requestBody.reasoning_effort = reasoningEffort;
-          }
-        } else {
-          requestBody.reasoning_effort = (reasoningEffort === "disabled" || reasoningEffort === "off") ? "none" : reasoningEffort;
-        }
-      }
+      // 会话设置优先于环境变量默认值。
+      const rawEffort = options.reasoningEffort
+        ?? process.env.REASONING_EFFORT
+        ?? process.env.OPENAI_REASONING_EFFORT
+        ?? process.env.DEEPSEEK_REASONING_EFFORT;
+      const provider = getReasoningProvider(useResponses ? "responses" : "chat_completions", model, client.baseURL);
+      Object.assign(requestBody, buildReasoningEffortParams({
+        protocol: useResponses ? "responses" : "chat_completions",
+        provider,
+        effort: rawEffort,
+        configuredEfforts: options.reasoningEfforts,
+      }));
       // exchange 日志由 logger 按 session 维护请求链与消息增量。
       recordLLMExchange("REQUEST", requestBody, { sessionId: effectiveSessionId });
 

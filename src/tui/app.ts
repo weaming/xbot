@@ -96,6 +96,7 @@ import {
     setDefaultChatModelOption,
 } from "../services/chat-runtime.js";
 import type { ChatModelSelection } from "../types/chat-model.js";
+import { getReasoningEffortChoices, getReasoningProvider } from "../utils/reasoning-effort.js";
 import { readSessionTodos, type TodoItem } from "../tools/todo-tool.js";
 import { deepSeekPhaseInfo, isDeepSeekPricingEndpoint, normalizeDeepSeekModel } from "../pricing/deepseek.js";
 import { getContextWindowForModel } from "../utils/token-budget.js";
@@ -660,7 +661,7 @@ export class ChatApp {
                 break;
             case "/effort":
             case "/thinking":
-                this.handleEffortCommand(rest, sessionId ?? undefined);
+                await this.handleEffortCommand(rest, sessionId ?? undefined);
                 break;
             case "/model":
                 if (rest.length > 0) {
@@ -687,35 +688,59 @@ export class ChatApp {
         this.restoreFocus();
     }
 
-    private handleEffortCommand(args: string[], sessionId?: string): void {
+    private async handleEffortCommand(args: string[], sessionId?: string): Promise<void> {
         const input = args[0]?.trim().toLowerCase();
-        const currentEffort = process.env.REASONING_EFFORT || process.env.OPENAI_REASONING_EFFORT || process.env.DEEPSEEK_REASONING_EFFORT || "auto";
+        const settings = getChatApiSettings(this.currentModelSelection);
+        const provider = getReasoningProvider(settings.protocol ?? "chat_completions", settings.model, settings.apiBase);
+        const effortChoices = getReasoningEffortChoices(settings.protocol ?? "chat_completions", provider, settings.reasoningEfforts);
+        const currentEffort = this.currentModelSelection?.reasoningEffort
+            ?? settings.reasoningEffort
+            ?? process.env.REASONING_EFFORT
+            ?? process.env.OPENAI_REASONING_EFFORT
+            ?? process.env.DEEPSEEK_REASONING_EFFORT
+            ?? "auto";
 
         if (!input) {
             this.store.pushSystemMessage([
                 `当前思考强度: ${currentEffort}`,
-                "用法: /effort <low|medium|high|disabled|auto>",
+                `用法: /effort <${[...effortChoices, "auto"].join("|")}>`,
                 "说明:",
                 "  - auto: 不传思考强度参数，由上游服务端按默认配置处理",
-                "  - low / medium / high: 显式指定思考强度",
-                "  - disabled / off: 关闭思考/推理模式",
+                "  - 其他值会按当前协议和厂家直接发送给上游",
             ].join("\n"), sessionId);
             return;
         }
 
-        const validValues = ["low", "medium", "high", "disabled", "off", "none", "auto"];
-        if (!validValues.includes(input)) {
-            this.store.pushSystemMessage(`⚠️ 未知思考强度: ${args[0]}，可选值：low | medium | high | disabled | auto`, sessionId);
+        if (input !== "auto" && !effortChoices.some(value => value.toLowerCase() === input)) {
+            this.store.pushSystemMessage(`⚠️ 未知思考强度: ${args[0]}，可选值：${[...effortChoices, "auto"].join(" | ")}`, sessionId);
             return;
         }
 
-        if (input === "auto") {
+        const normalized = input;
+        if (sessionId) {
+            const selection: ChatModelSelection = {
+                protocol: this.currentModelSelection?.protocol ?? settings.protocol ?? "chat_completions",
+                model: this.currentModelSelection?.model ?? settings.model,
+                reasoningEffort: normalized,
+            };
+            try {
+                await this.agent.setSessionModelSelection(sessionId, selection);
+                this.currentModelSelection = selection;
+                const sessionSummary = this.store.sessions.find(session => session.sessionId === sessionId);
+                if (sessionSummary) sessionSummary.modelSelection = selection;
+                this.store.pushSystemMessage(normalized === "auto"
+                    ? "🧠 当前会话思考强度已设为 auto（不传参数，使用服务端默认）"
+                    : `🧠 当前会话思考强度已设置为: ${normalized}`,
+                sessionId);
+            } catch (error: any) {
+                this.store.pushSystemMessage(`思考强度设置保存失败：${error?.message ?? String(error)}`, sessionId);
+            }
+        } else if (normalized === "auto") {
             delete process.env.REASONING_EFFORT;
             delete process.env.OPENAI_REASONING_EFFORT;
             delete process.env.DEEPSEEK_REASONING_EFFORT;
             this.store.pushSystemMessage("🧠 思考强度已重置为 auto（不传思考强度参数，走服务端默认）", sessionId);
         } else {
-            const normalized = (input === "off" || input === "none") ? "disabled" : input;
             process.env.REASONING_EFFORT = normalized;
             this.store.pushSystemMessage(`🧠 思考强度已设置为: ${normalized}`, sessionId);
         }
@@ -759,21 +784,34 @@ export class ChatApp {
         selection: ChatModelSelection,
         makeDefault: boolean,
     ): Promise<void> {
+        const nextSettings = getChatApiSettings(selection);
+        const nextProvider = getReasoningProvider(selection.protocol, selection.model, nextSettings.apiBase);
+        const nextEffortChoices = getReasoningEffortChoices(selection.protocol, nextProvider, nextSettings.reasoningEfforts);
+        const previousEffort = this.currentModelSelection?.reasoningEffort
+            ?? getChatApiSettings(this.currentModelSelection).reasoningEffort;
+        const canPreserveEffort = previousEffort === "auto" || (previousEffort !== undefined
+            && nextEffortChoices.some(value => value.toLowerCase() === previousEffort.toLowerCase()));
+        const selected: ChatModelSelection = {
+            ...selection,
+            ...(selection.reasoningEffort === undefined && previousEffort && canPreserveEffort
+                ? { reasoningEffort: previousEffort }
+                : {}),
+        };
         try {
-            await this.agent.setSessionModelSelection(sessionId, selection);
+            await this.agent.setSessionModelSelection(sessionId, selected);
         } catch (error: any) {
             this.closeModelPanel();
             this.store.pushSystemMessage(`模型设置保存失败：${error?.message ?? String(error)}`, sessionId);
             return;
         }
 
-        this.currentModelSelection = selection;
+        this.currentModelSelection = selected;
         const sessionSummary = this.store.sessions.find(session => session.sessionId === sessionId);
-        if (sessionSummary) sessionSummary.modelSelection = selection;
+        if (sessionSummary) sessionSummary.modelSelection = selected;
         let defaultFailure: string | undefined;
         if (makeDefault) {
             try {
-                await setDefaultChatModelOption(selection);
+                await setDefaultChatModelOption(selected);
             } catch (error: any) {
                 defaultFailure = error?.message ?? String(error);
             }
@@ -782,8 +820,8 @@ export class ChatApp {
         this.closeModelPanel();
         this.renderStatusBar();
         this.store.pushSystemMessage(defaultFailure
-            ? `当前会话模型已切换为 ${selection.protocol} · ${selection.model}；设置默认模型失败：${defaultFailure}`
-            : `当前会话模型已切换为 ${selection.protocol} · ${selection.model}${makeDefault ? "，并设为默认" : ""}`,
+            ? `当前会话模型已切换为 ${selected.protocol} · ${selected.model}；设置默认模型失败：${defaultFailure}`
+            : `当前会话模型已切换为 ${selected.protocol} · ${selected.model}${makeDefault ? "，并设为默认" : ""}`,
         sessionId);
     }
 
@@ -2372,7 +2410,12 @@ export class ChatApp {
 
         const model = buildStatusBarModel({
             modelName,
-            effort: process.env.REASONING_EFFORT || process.env.OPENAI_REASONING_EFFORT || process.env.DEEPSEEK_REASONING_EFFORT || "auto",
+            effort: modelSettings.reasoningEffort
+                ?? this.currentModelSelection?.reasoningEffort
+                ?? process.env.REASONING_EFFORT
+                ?? process.env.OPENAI_REASONING_EFFORT
+                ?? process.env.DEEPSEEK_REASONING_EFFORT
+                ?? "auto",
             sessionId,
             phase: sessionId ? this.sessionPhases.get(sessionId) : undefined,
             spinnerIndex: this.spinnerIndex,
