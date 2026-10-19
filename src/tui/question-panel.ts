@@ -2,7 +2,7 @@
  * 用户提问浮层：`ask_user` 工具的界面，逐题作答（单选题回车即选定，多选题 Space 勾选）。
  *
  * 出口只有两个：全部答完（submit）与用户取消（cancel）——没有超时，
- * 用户不在时问题一直挂着（会话 tab 打 `?` 标记，切过去浮层自动出现）。
+ * 用户不在时问题一直挂着（会话 tab 打 `?` 标记，切过去底部面板自动出现）。
  * 已作答的题存在宿主传入的 answers 里（共享引用）：面板被意外关掉再打开时据此回显进度。
  */
 
@@ -64,6 +64,8 @@ export interface QuestionPanelOptions {
     submit(): void;
     /** 用户取消整次提问（不作答）。 */
     cancel(): void;
+    /** 暂时收起面板以阅读对话，答案进度保留。 */
+    collapse?(): void;
 }
 
 export class QuestionPanel implements Component {
@@ -98,7 +100,12 @@ export class QuestionPanel implements Component {
             this.moveCursor(wheel > 0 ? 1 : -1);
             return;
         }
-        if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) {
+        if (matchesKey(data, Key.escape)) {
+            if (this.options.collapse) this.options.collapse();
+            else this.options.cancel();
+            return;
+        }
+        if (matchesKey(data, Key.ctrl("c"))) {
             this.options.cancel();
             return;
         }
@@ -380,7 +387,8 @@ export class QuestionPanel implements Component {
                 "↑↓ 选择",
                 "Enter 确认",
                 this.step > 0 ? "← 上一题" : "",
-                "Esc 取消",
+                this.options.collapse ? "Esc 阅读正文" : "Esc 取消",
+                "⌃C 取消",
             ].filter(Boolean).join(" · ");
         const text = this.notice ? `${this.notice} · ${keys}` : keys;
         const plain = truncatePlain(text, width);

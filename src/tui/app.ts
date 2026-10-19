@@ -9,6 +9,7 @@ import path from "node:path";
 import {
     CombinedAutocompleteProvider,
     Container,
+    Key,
     KeybindingsManager,
     Markdown,
     ProcessTerminal,
@@ -18,6 +19,7 @@ import {
     Text,
     TUI_KEYBINDINGS,
     TuiAltScreen,
+    matchesKey,
     truncateToWidth,
 } from "@earendil-works/pi-tui";
 import type { Component } from "@earendil-works/pi-tui";
@@ -61,6 +63,7 @@ import { buildSessionBar, type SessionBarStyles, type SessionBarTab } from "./se
 import { SPINNER_FRAMES, type SessionOwnerState } from "./session-marker.js";
 import { SessionPanel, type SessionPanelItem } from "./session-panel.js";
 import { QuestionPanel } from "./question-panel.js";
+import { PanelFrame } from "./panel-frame.js";
 import { ShortcutPanel } from "./shortcut-panel.js";
 import { ModelPanel } from "./model-panel.js";
 import { TodoPanel } from "./todo-panel.js";
@@ -111,7 +114,7 @@ type ActivePanelEntry =
     | { kind: "todo"; panel: TodoPanel; handle: PanelOverlay }
     | { kind: "shortcut"; panel: ShortcutPanel; handle: PanelOverlay }
     | { kind: "model"; panel: ModelPanel; handle: PanelOverlay }
-    | { kind: "question"; panel: QuestionPanel; handle: PanelOverlay; sessionId: string };
+    | { kind: "question"; panel: QuestionPanel; sessionId: string };
 
 /**
  * 挂着的提问（`ask_user` 工具在等用户作答）。
@@ -202,12 +205,17 @@ export class ChatApp {
     /** 当前可见 tab 的会话 id，顺序即 Ctrl+1..9 的顺序。 */
     private tabVisibleIds: string[] = [];
     /**
-     * 当前打开的浮层面板（三者互斥）。用单一判别联合替代三个并列字段，
+     * 当前独占输入的面板（互斥）。用单一判别联合替代并列字段，
      * 从结构上排除「两个面板同时非空」，`??` 链也不再有静默取第一个的隐患。
      */
     private activePanelEntry: ActivePanelEntry | null = null;
     private currentModelSelection?: ChatModelSelection;
     private readonly statusBar = new StatusBar();
+    /** 提问区位于聊天视口之后、输入框之前，不覆盖对话正文。 */
+    private readonly questionDock = new Container();
+    private questionDockSessionId: string | null = null;
+    private readonly collapsedQuestionSessions = new Set<string>();
+    private readonly questionPanels = new Map<string, QuestionPanel>();
     /** 底部常驻任务清单条：有未完成 todo 时占位，替代事件流里的 todo 块。 */
     private readonly todoBar = new TodoBar();
     private readonly editor: PromptEditor;
@@ -373,6 +381,7 @@ export class ChatApp {
             { component: this.scrollView, grow: 1, shrink: 1 },
             { component: this.todoBar, shrink: 0, minSize: 0 },
             { component: this.pendingList, shrink: 0, minSize: 0 },
+            { component: this.questionDock, shrink: 0, minSize: 0 },
             { component: this.editor, shrink: 0, minSize: 3 },
             { component: this.statusBar, shrink: 0, minSize: 2 },
         ], { gap: 0 });
@@ -944,6 +953,7 @@ export class ChatApp {
             openSessionPanel: () => this.openSessionPanel(),
             openTodoPanel: () => this.openTodoPanel(),
             openShortcutPanel: () => this.openShortcutPanel(),
+            toggleQuestionPanel: () => this.toggleQuestionPanel(),
             continueCurrent: () => { void this.continueCurrent(); },
             editorText: () => this.editor.getText(),
             pendingCount: () => this.getPendingState().messages.length,
@@ -977,6 +987,18 @@ export class ChatApp {
     private handlePanelInput(data: string): boolean {
         const entry = this.activePanelEntry;
         if (!entry) return false;
+        if (entry.kind === "question") {
+            if (matchesKey(data, Key.ctrlShift("q"))) {
+                this.collapseQuestionPanel(entry.sessionId);
+                return true;
+            }
+            if (parseWheelEvent(data) || matchesKey(data, Key.pageUp) || matchesKey(data, Key.pageDown)) {
+                return false;
+            }
+            entry.panel.handleInput(data);
+            this.tui.requestRender();
+            return true;
+        }
         if (!this.isWheelOutsidePanel(data)) entry.panel.handleInput(data);
         this.tui.requestRender();
         return true;
@@ -1196,7 +1218,8 @@ export class ChatApp {
 
     /** 当前打开的浮层（三个面板互斥，至多一个非空）。 */
     private activePanelOverlay(): PanelOverlay | null {
-        return this.activePanelEntry?.handle ?? null;
+        const entry = this.activePanelEntry;
+        return entry && entry.kind !== "question" ? entry.handle : null;
     }
 
     /** 记录会话草稿并调度落盘；图片附件也属于草稿。 */
@@ -2011,6 +2034,8 @@ export class ChatApp {
                 settled = true;
                 signal?.removeEventListener("abort", onAbort);
                 this.pendingQuestions.delete(request.sessionId);
+                this.questionPanels.delete(request.sessionId);
+                this.collapsedQuestionSessions.delete(request.sessionId);
                 this.closeQuestionPanel(request.sessionId);
                 this.renderTabBar();
                 this.renderStatusBar();
@@ -2042,46 +2067,98 @@ export class ChatApp {
         });
     }
 
-    /** 打开提问浮层：只在当前会话确实挂着提问时才有意义。 */
+    /** 打开底部提问区：只在当前会话确实挂着提问时才有意义。 */
     private openQuestionPanel(sessionId: string): void {
-        if (this.activePanelEntry || this.exiting) return;
+        if (this.exiting) return;
         const pending = this.pendingQuestions.get(sessionId);
         if (!pending || sessionId !== this.store.currentSessionId) return;
+        if (this.activePanelEntry) return;
 
-        const panel = new QuestionPanel({
-            questions: pending.questions,
-            answers: pending.answers,
-            visibleRows: panelContentRows(this.tui),
-            submit: () => pending.settle({
-                cancelled: false,
-                answers: pending.answers.filter((answer): answer is UserQuestionAnswer => answer !== null),
-            }),
-            cancel: () => pending.settle({ cancelled: true }),
-        });
-        const handle = openPanelOverlay(this.tui, panel, "question");
-        this.activePanelEntry = { kind: "question", panel, handle, sessionId };
-        this.writeWheelLog("打开面板 question");
+        if (this.collapsedQuestionSessions.has(sessionId)) {
+            this.showCollapsedQuestionDock(sessionId);
+            return;
+        }
+
+        let panel = this.questionPanels.get(sessionId);
+        if (!panel) {
+            const terminalRows = this.tui.terminal.rows || 24;
+            const visibleRows = Math.max(3, Math.min(8, Math.floor(terminalRows * 0.3) - 2));
+            panel = new QuestionPanel({
+                questions: pending.questions,
+                answers: pending.answers,
+                visibleRows,
+                submit: () => pending.settle({
+                    cancelled: false,
+                    answers: pending.answers.filter((answer): answer is UserQuestionAnswer => answer !== null),
+                }),
+                cancel: () => pending.settle({ cancelled: true }),
+                collapse: () => this.collapseQuestionPanel(sessionId),
+            });
+            this.questionPanels.set(sessionId, panel);
+        }
+
+        this.questionDock.clear();
+        this.questionDock.addChild(new PanelFrame(panel, theme.question));
+        this.questionDockSessionId = sessionId;
+        this.activePanelEntry = { kind: "question", panel, sessionId };
         this.tui.requestRender();
     }
 
     /**
-     * 收起提问浮层但不结算：被其它面板抢占、切走会话时问题仍挂在该会话上，
-     * 切回来（或关掉别的面板）时由 syncQuestionPanel 重新弹出。
+     * 收起提问面板但不结算：切回阅读正文时保留题目选择与自填内容。
      */
     private closeQuestionPanel(sessionId?: string): void {
         const entry = this.activePanelEntry;
-        if (entry?.kind !== "question") return;
-        if (sessionId && entry.sessionId !== sessionId) return;
-        entry.handle.handle.hide();
+        if (sessionId && entry?.kind === "question" && entry.sessionId !== sessionId) return;
+        if (sessionId && this.questionDockSessionId && this.questionDockSessionId !== sessionId) return;
+        if (entry?.kind === "question") this.activePanelEntry = null;
+        if (this.questionDockSessionId) {
+            this.questionDock.clear();
+            this.questionDockSessionId = null;
+        }
+        if (!this.activePanelEntry) this.restoreFocus();
+        this.tui.requestRender();
+    }
+
+    /** Esc 收起问题供阅读；⌃⇧Q 可重新打开。 */
+    private collapseQuestionPanel(sessionId: string): void {
+        const entry = this.activePanelEntry;
+        if (entry?.kind !== "question" || entry.sessionId !== sessionId) return;
         this.activePanelEntry = null;
+        this.collapsedQuestionSessions.add(sessionId);
+        this.showCollapsedQuestionDock(sessionId);
         this.restoreFocus();
         this.tui.requestRender();
     }
 
-    /** 当前会话挂着未作答的提问就弹出来（切会话、关浮层后各调一次）。 */
+    /** 折叠态只占一行，方便阅读正文期间知道仍有问题待答。 */
+    private showCollapsedQuestionDock(sessionId: string): void {
+        const pending = this.pendingQuestions.get(sessionId);
+        if (!pending || sessionId !== this.store.currentSessionId) return;
+        const current = pending.answers.findIndex(answer => answer === null);
+        const step = current < 0 ? 1 : current + 1;
+        const label = `❓ 等待回答 ${step}/${pending.questions.length} · ⌃⇧Q 展开 · ⌃C 取消`;
+        this.questionDock.clear();
+        this.questionDock.addChild(new Text(theme.question(label), 1, 0));
+        this.questionDockSessionId = sessionId;
+        this.tui.requestRender();
+    }
+
+    /** 切换折叠态；没有当前会话的待答问题时不处理。 */
+    private toggleQuestionPanel(): void {
+        const sessionId = this.store.currentSessionId;
+        if (!sessionId || !this.pendingQuestions.has(sessionId) || this.activePanelEntry) return;
+        this.collapsedQuestionSessions.delete(sessionId);
+        this.openQuestionPanel(sessionId);
+    }
+
+    /** 当前会话挂着未作答的提问就显示底部面板或折叠提示。 */
     private syncQuestionPanel(): void {
         const sessionId = this.store.currentSessionId;
-        if (!sessionId || !this.pendingQuestions.has(sessionId)) return;
+        if (!sessionId || !this.pendingQuestions.has(sessionId)) {
+            this.closeQuestionPanel();
+            return;
+        }
         this.openQuestionPanel(sessionId);
     }
 
@@ -2095,6 +2172,10 @@ export class ChatApp {
     private closeActivePanel(): void {
         const entry = this.activePanelEntry;
         if (!entry) return;
+        if (entry.kind === "question") {
+            this.closeQuestionPanel(entry.sessionId);
+            return;
+        }
         if (entry.kind === "session") entry.panel.dispose();
         entry.handle.handle.hide();
         this.activePanelEntry = null;

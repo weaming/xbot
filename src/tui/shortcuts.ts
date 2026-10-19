@@ -77,6 +77,15 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
         ],
     },
     {
+        title: "提问面板",
+        entries: [
+            { keys: "↑ / ↓ / Enter", desc: "选择 / 确认答案" },
+            { keys: "Esc", desc: "收起面板，返回阅读对话" },
+            { keys: "⌃⇧Q", desc: "重新展开待回答的问题" },
+            { keys: "⌃C", desc: "取消提问" },
+        ],
+    },
+    {
         title: "仅 kitty 协议终端",
         entries: [
             { keys: "⌃/", desc: "打开快捷键面板（legacy 终端用 F1）" },

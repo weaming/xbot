@@ -47,6 +47,7 @@ export interface GlobalKeyHost {
     openSessionPanel(): void;
     openTodoPanel(): void;
     openShortcutPanel(): void;
+    toggleQuestionPanel(): void;
     continueCurrent(): void;
     /** 输入框内容。 */
     editorText(): string;
@@ -92,6 +93,11 @@ export function bindGlobalKeys(tui: TuiAltScreen, host: GlobalKeyHost): void {
 
         // 浮层面板打开时独占键盘输入；鼠标滚轮只在面板矩形内生效（面板外滚动不动面板）
         if (host.handlePanelInput(data)) return { consume: true };
+
+        if (matchesKey(data, Key.ctrlShift("q"))) {
+            host.toggleQuestionPanel();
+            return { consume: true };
+        }
 
         // 标题重命名态：除 Esc（取消重命名）外不响应全局快捷键，按键交给输入框
         if (host.isRenaming() && !matchesKey(data, Key.escape)) return undefined;
