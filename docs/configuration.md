@@ -86,7 +86,7 @@ bun install
 make build-cli
 ```
 
-命令会构建独立可执行文件 `xbot`，默认写入 `~/.bun/bin/xbot`。确保该目录在 `PATH` 中即可直接运行 `xbot`。可通过 `XBOT_TUI_BIN` 覆盖输出路径：
+命令会构建可执行文件 `xbot`，默认写入 `~/.bun/bin/xbot`。图片缩放在 macOS 使用系统自带的 `sips`；其他平台使用 ImageMagick 的 `magick` 命令。确保 `~/.bun/bin` 在 `PATH` 中即可直接运行 `xbot`。可通过 `XBOT_TUI_BIN` 覆盖输出路径：
 
 ```fish
 set -x XBOT_TUI_BIN "$HOME/.local/bin/xbot"

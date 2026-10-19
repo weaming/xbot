@@ -1,16 +1,21 @@
 import crypto from "node:crypto";
+import { execFile } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import axios from "axios";
 import type {
     DeepSeekFileContent,
     ImageAssetRef,
     ImageDataRef,
+    ImageUrlRef,
     UserContent,
 } from "../types/image.js";
 import { getWorkspaceStateDir } from "./runtime-paths.js";
 
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
+const execFileAsync = promisify(execFile);
 
 function getImageAssetsDir(): string {
     return getWorkspaceStateDir("assets", "images");
@@ -129,6 +134,7 @@ const DEEPSEEK_FILE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DEEPSEEK_FILE_REFRESH_MARGIN_MS = 5 * 60 * 1000;
 const DEFAULT_DEEPSEEK_FILES_API = "https://api.deepseek.com/files";
 const deepSeekFileIds = new Map<string, { promise: Promise<string>; expiresAt: number }>();
+const DEEPSEEK_MAX_IMAGE_SIDE = 4096;
 
 interface DeepSeekFileResponse {
     id?: string;
@@ -138,6 +144,81 @@ interface DeepSeekFileResponse {
 export interface DeepSeekFileUploadOptions {
     filesAPI?: string;
     apiKey?: string;
+}
+
+async function resizeDeepSeekImage(
+    data: Buffer,
+    filename: string,
+    mimeType: string,
+    maxSide: number,
+): Promise<ImageDataRef> {
+    const safeFilename = path.basename(filename) || "image.bin";
+    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "xbot-image-"));
+    const inputPath = path.join(tempDir, safeFilename);
+    const outputPath = path.join(tempDir, "resized.jpg");
+
+    try {
+        await fs.promises.writeFile(inputPath, data);
+        let width: number;
+        let height: number;
+
+        if (process.platform === "darwin") {
+            const result = await execFileAsync("sips", ["-g", "pixelWidth", "-g", "pixelHeight", inputPath]);
+            const dimensions = [...result.stdout.matchAll(/pixel(Width|Height):\s*(\d+)/g)];
+            width = Number(dimensions.find(match => match[1] === "Width")?.[2]);
+            height = Number(dimensions.find(match => match[1] === "Height")?.[2]);
+        } else {
+            const result = await execFileAsync("magick", ["identify", "-format", "%w %h", inputPath]);
+            [width, height] = result.stdout.trim().split(/\s+/).map(Number);
+        }
+
+        if (!width || !height) throw new Error(`无法读取图片尺寸：${filename}`);
+        if (Math.max(width, height) <= maxSide) {
+            return {
+                id: crypto.createHash("sha256").update(data).digest("hex"),
+                data: data.toString("base64"),
+                filename,
+                mimeType,
+            };
+        }
+
+        if (process.platform === "darwin") {
+            await execFileAsync("sips", [
+                "-Z", String(maxSide), "-s", "format", "jpeg", "-s", "formatOptions", "90",
+                inputPath, "--out", outputPath,
+            ]);
+        } else {
+            await execFileAsync("magick", [inputPath, "-resize", `${maxSide}x${maxSide}>`, "-quality", "90", outputPath]);
+        }
+
+        const resized = await fs.promises.readFile(outputPath);
+        return {
+            id: crypto.createHash("sha256").update(resized).digest("hex"),
+            data: resized.toString("base64"),
+            filename: `${path.parse(safeFilename).name || "image"}.jpg`,
+            mimeType: "image/jpeg",
+        };
+    } catch (error: any) {
+        if (error?.code === "ENOENT") {
+            const tool = process.platform === "darwin" ? "sips" : "ImageMagick（magick）";
+            throw new Error(`图片处理需要安装 ${tool}`);
+        }
+        throw error;
+    } finally {
+        await fs.promises.rm(tempDir, { recursive: true, force: true });
+    }
+}
+
+async function readImageUrl(image: ImageUrlRef): Promise<ImageDataRef> {
+    const match = image.url.match(/^data:(image\/[a-z0-9.+-]+);base64,([\s\S]+)$/i);
+    if (!match) throw new Error(`无法解析图片数据：${image.filename}`);
+    const data = Buffer.from(match[2]!, "base64");
+    return {
+        id: crypto.createHash("sha256").update(data).digest("hex"),
+        data: data.toString("base64"),
+        filename: image.filename,
+        mimeType: match[1]!,
+    };
 }
 
 /** 返回 DeepSeek Files API 地址；自定义部署可通过环境变量覆盖。 */
@@ -246,20 +327,70 @@ export async function materializeDeepSeekImageMessages(
 
         const content = await Promise.all(message.content.map(async (block: any) => {
             if (block.type === "text") return block;
+            if (block.type === "file") return block;
 
             if (block.type === "image_url") {
+                if (!block.image.url.startsWith("data:")) {
+                    return {
+                        type: "image_url" as const,
+                        image_url: { url: block.image.url },
+                    };
+                }
+
+                const image = await readImageUrl(block.image);
+                const prepared = await resizeDeepSeekImage(
+                    Buffer.from(image.data, "base64"),
+                    image.filename,
+                    image.mimeType,
+                    DEEPSEEK_MAX_IMAGE_SIDE,
+                );
+                if (prepared.id === image.id) {
+                    return {
+                        type: "image_url" as const,
+                        image_url: { url: block.image.url },
+                    };
+                }
+                const fileId = await uploadImage(prepared);
                 return {
-                    type: "image_url" as const,
-                    image_url: { url: block.image.url },
-                };
+                    type: "file",
+                    file_id: fileId,
+                } satisfies DeepSeekFileContent;
             }
 
             if (block.type === "image_asset") {
+                let data: Buffer;
+                try {
+                    data = await fs.promises.readFile(block.image.path);
+                } catch (error: any) {
+                    if (error?.code !== "ENOENT" && error?.code !== "ENOTDIR") throw error;
+                    return materializeImageAsset(block.image);
+                }
+                const prepared = await resizeDeepSeekImage(
+                    data,
+                    block.image.filename,
+                    block.image.mimeType,
+                    DEEPSEEK_MAX_IMAGE_SIDE,
+                );
+                if (prepared.id !== crypto.createHash("sha256").update(data).digest("hex")) {
+                    return {
+                        type: "image_url" as const,
+                        image_url: {
+                            url: `data:${prepared.mimeType};base64,${prepared.data}`,
+                            detail: "original" as const,
+                        },
+                    };
+                }
                 return materializeImageAsset(block.image);
             }
 
             if (block.type === "image_data") {
-                const fileId = await uploadImage(block.image);
+                const prepared = await resizeDeepSeekImage(
+                    Buffer.from(block.image.data, "base64"),
+                    block.image.filename,
+                    block.image.mimeType,
+                    DEEPSEEK_MAX_IMAGE_SIDE,
+                );
+                const fileId = await uploadImage(prepared);
                 return {
                     type: "file",
                     file_id: fileId,

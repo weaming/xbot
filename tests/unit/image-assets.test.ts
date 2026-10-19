@@ -194,26 +194,41 @@ describe("image assets", () => {
         }]);
     });
 
-    test("DeepSeek 外链图片继续使用 image_url", async () => {
-        const image = {
-            url: "https://example.com/image.jpg",
-            filename: "image.jpg",
-            mimeType: "image/jpeg",
-        };
-        const messages = [{
-            role: "user",
-            content: toUserContent({ text: "分析这张图", images: [image] }),
-        }];
+    test("DeepSeek 外链尺寸合规时保留原链接", async () => {
+        const original = TEST_IMAGE_BYTES;
+        const server = createServer((_request, response) => {
+            response.setHeader("Content-Type", "image/png");
+            response.end(original);
+        });
+        await new Promise<void>((resolve, reject) => {
+            server.once("error", reject);
+            server.listen(0, "127.0.0.1", resolve);
+        });
 
-        await expect(materializeDeepSeekImageMessages(messages, async () => {
-            throw new Error("外链图片不应上传");
-        })).resolves.toEqual([{
-            role: "user",
-            content: [
-                { type: "text", text: "分析这张图" },
-                { type: "image_url", image_url: { url: image.url } },
-            ],
-        }]);
+        try {
+            const address = server.address();
+            if (!address || typeof address === "string") throw new Error("无法获取图片测试服务器地址");
+            const image = {
+                url: `http://127.0.0.1:${address.port}/image.jpg`,
+                filename: "image.jpg",
+                mimeType: "image/png",
+            };
+            const messages = [{
+                role: "user",
+                content: toUserContent({ text: "分析这张图", images: [image] }),
+            }];
+            await expect(materializeDeepSeekImageMessages(messages, async () => {
+                throw new Error("尺寸合规的外链图片不应上传");
+            })).resolves.toEqual([{
+                role: "user",
+                content: [
+                    { type: "text", text: "分析这张图" },
+                    { type: "image_url", image_url: { url: image.url } },
+                ],
+            }]);
+        } finally {
+            await new Promise<void>(resolve => server.close(() => resolve()));
+        }
     });
 
     test("工具返回的内存图片在 DeepSeek 请求中上传为文件", async () => {
@@ -226,7 +241,7 @@ describe("image assets", () => {
                     type: "image_data",
                     image: {
                         id: "tool-image-data",
-                        data: "aGVsbG8=",
+                        data: TEST_IMAGE_BYTES.toString("base64"),
                         filename: "result.png",
                         mimeType: "image/png",
                     },
@@ -246,7 +261,7 @@ describe("image assets", () => {
             ],
         }]);
         expect(uploaded).toEqual([{
-            data: "aGVsbG8=",
+            data: TEST_IMAGE_BYTES.toString("base64"),
             filename: "result.png",
             mimeType: "image/png",
         }]);
