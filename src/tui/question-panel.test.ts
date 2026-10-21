@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import type { TUI } from "@earendil-works/pi-tui";
 import type { UserQuestion, UserQuestionAnswer } from "../utils/user-question.js";
 import { QuestionPanel } from "./question-panel.js";
 
 const DOWN = "\x1b[B";
 const ENTER = "\r";
+const TEST_TUI = { terminal: { rows: 24 }, requestRender() {} } as TUI;
 
 /** 无空格长中文选项：折行断言不受空白折叠影响。 */
 const LONG_LABEL = "把压缩边界改成按完整回合保留最近十二 k token 并且顺便把分词器换成真的那一个";
@@ -18,6 +20,7 @@ function makePanel(
     const calls: string[] = [];
     const answers = initialAnswers ?? (questions.map(() => null) as (UserQuestionAnswer | null)[]);
     const panel = new QuestionPanel({
+        tui: TEST_TUI,
         questions,
         answers,
         visibleRows,
@@ -73,17 +76,18 @@ describe("提问面板行渲染", () => {
         expect(lines.every(line => visibleWidth(line) <= 40)).toBe(true);
     });
 
-    test("自填输入超长折行，光标落在可见行末尾", () => {
+    test("自填输入超长折行，真实光标落在可见行末尾", () => {
         const { panel } = makePanel([{ header: "备注", question: "要不要补充？", options: [{ label: "不用" }] }], 12);
+        panel.focused = true;
         panel.handleInput(DOWN);
         panel.handleInput(ENTER);
         for (let index = 0; index < 60; index += 1) panel.handleInput("汉");
 
-        const lines = renderLines(panel, 30);
-        const cursorLine = lines.find(line => line.includes("▌"));
+        const lines = panel.render(30);
+        const cursorLine = lines.find(line => line.includes(CURSOR_MARKER));
 
         expect(cursorLine).toBeDefined();
-        expect(cursorLine!.endsWith("▌")).toBe(true);
+        expect(stripTerminalSequences(cursorLine!).includes("汉")).toBe(true);
         expect(lines.every(line => visibleWidth(line) <= 30)).toBe(true);
     });
 
@@ -107,7 +111,7 @@ describe("提问面板行渲染", () => {
         panel.handleInput("\x1b[D");
         const expanded = renderLines(panel, 34);
 
-        expect(expanded.join("\n")).not.toContain("…");
+        expect(expanded.slice(1, -1).join("\n")).not.toContain("…");
         expect(squeeze(expanded.join(""))).toContain(squeeze(answer));
     });
 });

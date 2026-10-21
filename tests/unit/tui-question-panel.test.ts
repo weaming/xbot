@@ -4,7 +4,8 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, visibleWidth } from "@earendil-works/pi-tui";
+import type { TUI } from "@earendil-works/pi-tui";
 import { QuestionPanel } from "../../src/tui/question-panel.js";
 import type { UserQuestion, UserQuestionAnswer } from "../../src/utils/user-question.js";
 
@@ -16,6 +17,7 @@ const SPACE = " ";
 const ESC = "\x1b";
 const CTRL_C = "\x03";
 const BACKSPACE = "\x7f";
+const TEST_TUI = { terminal: { rows: 24 }, requestRender() {} } as TUI;
 
 /** 去掉 CSI 颜色序列，只看可见文本。 */
 function plain(text: string): string {
@@ -44,6 +46,7 @@ function harness(questions: UserQuestion[], visibleRows = 20, answers: (UserQues
         payload: [] as UserQuestionAnswer[],
     };
     const panel = new QuestionPanel({
+        tui: TEST_TUI,
         questions,
         answers: state.answers,
         visibleRows,
@@ -121,6 +124,20 @@ describe("提问浮层 · 多选", () => {
 });
 
 describe("提问浮层 · 自己输入", () => {
+    test("聚焦后光标留在自填区域，支持中间插入和整段粘贴", () => {
+        const { state, panel, press } = harness([question()]);
+        panel.focused = true;
+
+        press(DOWN, DOWN, ENTER, "ac", LEFT, "b");
+        const rendered = panel.render(60);
+        const cursorLine = rendered.find(line => line.includes(CURSOR_MARKER));
+        expect(cursorLine).toBeDefined();
+        expect(plain(cursorLine!.replace(CURSOR_MARKER, ""))).toContain("abc");
+
+        press("\x1b[200~第一行\n第二行\x1b[201~", ENTER);
+        expect(state.answers[0]!.custom).toBe("ab第一行\n第二行c");
+    });
+
     test("选「其他」进入自填，回车写入 custom", () => {
         const { state, press, lines } = harness([question()]);
 

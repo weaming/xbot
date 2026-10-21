@@ -6,8 +6,8 @@
  * 已作答的题存在宿主传入的 answers 里（共享引用）：面板被意外关掉再打开时据此回显进度。
  */
 
-import { decodeKittyPrintable, Key, matchesKey, visibleWidth } from "@earendil-works/pi-tui";
-import type { Component } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, Editor, Key, matchesKey, visibleWidth } from "@earendil-works/pi-tui";
+import type { Component, TUI } from "@earendil-works/pi-tui";
 import {
     CUSTOM_ANSWER_PREFIX,
     CUSTOM_OPTION_LABEL,
@@ -17,12 +17,9 @@ import {
 } from "../utils/user-question.js";
 import { parseWheelDelta } from "./panel-input.js";
 import { padColumns, truncatePlain, wrapPlain } from "./panel-text.js";
-import { theme } from "./theme.js";
+import { PasteAssembler } from "./paste-assembler.js";
+import { editorTheme, theme } from "./theme.js";
 
-/** 自填答案的长度上限（够写一段命令/路径，又不至于把面板撑爆）。 */
-const MAX_CUSTOM_CHARS = 300;
-/** 输入光标（面板内自绘，不接管系统光标）。 */
-const INPUT_CURSOR = "▌";
 /** 题干正文起始列：标题前缀恒为 ` 1/3 `（题数 ≤ 5），选项行的首个可见内容与之对齐。 */
 const CONTENT_COLUMN = 5;
 /** 勾选框宽度：多选是 `[x]`，单选不占列（正文直接落在 CONTENT_COLUMN）。 */
@@ -54,6 +51,7 @@ interface QuestionBlock {
 }
 
 export interface QuestionPanelOptions {
+    tui: TUI;
     /** 全部题目（1-5 道，按顺序作答）。 */
     questions: UserQuestion[];
     /** 逐题作答（与宿主共享引用：面板写入，宿主重开面板时据此回显）。 */
@@ -69,6 +67,7 @@ export interface QuestionPanelOptions {
 }
 
 export class QuestionPanel implements Component {
+    focused = false;
     /** 当前题号。 */
     private step = 0;
     /** 光标位置：0..options.length-1 为选项，options.length 为「其他（自己输入）」。 */
@@ -77,12 +76,13 @@ export class QuestionPanel implements Component {
     private chosen = new Set<number>();
     /** 正在自填答案。 */
     private editing = false;
-    /** 自填输入缓冲。 */
-    private input = "";
+    private readonly inputEditor: Editor;
+    private readonly pasteAssembler = new PasteAssembler();
     /** 行内提示（如「至少选一项」），下一次按键清除。 */
     private notice = "";
 
     constructor(private readonly options: QuestionPanelOptions) {
+        this.inputEditor = new Editor(options.tui, editorTheme);
         this.step = firstUnanswered(options.answers);
         this.syncFromAnswer();
     }
@@ -167,14 +167,14 @@ export class QuestionPanel implements Component {
         // 面板内容全部即时生成，无缓存需要失效。
     }
 
-    /** 自填态：字符追加 / 退格 / 清空 / 回车提交 / Esc 返回选项。 */
+    /** 自填态使用与对话输入框相同的编辑器处理光标、编辑和粘贴。 */
     private handleEditingInput(data: string): void {
         if (matchesKey(data, Key.escape)) {
             this.editing = false;
             return;
         }
         if (matchesKey(data, Key.enter) || matchesKey(data, Key.return)) {
-            const custom = this.input.trim();
+            const custom = this.inputEditor.getExpandedText().trim();
             this.editing = false;
             if (!custom) {
                 this.notice = "没输入内容，已返回选项";
@@ -187,19 +187,9 @@ export class QuestionPanel implements Component {
             this.options.cancel();
             return;
         }
-        if (matchesKey(data, Key.backspace)) {
-            // 按码点退格：slice(-1) 会把 emoji 的代理对拆成半个字符
-            this.input = Array.from(this.input).slice(0, -1).join("");
-            return;
+        for (const sequence of this.pasteAssembler.push(data)) {
+            this.inputEditor.handleInput(sequence);
         }
-        if (matchesKey(data, Key.ctrl("u"))) {
-            this.input = "";
-            return;
-        }
-
-        const chunk = printableChunk(data);
-        if (!chunk) return;
-        this.input = (this.input + chunk).slice(0, MAX_CUSTOM_CHARS);
     }
 
     /** 回车/数字键的落点：选项 -> 提交该题；「其他」-> 进入自填。 */
@@ -207,7 +197,7 @@ export class QuestionPanel implements Component {
         const question = this.options.questions[this.step]!;
         if (this.cursor >= question.options.length) {
             this.editing = true;
-            this.input = this.options.answers[this.step]?.custom ?? "";
+            this.inputEditor.setText(this.options.answers[this.step]?.custom ?? this.inputEditor.getText());
             return;
         }
         if (question.multiSelect) {
@@ -248,7 +238,7 @@ export class QuestionPanel implements Component {
         this.cursor = 0;
         this.chosen = new Set();
         this.editing = false;
-        this.input = "";
+        this.inputEditor.setText("");
         this.notice = "";
         this.syncFromAnswer();
     }
@@ -262,7 +252,7 @@ export class QuestionPanel implements Component {
         question.options.forEach((option, index) => {
             if (answer.selected.includes(option.label)) this.chosen.add(index);
         });
-        this.input = answer.custom ?? "";
+        this.inputEditor.setText(answer.custom ?? "");
         if (this.chosen.size > 0) this.cursor = Math.max(...this.chosen);
         else if (answer.custom) this.cursor = question.options.length;
     }
@@ -314,9 +304,12 @@ export class QuestionPanel implements Component {
         const lines = composeLines(width, this.titlePrefix(index), this.titleContent(question)).map(theme.commandText);
         if (this.editing) {
             const prefix = this.customPrefix(question, "❯");
-            const inputLines = composeLines(width, prefix, `${this.input}${INPUT_CURSOR}`).map(theme.statusOk);
-            lines.push(...inputLines);
-            return { lines, cursorRow: lines.length - 1 };
+            this.inputEditor.focused = this.focused;
+            const inputLines = this.inputEditor.render(Math.max(1, width - visibleWidth(prefix))).slice(1, -1);
+            const cursorLine = inputLines.findIndex(line => line.includes(CURSOR_MARKER));
+            const cursorRow = lines.length + (cursorLine >= 0 ? cursorLine : inputLines.length - 1);
+            lines.push(...inputLines.map(line => theme.statusOk(`${prefix}${line}`)));
+            return { lines, cursorRow };
         }
 
         let cursorRow = lines.length;
@@ -331,7 +324,7 @@ export class QuestionPanel implements Component {
         });
 
         const onCustom = this.cursor >= question.options.length;
-        const customText = this.options.answers[index]?.custom ?? this.input;
+        const customText = this.options.answers[index]?.custom ?? this.inputEditor.getText();
         const customLines = composeLines(
             width,
             this.customPrefix(question, onCustom ? "❯" : " "),
@@ -402,15 +395,4 @@ export class QuestionPanel implements Component {
 function firstUnanswered(answers: (UserQuestionAnswer | null)[]): number {
     const index = answers.findIndex(answer => answer === null);
     return index >= 0 ? index : 0;
-}
-
-/** 自填态的按键取文本：kitty CSI-u 与 modifyOtherKeys 解码，其余含控制字符的按键一律忽略。 */
-function printableChunk(data: string): string | undefined {
-    const kitty = decodeKittyPrintable(data);
-    if (kitty !== undefined) return kitty;
-
-    const modifyOther = /^\x1b\[27;\d+;(\d+)~$/.exec(data);
-    if (modifyOther) return String.fromCodePoint(Number.parseInt(modifyOther[1]!, 10));
-
-    return /[\x00-\x1f\x7f]/.test(data) ? undefined : data;
 }

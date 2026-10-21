@@ -36,6 +36,7 @@ function makeAgent() {
         isSessionClaimed: (sessionId: string) => claimed.has(sessionId),
         releaseSession: () => {},
         getSessionCwd: async () => tmpDir,
+        getSessionModelSelection: async () => null,
         loadInputHistory: () => [],
         appendInputHistory: async () => {},
         readSessionEvents: async () => [],
@@ -109,10 +110,13 @@ describe("ChatApp 提问接线", () => {
 
     test("当前会话提问：弹出浮层，作答后结算并收起", async () => {
         const { app, tui } = makeApp();
+        const focusCalls: unknown[] = [];
+        tui.setFocus = (component: unknown) => focusCalls.push(component);
         const pending = getUserQuestionChannel()!.ask(request());
 
         const entry = (app as any).activePanelEntry;
         expect(entry.kind).toBe("question");
+        expect(focusCalls.at(-1)).toBe(entry.panel);
 
         // 面板独占键盘：回车选定第一项
         (app as any).handlePanelInput("\r");
@@ -124,6 +128,7 @@ describe("ChatApp 提问接线", () => {
         });
         expect((app as any).activePanelEntry).toBeNull();
         expect((app as any).pendingQuestions.size).toBe(0);
+        expect(focusCalls.at(-1)).toBe((app as any).editor);
         expect(tui.flashCalls).toEqual([]);
     });
 
@@ -138,8 +143,8 @@ describe("ChatApp 提问接线", () => {
         expect(store.currentSessionId).toBe(OTHER);
         expect((app as any).activePanelEntry?.kind).toBe("question");
 
-        // 取消：Esc 结算成取消
-        (app as any).handlePanelInput("\x1b");
+        // 取消整次提问
+        (app as any).handlePanelInput("\x03");
         expect(await pending).toEqual({ cancelled: true });
     });
 

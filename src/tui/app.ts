@@ -1284,6 +1284,10 @@ export class ChatApp {
      * 失焦后滚轮会被它消费去滚背景。
      */
     private restoreFocus(): void {
+        if (this.activePanelEntry?.kind === "question") {
+            this.tui.setFocus(this.activePanelEntry.panel);
+            return;
+        }
         const overlay = this.activePanelOverlay();
         if (overlay) {
             overlay.handle.focus();
@@ -2084,6 +2088,7 @@ export class ChatApp {
             const terminalRows = this.tui.terminal.rows || 24;
             const visibleRows = Math.max(3, Math.min(8, Math.floor(terminalRows * 0.3) - 2));
             panel = new QuestionPanel({
+                tui: this.tui,
                 questions: pending.questions,
                 answers: pending.answers,
                 visibleRows,
@@ -2101,6 +2106,7 @@ export class ChatApp {
         this.questionDock.addChild(new PanelFrame(panel, theme.question));
         this.questionDockSessionId = sessionId;
         this.activePanelEntry = { kind: "question", panel, sessionId };
+        this.restoreFocus();
         this.tui.requestRender();
     }
 
