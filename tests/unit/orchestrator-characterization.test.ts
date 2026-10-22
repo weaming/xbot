@@ -177,10 +177,10 @@ describe("特征：工具循环", () => {
 
         // 并行：快的先结束
         expect(order).toEqual(["fast", "slow"]);
-        // 已知行为（重构目标之一）：工具消息按**完成顺序**追加，不按调用顺序。
-        // 并行批次里这会让消息数组顺序依赖调度时序，进而影响下一轮请求前缀。
+        // 已修正的时序缺陷：此前工具消息按**完成顺序**追加，下一轮请求前缀会随调度时序抖动。
+        // 现在并行只影响耗时，入列严格按调用顺序。
         const toolMessages = requests[1].messages.filter((message: any) => message.role === "tool");
-        expect(toolMessages.map((message: any) => message.tool_call_id)).toEqual(["call_1", "call_0"]);
+        expect(toolMessages.map((message: any) => message.tool_call_id)).toEqual(["call_0", "call_1"]);
     });
 });
 
