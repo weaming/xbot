@@ -52,10 +52,8 @@ describe("skill registry multi-source loading", () => {
         makeSkill(wsSkillsDir, "alpha", "ws-alpha"); // 同名：应被用户级覆盖
         makeSkill(wsSkillsDir, "gamma", "ws-gamma");
 
-        process.env.XBOT_STATE_DIR = stateDir;
-        process.env.WORKSPACE = wsDir;
-
-        const registry = new SkillRegistry();
+        // 只注入这两层：共享目录（~/.agents/skills）由专门用例覆盖，不在此处干扰。
+        const registry = new SkillRegistry([userSkillsDir, wsSkillsDir]);
         await registry.load();
 
         expect(registry.getSkillNames().sort()).toEqual(["alpha", "beta", "gamma"]);
@@ -111,11 +109,9 @@ describe("skill registry multi-source loading", () => {
         expect(registry.getSkillMeta("bare")?.description).toBe("no name field");
     });
 
+    // 目录显式注入：不依赖进程环境，也就不会因宿主 ~/.agents/skills 有内容而失真。
     test("empty registry when no skill dir exists", async () => {
-        process.env.XBOT_STATE_DIR = path.join(stateDir, "empty");
-        process.env.WORKSPACE = wsDir;
-
-        const registry = new SkillRegistry();
+        const registry = new SkillRegistry([path.join(stateDir, "empty", "skills")]);
         await registry.load();
 
         expect(registry.getSkillNames()).toEqual([]);

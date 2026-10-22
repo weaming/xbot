@@ -15,6 +15,7 @@ import { SPINNER_FRAMES } from "../../src/tui/session-marker.js";
  */
 
 import { tuiStub } from "./tui-stub.js";
+import { isolateModelEnv } from "./test-env.js";
 
 mock.module("@earendil-works/pi-tui", () => tuiStub);
 
@@ -31,6 +32,7 @@ const { ChatStore } = await import("../../src/tui/store.js");
 let tmpDir: string;
 let originalWorkspace: string | undefined;
 let originalStateDir: string | undefined;
+let restoreModelEnv: () => void;
 
 interface FakeAgent {
     sendMessageCalls: { sessionId: string; text: string; resolve: (v: { aborted?: boolean }) => void }[];
@@ -53,6 +55,9 @@ interface FakeAgent {
     deleteSession: () => Promise<void>;
     renameSession: (sessionId: string, title: string) => Promise<void>;
     getSessionCwd: () => Promise<string>;
+    getSessionModelSelection: (sessionId: string) => Promise<{ protocol: string; model: string } | undefined>;
+    setSessionModelSelection: (sessionId: string, selection: { protocol: string; model: string }) => Promise<void>;
+    detachPeerWaits: (sessionId: string) => number;
     takePeerResults: (sessionId: string) => string[];
     claimSession: (sessionId: string) => Promise<{ ok: true }>;
     releaseSession: (sessionId: string, options?: { cause?: "peer" | "user" }) => void;
@@ -110,6 +115,9 @@ function makeFakeAgent(): FakeAgent {
         deleteSession: async () => {},
         renameSession: async () => {},
         getSessionCwd: async () => tmpDir,
+        getSessionModelSelection: async () => undefined,
+        setSessionModelSelection: async () => {},
+        detachPeerWaits: () => 0,
         takePeerResults: () => [],
         resumeSession: async () => ({ resumed: true }),
         close: () => {},
@@ -119,6 +127,8 @@ function makeFakeAgent(): FakeAgent {
 }
 
 beforeEach(async () => {
+    // 宿主 shell 导出的模型配置会让 getChatApiSettings 返回真实模型，隔离后再断言默认值。
+    restoreModelEnv = isolateModelEnv();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-tui-pending-"));
     originalWorkspace = process.env.WORKSPACE;
     originalStateDir = process.env.XBOT_STATE_DIR;
@@ -127,6 +137,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+    restoreModelEnv();
     if (originalWorkspace === undefined) delete process.env.WORKSPACE;
     else process.env.WORKSPACE = originalWorkspace;
     if (originalStateDir === undefined) delete process.env.XBOT_STATE_DIR;
@@ -637,14 +648,21 @@ describe("ChatApp pending queue", () => {
         expect(store.messages.some(m => m.role === "system" && m.text.includes("当前思考强度"))).toBe(true);
 
         // 2. 设置 high
+        const selections: Array<{ sessionId: string; selection: any }> = [];
+        (agent as any).setSessionModelSelection = async (sessionId: string, selection: any) => {
+            selections.push({ sessionId, selection });
+        };
         await (app as any).handleCommand("/effort high");
-        expect(process.env.REASONING_EFFORT).toBe("high");
+        // 会话内设置：写会话级选择，不污染进程环境
+        expect(selections.at(-1)?.sessionId).toBe("session-cmd-test");
+        expect(selections.at(-1)?.selection.reasoningEffort).toBe("high");
+        expect(process.env.REASONING_EFFORT).toBeUndefined();
         expect(store.messages.some(m => m.role === "system" && m.text.includes("思考强度已设置为: high"))).toBe(true);
 
         // 3. 用 /thinking 别名重置为 auto
         await (app as any).handleCommand("/thinking auto");
-        expect(process.env.REASONING_EFFORT).toBeUndefined();
-        expect(store.messages.some(m => m.role === "system" && m.text.includes("思考强度已重置为 auto"))).toBe(true);
+        expect(selections.at(-1)?.selection.reasoningEffort).toBe("auto");
+        expect(store.messages.some(m => m.role === "system" && m.text.includes("思考强度已设为 auto"))).toBe(true);
 
         // 4. 非法参数报错
         await (app as any).handleCommand("/effort invalid_level");

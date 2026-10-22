@@ -24,13 +24,25 @@ export class SkillRegistry {
     private skillMetas: Map<string, SkillMeta> = new Map();
     private skillDirs: Map<string, string> = new Map();
 
+    /**
+     * dirs 缺省时按环境变量解析（用户级 → 共享 → workspace）。
+     * 显式传入后不再读环境，便于测试隔离与嵌入其他宿主。
+     */
+    constructor(private readonly dirs?: readonly string[]) {}
+
+    /** 当前生效的技能根目录（已 resolve、去重）。 */
+    private resolveDirs(): string[] {
+        return this.dirs ? [...new Set(this.dirs.map((dir) => path.resolve(dir)))] : getSkillRegistryDirs();
+    }
+
     async init(): Promise<void> {
         await this.load();
         this.startFileWatcher();
     }
 
     private startFileWatcher(): void {
-        const patterns = getSkillRegistryDirs().map((dir) => path.join(dir, "**", "SKILL.md"));
+        const skillDirs = this.resolveDirs();
+        const patterns = skillDirs.map((dir) => path.join(dir, "**", "SKILL.md"));
         if (patterns.length === 0) return;
 
         try {
@@ -65,7 +77,7 @@ export class SkillRegistry {
                     console.warn(`⚠️ [Skills] File watcher error:`, (err as Error).message);
                 });
 
-            console.log(`👁️ [Skills] File watcher started on ${getSkillRegistryDirs().join(", ")}`);
+            console.log(`👁️ [Skills] File watcher started on ${skillDirs.join(", ")}`);
         } catch (err) {
             console.warn(`⚠️ [Skills] Failed to start file watcher:`, err);
         }
@@ -77,7 +89,7 @@ export class SkillRegistry {
         const newSkillDirs = new Map<string, string>();
 
         // 用户级目录先加载，同名技能在 workspace 级跳过
-        for (const dir of getSkillRegistryDirs()) {
+        for (const dir of this.resolveDirs()) {
             this.loadSkillDir(dir, next, newMetas, newSkillDirs);
         }
 

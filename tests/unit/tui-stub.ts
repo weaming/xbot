@@ -19,9 +19,12 @@ export const tuiStub: any = {
     isKittyRepeatOrRelease: (_data: string) => false,
     isKeyRepeat: (_data: string) => false,
     isKeyRelease: (_data: string) => false,
-    KeybindingsManager: class { constructor(_b: any, _m: any) {} },
-    setKeybindings: () => {},
-    TUI_KEYBINDINGS: {},
+    /**
+     * 键位解析委托真实实现：Editor / QuestionPanel 依赖 matches/getKeys 判断按键语义，
+     * 空壳会让它们要么吞掉输入、要么在 matches 上抛错。
+     */
+    KeybindingsManager: realPiTui.KeybindingsManager,
+    TUI_KEYBINDINGS: realPiTui.TUI_KEYBINDINGS,
     TuiAltScreen: class { columns = 80; rows = 24; inputListeners: any[] = [];
         scrollByCalls: number[] = [];
         terminal = { columns: 80, rows: 24 };
@@ -33,44 +36,14 @@ export const tuiStub: any = {
         flashCalls: string[] = [];
         flash(message: string, _durationMs?: number) { this.flashCalls.push(message); }
     },
-    Editor: class { private text = ""; onSubmit?: (v: string) => void; onChange?: (v: string) => void;
-        history: string[] = []; historyIndex = -1; historyDraft: any = null; disableSubmit = false; isReadOnly = false; borderColor: any = () => "";
-        state = { lines: [""], cursorLine: 0, cursorCol: 0 };
-        constructor(public tui: any = { requestRender: () => {} }, public theme?: any) {}
-        setText(t: string) {
-            this.text = t;
-            this.state.lines = t.split("\n");
-            this.state.cursorLine = this.state.lines.length - 1;
-            this.state.cursorCol = (this.state.lines[this.state.cursorLine] || "").length;
-        }
-        getText() { return this.text; }
-        setHistory(h: string[]) { this.history = [...h]; this.historyIndex = -1; }
-        addToHistory(t: string) { this.history.push(t); }
-        setCursorCol(c: number) { this.state.cursorCol = c; }
-        moveCursor(deltaLine: number, _deltaCol: number) {
-            this.state.cursorLine = Math.max(0, Math.min(this.state.lines.length - 1, this.state.cursorLine + deltaLine));
-        }
-        handleInput(data: string) {
-            if (data === "up" || data === "\x1b[A") {
-                if (this.history.length > 0) {
-                    this.historyIndex = Math.min(this.history.length - 1, this.historyIndex + 1);
-                    this.setText(this.history[this.historyIndex] || "");
-                    this.state.cursorLine = 0;
-                    this.state.cursorCol = 0;
-                }
-            } else if (data === "down" || data === "\x1b[B") {
-                if (this.historyIndex > 0) {
-                    this.historyIndex--;
-                    this.setText(this.history[this.historyIndex] || "");
-                    this.state.cursorLine = 0;
-                    this.state.cursorCol = 0;
-                } else if (this.historyIndex === 0) {
-                    this.historyIndex = -1;
-                    this.setText("");
-                }
-            }
-        }
-        setAutocompleteProvider(_p: any) {} setCompact(_v: boolean) {} getExpandedText() { return this.text; } render() { return []; } invalidate() {}
+    /**
+     * 编辑器委托真实实现：按键、光标、折行、CURSOR_MARKER 都由库负责，
+     * 只在外面补上 ChatApp 用到的扩展字段。
+     * 早前这里是一份"只处理上下历史"的空壳，导致复用它的提问面板测试
+     * 拿到一个吞掉所有字符输入的编辑器——替身的保真度必须覆盖被复用到的行为。
+     */
+    Editor: class extends realPiTui.Editor {
+        /** 本仓库在 Editor 上附加的会话级草稿展开入口。 */
         expandSessionDraft(_sessionId: string, text: string) { return text; }
     },
     CombinedAutocompleteProvider: class { constructor(_a: any, _b: any) {} },

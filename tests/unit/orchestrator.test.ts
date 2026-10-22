@@ -255,6 +255,8 @@ describe("Chat Orchestrator", () => {
     }];
     const client = {
       baseURL: "https://api.openai.com/v1",
+      // 协议由 client.protocol 决定，不能只凭存在 createResponse 推断。
+      protocol: "responses" as const,
       create: async () => {
         throw new Error("GPT 请求不应走 Chat Completions");
       },
@@ -336,6 +338,8 @@ describe("Chat Orchestrator", () => {
     let requestCount = 0;
     const client = {
       baseURL: "https://api.openai.com/v1",
+      // 协议由 client.protocol 决定，不能只凭存在 createResponse 推断。
+      protocol: "responses" as const,
       create: async () => {
         throw new Error("GPT 请求不应走 Chat Completions");
       },
@@ -435,6 +439,8 @@ describe("Chat Orchestrator", () => {
     let requestCount = 0;
     const client = {
       baseURL: "https://api.openai.com/v1",
+      // 协议由 client.protocol 决定，不能只凭存在 createResponse 推断。
+      protocol: "responses" as const,
       create: async () => {
         throw new Error("GPT 请求不应走 Chat Completions");
       },

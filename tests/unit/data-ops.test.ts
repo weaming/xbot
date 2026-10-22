@@ -158,9 +158,20 @@ describe("write_json", () => {
         expect(fs.existsSync(path.join(tmpDir, "nested/dir/file.json"))).toBe(true);
     });
 
-    test("路径穿越被拒绝", async () => {
-        const result = await writeJsonTool.execute({ path: "../../evil.json", value: {} });
-        expect(isError(result)).toBe(true);
+    // 文件工具不限制目录访问：`..` 只做路径解析，不当作越权。
+    test("相对路径可穿越到上级目录", async () => {
+        const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-data-write-outside-"));
+        try {
+            process.env.TUI_CWD = path.join(outsideDir, "inner");
+            const result = await writeJsonTool.execute({ path: "../escaped.json", value: { ok: true } });
+
+            expect(isError(result)).toBe(false);
+            const escaped = path.join(outsideDir, "escaped.json");
+            expect(JSON.parse(fs.readFileSync(escaped, "utf-8"))).toEqual({ ok: true });
+        } finally {
+            process.env.TUI_CWD = tmpDir;
+            fs.rmSync(outsideDir, { recursive: true, force: true });
+        }
     });
 });
 
