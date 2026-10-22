@@ -45,6 +45,7 @@ import {
 import { bindGlobalKeys, type GlobalKeyHost } from "./keybindings.js";
 import { buildStatusBarModel } from "./status-bar-model.js";
 import { ChatLayout } from "./chat-layout.js";
+import { TurnStateStore } from "./turn-state.js";
 import {
     isInsideBounds,
     openPanelOverlay,
@@ -237,7 +238,7 @@ export class ChatApp {
     /** 草稿落盘防抖定时器（连续输入只在停顿后写一次）。 */
     private draftSaveTimer: ReturnType<typeof setTimeout> | null = null;
     /** 按会话记录当前的实时执行阶段与开始时间。 */
-    private readonly sessionPhases = new Map<string, SessionPhaseState>();
+    private readonly turnState = new TurnStateStore();
     /** 会话归属快照：面板/切换的认领入口必须让用户看得见归属，异步探测后缓存。 */
     private sessionOwnership = new Map<string, PeerOwnership>();
     /** 归属刷新节流时间戳与在途标记：探测要走 socket，不能跟着 spinner 帧每帧打。 */
@@ -257,7 +258,7 @@ export class ChatApp {
     private readonly messageComponents = new Map<number, MessageComponents>();
     /** 待执行的运行时重载请求按会话去重；运行时本身是进程级的，执行时会合并它们。 */
     private readonly pendingRuntimeReloads = new Set<string>();
-    private busy = false;
+    /** 进程级 UI 占位：只覆盖与具体会话无关的操作（重载、切会话）。会话自身的忙闲在 turnState。 */
     private runtimeReloading = false;
     private switching = false;
     private showReasoning = true;
@@ -446,7 +447,7 @@ export class ChatApp {
         this.store.setListeners({
             onMessagesChanged: () => {
                 // 展开模式（Ctrl+O）下若正在生成，不频繁刷新后续流式更新，避免大规模重绘导致终端卡顿
-                if (this.detailed && this.busy) return;
+                if (this.detailed && this.turnState.phase(this.store.currentSessionId)) return;
                 this.scheduleSyncMessages();
             },
             onSessionsChanged: () => this.renderTabBar(),
@@ -513,7 +514,10 @@ export class ChatApp {
         }
         if (this.isSessionArchived(sessionId)) return;
         this.recordSubmittedInput(sessionId, text);
-        const isBusy = this.busy || this.runtimeReloading || this.switching || (sessionId ? this.agent.isSessionBusy(sessionId) : false);
+        const isBusy = this.runtimeReloading
+            || this.switching
+            || this.turnState.isBusy(sessionId)
+            || (sessionId ? this.agent.isSessionBusy(sessionId) : false);
         if (isBusy) {
             const state = this.getPendingState(sessionId);
             state.messages.push(images.length > 0 ? { text, images } : text);
@@ -874,8 +878,8 @@ export class ChatApp {
         this.editor.setText("");
         const clearedSummary = this.store.sessions.find(session => session.sessionId === sessionId);
         if (clearedSummary) clearedSummary.title = undefined;
-        this.busy = true;
-        this.editor.disableSubmit = true;
+        this.turnState.lock(sessionId, "clearing");
+        this.syncSubmitState();
         try {
             await this.agent.clearSession(sessionId);
             this.clearMessages();
@@ -885,8 +889,8 @@ export class ChatApp {
         } catch (error: any) {
             this.store.pushSystemMessage(`⚠️ 清空失败: ${error.message}`, sessionId);
         } finally {
-            this.busy = false;
-            this.editor.disableSubmit = false;
+            this.turnState.unlock(sessionId, "clearing");
+            this.syncSubmitState();
             this.restoreFocus();
         }
     }
@@ -902,8 +906,8 @@ export class ChatApp {
         this.dropDraft(sessionId);
         this.editor.clearSessionPastes(sessionId);
         if (isCurrent) {
-            this.busy = true;
-            this.editor.disableSubmit = true;
+            this.turnState.lock(sessionId, "clearing");
+            this.syncSubmitState();
         }
         try {
             await this.agent.deleteSession(sessionId);
@@ -923,8 +927,8 @@ export class ChatApp {
             this.store.pushSystemMessage(`⚠️ 删除失败: ${error.message}`);
         } finally {
             if (isCurrent) {
-                this.busy = false;
-                this.editor.disableSubmit = false;
+                this.turnState.unlock(sessionId, "clearing");
+                this.syncSubmitState();
                 this.restoreFocus();
             }
         }
@@ -1148,7 +1152,7 @@ export class ChatApp {
             }
         } finally {
             this.runtimeReloading = false;
-            this.editor.disableSubmit = this.busy;
+            this.syncSubmitState();
             this.restoreFocus();
             void this.flushPendingRuntimeReloads().then((reloadedSessionIds) => {
                 for (const reloadedSessionId of reloadedSessionIds) {
@@ -1174,13 +1178,14 @@ export class ChatApp {
     /** Ctrl+C 的中止判定：忙碌且未被其他实例锁定。 */
     private isInterruptible(): boolean {
         const sessionId = this.store.currentSessionId;
-        const busy = this.busy || (sessionId ? this.agent.isSessionBusy(sessionId) : false);
+        const busy = this.turnState.isBusy(sessionId) || (sessionId ? this.agent.isSessionBusy(sessionId) : false);
         return busy && !(sessionId !== null && this.agent.isSessionLockedByOther(sessionId));
     }
 
     /** Esc 的中止判定：忙碌即中止（不排除被其他实例锁定）。 */
     private isCurrentBusy(): boolean {
-        return this.busy || (this.store.currentSessionId ? this.agent.isSessionBusy(this.store.currentSessionId) : false);
+        const sessionId = this.store.currentSessionId;
+        return this.turnState.isBusy(sessionId) || (sessionId ? this.agent.isSessionBusy(sessionId) : false);
     }
     /** 面板打开时：鼠标滚轮落在面板矩形外则不交给面板，避免误滚面板内容。 */
     private isWheelOutsidePanel(data: string): boolean {
@@ -1303,13 +1308,21 @@ export class ChatApp {
         this.tui.setFocus(this.editor);
     }
 
+    /**
+     * 输入框可用性：只跟"当前会话"有关。
+     * 后台会话跑 turn 不该锁住当前会话的输入，因此不再读进程级 busy。
+     */
+    private syncSubmitState(): void {
+        const sessionId = this.store.currentSessionId;
+        const blocked = this.runtimeReloading
+            || this.switching
+            || this.turnState.isLocked(sessionId)
+            || (sessionId !== null && this.agent.isSessionBusy(sessionId));
+        this.editor.disableSubmit = blocked;
+    }
+
     private setSessionPhase(sessionId: string, phase: SessionPhaseType, toolName?: string): void {
-        const current = this.sessionPhases.get(sessionId);
-        const startTime = current ? current.startTime : Date.now();
-        const toolStartTime = phase === "tool"
-            ? (current?.phase === "tool" && current.toolName === toolName && current.toolStartTime ? current.toolStartTime : Date.now())
-            : undefined;
-        this.sessionPhases.set(sessionId, { phase, toolName, startTime, toolStartTime });
+        this.turnState.setPhase(sessionId, phase, toolName);
         this.startSpinnerTimer();
         if (sessionId === this.store.currentSessionId) {
             this.renderStatusBar();
@@ -1318,9 +1331,9 @@ export class ChatApp {
     }
 
     private setSessionProgress(sessionId: string, message: string): void {
-        const current = this.sessionPhases.get(sessionId);
-        this.sessionPhases.set(sessionId, {
-            phase: "compacting",
+        const current = this.turnState.phase(sessionId);
+        this.turnState.setPhase(sessionId, "compacting");
+        this.turnState.touch(sessionId, {
             startTime: current?.startTime ?? Date.now(),
             message,
         });
@@ -1330,7 +1343,7 @@ export class ChatApp {
     }
 
     private clearSessionPhase(sessionId: string): void {
-        this.sessionPhases.delete(sessionId);
+        this.turnState.clearPhase(sessionId);
         if (!this.hasActiveBusySession()) {
             this.stopSpinnerTimer();
         }
@@ -1341,7 +1354,7 @@ export class ChatApp {
     }
 
     private hasActiveBusySession(): boolean {
-        return this.sessionPhases.size > 0 || this.busy;
+        return this.turnState.hasAnyActivity();
     }
 
     private startSpinnerTimer(): void {
@@ -1410,12 +1423,9 @@ export class ChatApp {
         if (!sessionId) return;
         if (this.isSessionArchived(sessionId)) return;
 
-        const isCurrent = this.store.currentSessionId === sessionId;
-        if (isCurrent) {
-            this.busy = true;
-            this.editor.disableSubmit = true;
-        }
+        // 运行态由 turnState 的 phase 承担；这里只同步输入框可用性
         this.setSessionPhase(sessionId, "waiting");
+        this.syncSubmitState();
         this.store.addUserMessage(this.formatImageInput(text, images), sessionId);
         this.setSessionTitleIfAbsent(sessionId, text);
         if (this.store.currentSessionId === sessionId && !this.detailed) {
@@ -1471,11 +1481,7 @@ export class ChatApp {
             this.pendingBackgroundResults.delete(sessionId);
             const durationMs = Date.now() - sendStartTime;
             herdrReporter.report("idle");
-            // 先复位 busy 再清 phase：clearSessionPhase 按 busy 判定并重绘 tab，
-            // 顺序颠倒会让当前会话的圆饼停在最后一帧 spinner 上
-            if (this.store.currentSessionId === sessionId) {
-                this.busy = false;
-            }
+            // 阶段清除即表示本会话空闲：turnState 内部不再有「先复位谁」的顺序问题
             this.clearSessionPhase(sessionId);
             if (this.store.currentSessionId === sessionId) {
                 this.editor.disableSubmit = false;
@@ -1567,7 +1573,7 @@ export class ChatApp {
             return;
         }
 
-        this.busy = false;
+        this.turnState.reset(sessionId);
         this.store.setCurrentSession(null);
         this.currentModelSelection = undefined;
         this.clearMessages();
@@ -1664,8 +1670,10 @@ export class ChatApp {
      * - 放行排队的输入，否则要等用户切一次会话才发出去。
      */
     private onAgentTurnFinished(sessionId: string): void {
+        // 回合真正结束：先摘掉外部忙闲占位，避免 tab 停在 spinner 上
+        this.turnState.unlock(sessionId, "resuming");
         if (this.store.currentSessionId === sessionId) {
-            this.busy = this.agent.isSessionBusy(sessionId);
+            this.syncSubmitState();
             this.renderTabBar();
         }
         const hadPendingReload = this.pendingRuntimeReloads.has(sessionId);
@@ -1778,8 +1786,8 @@ export class ChatApp {
         this.sessionPending.delete(sessionId);
         // 归档不动草稿与 paste 缓存：切回来（或取消归档）时输入框内容原样恢复
         if (isCurrent) {
-            this.busy = true;
-            this.editor.disableSubmit = true;
+            this.turnState.lock(sessionId, "switching");
+            this.syncSubmitState();
         }
         try {
             await this.agent.closeSession(sessionId);
@@ -1800,8 +1808,8 @@ export class ChatApp {
             this.store.pushSystemMessage(`⚠️ 归档失败: ${error.message}`);
         } finally {
             if (isCurrent) {
-                this.busy = false;
-                this.editor.disableSubmit = false;
+                this.turnState.unlock(sessionId, "switching");
+                this.syncSubmitState();
                 this.restoreFocus();
             }
         }
@@ -1864,16 +1872,16 @@ export class ChatApp {
         }
 
         this.sessionPending.delete(sessionId);
-        this.busy = true;
-        this.editor.disableSubmit = true;
+        this.turnState.lock(sessionId, "switching");
+        this.syncSubmitState();
         try {
             // 释放会同步触发 onSessionReleased：内存视图、tab 与当前选中一并收敛
             this.agent.releaseSession(sessionId, { cause: "user" });
         } catch (error: any) {
             this.store.pushSystemMessage(`⚠️ 关闭会话失败: ${error.message}`);
         } finally {
-            this.busy = false;
-            this.editor.disableSubmit = false;
+            this.turnState.unlock(sessionId, "switching");
+            this.syncSubmitState();
             this.restoreFocus();
         }
     }
@@ -2198,8 +2206,7 @@ export class ChatApp {
                 lastUserMessage: session.lastUserMessage,
                 updatedAt: session.updatedAt,
                 archived: session.archived,
-                busy: this.sessionPhases.has(session.sessionId)
-                    || (session.sessionId === this.store.currentSessionId && this.busy),
+                busy: this.turnState.isBusy(session.sessionId),
                 active: session.sessionId === this.store.currentSessionId,
                 question: this.pendingQuestions.has(session.sessionId),
                 ...(ownership ? { ownerState: ownership.state, owner: ownership.text } : {}),
@@ -2366,8 +2373,8 @@ export class ChatApp {
     private async compactCurrent(): Promise<void> {
         const sessionId = this.store.currentSessionId;
         if (!sessionId || this.agent.isSessionBusy(sessionId)) return;
-        this.busy = true;
-        this.editor.disableSubmit = true;
+        this.turnState.lock(sessionId, "compacting");
+        this.syncSubmitState();
         herdrReporter.report("working");
         try {
             await this.agent.compactSession(sessionId);
@@ -2376,8 +2383,8 @@ export class ChatApp {
             this.store.pushSystemMessage(`⚠️ 压缩失败: ${error.message}`, sessionId);
         } finally {
             herdrReporter.report("idle");
-            this.busy = false;
-            this.editor.disableSubmit = false;
+            this.turnState.unlock(sessionId, "compacting");
+            this.syncSubmitState();
             this.restoreFocus();
         }
     }
@@ -2394,14 +2401,14 @@ export class ChatApp {
             this.tui.flash("会话已归档，不能继续");
             return;
         }
-        if (this.busy || this.agent.isSessionBusy(sessionId)) {
+        if (this.turnState.isBusy(sessionId) || this.agent.isSessionBusy(sessionId)) {
             this.tui.flash("当前会话处理中，先 Esc 中止或等待结束");
             return;
         }
 
         if (this.store.currentSessionId === sessionId) {
-            this.busy = true;
-            this.editor.disableSubmit = true;
+            this.turnState.lock(sessionId, "resuming");
+            this.syncSubmitState();
         }
         herdrReporter.report("working");
         try {
@@ -2415,9 +2422,7 @@ export class ChatApp {
             this.store.pushSystemMessage(`⚠️ 继续失败: ${error.message}`, sessionId);
         } finally {
             herdrReporter.report("idle");
-            if (this.store.currentSessionId === sessionId) {
-                this.busy = false;
-            }
+            this.turnState.unlock(sessionId, "resuming");
             this.clearSessionPhase(sessionId);
             if (this.store.currentSessionId === sessionId) {
                 this.editor.disableSubmit = false;
@@ -2504,7 +2509,7 @@ export class ChatApp {
                 ?? process.env.DEEPSEEK_REASONING_EFFORT
                 ?? "auto",
             sessionId,
-            phase: sessionId ? this.sessionPhases.get(sessionId) : undefined,
+            phase: this.turnState.phase(sessionId),
             spinnerIndex: this.spinnerIndex,
             now: Date.now(),
             latestPromptTokens: this.store.latestPromptTokens,
@@ -2531,10 +2536,26 @@ export class ChatApp {
     private syncCurrentSessionState(): void {
         const sessionId = this.store.currentSessionId;
         const isArchived = this.isSessionArchived(sessionId);
-        this.busy = sessionId !== null && this.agent.isSessionBusy(sessionId);
-        this.editor.disableSubmit = isArchived || this.busy;
+        this.syncExternalBusy(sessionId);
+        this.syncSubmitState();
         this.editor.setReadOnly(isArchived);
         if (isArchived) this.editor.setText("");
+    }
+
+    /**
+     * 把「不由 ChatApp.send 驱动」的回合状态同步进 turnState。
+     *
+     * 群消息驱动、回写追问、续跑这些回合不经过 send()，agent 的会话锁才是唯一信号；
+     * 不在这里落到 turnState，tab 就不会显示 spinner，退出时也会误判为空闲。
+     * 反向复位同样重要：回合结束后 agent 不再忙，残留的占位必须撤掉。
+     */
+    private syncExternalBusy(sessionId: string | null): void {
+        if (!sessionId) return;
+        if (this.agent.isSessionBusy(sessionId)) {
+            this.turnState.lock(sessionId, "resuming");
+        } else {
+            this.turnState.unlock(sessionId, "resuming");
+        }
     }
 
     /** 会话条：单行等宽，超宽时以 ‹N / N› 折叠，归档会话不进 tab 条（只出现在面板）。 */
@@ -2573,8 +2594,7 @@ export class ChatApp {
                 sessionId: session.sessionId,
                 title: session.title,
                 messageCount: session.messageCount,
-                busy: this.sessionPhases.has(session.sessionId)
-                    || (session.sessionId === this.store.currentSessionId && this.busy),
+                busy: this.turnState.isBusy(session.sessionId),
                 active: session.sessionId === this.store.currentSessionId,
                 question: this.pendingQuestions.has(session.sessionId),
             }));

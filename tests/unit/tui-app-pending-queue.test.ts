@@ -176,7 +176,8 @@ describe("ChatApp pending queue", () => {
         const app = new ChatApp(agent as any, store);
         // 模拟 busy 状态：enqueueOrSend 走入队分支
         store.currentSessionId = "sess-pending";
-        (app as any).busy = true;
+        // 会话级忙：该会话有进行中的 turn 阶段
+        (app as any).turnState.setPhase("sess-pending", "waiting");
         app.enqueueOrSend("再发一次消息");
         app.enqueueOrSend("再来一条");
         expect((app as any).pendingMessages).toEqual(["再发一次消息", "再来一条"]);
@@ -200,7 +201,7 @@ describe("ChatApp pending queue", () => {
         const app = new ChatApp(agent as any, store);
         (app as any).store.currentSessionId = "sess-pending-test";
         // 不 mock sendMessage；用 spy 替代。
-        (app as any).busy = false;
+        (app as any).turnState.clearPhase("sess-pending-test");
         (app as any).switching = false;
         const sendSpy = mock((_text: string) => {});
         (app as any).send = sendSpy;
@@ -269,14 +270,14 @@ describe("ChatApp pending queue", () => {
         // 会话被群消息回合占用：切到它时 syncCurrentSessionState 会把 busy 置为 true
         (agent as any).isSessionBusy = () => true;
         (app as any).syncCurrentSessionState();
-        expect((app as any).busy).toBe(true);
+        expect((app as any).isCurrentBusy()).toBe(true);
         expect((app as any).buildSessionBarTabs()[0].busy).toBe(true);
 
         // 回合真正结束（会话锁已释放，但不再经过 send() 的 finally）
         (agent as any).isSessionBusy = () => false;
         agent.onTurnFinished?.("sess-pending-test");
 
-        expect((app as any).busy).toBe(false);
+        expect((app as any).isCurrentBusy()).toBe(false);
         expect((app as any).buildSessionBarTabs()[0].busy).toBe(false);
     });
 
@@ -329,7 +330,7 @@ describe("ChatApp pending queue", () => {
         const store = new ChatStore();
         const app = new ChatApp(agent as any, store);
         store.currentSessionId = "sess-pending";
-        (app as any).busy = true;
+        (app as any).turnState.setPhase("sess-pending", "waiting");
         app.enqueueOrSend("a");
         app.enqueueOrSend("b");
         app.enqueueOrSend("c");
@@ -356,7 +357,7 @@ describe("ChatApp pending queue", () => {
         const store = new ChatStore();
         const app = new ChatApp(agent as any, store);
         store.currentSessionId = "sess-pending";
-        (app as any).busy = true;
+        (app as any).turnState.setPhase("sess-pending", "waiting");
         for (let i = 0; i < 8; i += 1) app.enqueueOrSend(`m${i}`);
         // 选中第 6 条（index 5）；窗口居中应显示 m3..m7
         (app as any).pendingIndex = 5;
@@ -612,9 +613,8 @@ describe("ChatApp pending queue", () => {
 
         const now = Date.now();
         // 1. 工具调用耗时 < 3s 时，只显示总耗时
-        (app as any).sessionPhases.set("session-tool-timing-test", {
-            phase: "tool",
-            toolName: "bash",
+        (app as any).turnState.setPhase("session-tool-timing-test", "tool", "bash");
+        (app as any).turnState.touch("session-tool-timing-test", {
             startTime: now - 5000,
             toolStartTime: now - 2000,
         });
@@ -625,9 +625,7 @@ describe("ChatApp pending queue", () => {
         expect(rendered[0]).not.toContain("|");
 
         // 2. 工具调用耗时 >= 3s 时，显示「工具耗时 | 总耗时」
-        (app as any).sessionPhases.set("session-tool-timing-test", {
-            phase: "tool",
-            toolName: "bash",
+        (app as any).turnState.touch("session-tool-timing-test", {
             startTime: now - 8000,
             toolStartTime: now - 4500,
         });
@@ -776,16 +774,16 @@ describe("ChatApp pending queue", () => {
             fullSyncCount++;
         };
 
-        // 1. 处于详细展开模式且正在生成
+        // 1. 处于详细展开模式且当前会话正在生成
         (app as any).detailed = true;
-        (app as any).busy = true;
+        (app as any).turnState.setPhase(store.currentSessionId!, "generating");
 
         // 模拟消息流式更新
         (store as any).listeners?.onMessagesChanged();
         expect(syncCount).toBe(0);
 
-        // 2. 非 busy 状态下触发更新
-        (app as any).busy = false;
+        // 2. 没有进行中的阶段时触发更新
+        (app as any).turnState.clearPhase(store.currentSessionId!);
         (store as any).listeners?.onMessagesChanged();
         expect(syncCount).toBe(1);
 
@@ -1008,7 +1006,7 @@ describe("ChatApp pending queue", () => {
         (app as any).store.setAllToolBlocksExpanded = () => {};
 
         // 模拟生成中
-        (app as any).busy = true;
+        (app as any).turnState.setPhase(store.currentSessionId!, "waiting");
         app.enqueueOrSend("待办 1");
         app.enqueueOrSend("待办 2");
         expect(app.pendingMessages).toEqual(["待办 1", "待办 2"]);
@@ -1063,7 +1061,7 @@ describe("ChatApp pending queue", () => {
 
         // 启动第一轮 send
         const sendPromise = (app as any).send("初始指令");
-        expect((app as any).busy).toBe(true);
+        expect((app as any).turnState.isBusy("__current__")).toBeDefined();
 
         // 执行期间用户输入新消息，不打断生成
         app.enqueueOrSend("执行期间插入指令 1");
@@ -1120,7 +1118,7 @@ describe("ChatApp /continue 与 ⌥+Enter", () => {
         store.currentSessionId = "sess-continue-none";
 
         await (app as any).continueCurrent();
-        expect((app as any).busy).toBe(false);
+        expect((app as any).isCurrentBusy()).toBe(false);
         expect(store.messages.some(message => message.role === "system" && message.text.includes("上一轮已结束"))).toBe(true);
     });
 
@@ -1129,7 +1127,7 @@ describe("ChatApp /continue 与 ⌥+Enter", () => {
         const store = new ChatStore();
         const app = new ChatApp(agent as any, store);
         store.currentSessionId = "sess-continue-busy";
-        (app as any).busy = true;
+        (app as any).turnState.setPhase("sess-continue-busy", "waiting");
 
         await (app as any).continueCurrent();
         expect(calls).toEqual([]);
