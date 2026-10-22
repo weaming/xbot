@@ -9,6 +9,10 @@ import { getSessionsDir } from "../utils/runtime-paths.js";
 import { sanitizeSessionId } from "../utils/session-id.js";
 import type { AgentEvent, AgentEventPayloads, AgentEventType } from "./agent-events.js";
 
+/** 从文件尾部回读的窗口：一次读这么多字节找最后一行，不够再往前翻一倍。 */
+const TAIL_WINDOW_BYTES = 8 * 1024;
+const TAIL_WINDOW_MAX_BYTES = 1024 * 1024;
+
 export class EventLog {
     private readonly seqCache = new Map<string, number>();
     private readonly appendLocks = new Map<string, Promise<void>>();
@@ -24,19 +28,7 @@ export class EventLog {
             if (cached !== undefined) return cached;
         }
 
-        const text = await readFileIfExists(this.eventFilePath(sessionId));
-        let seq = 0;
-        if (text) {
-            for (const line of text.split("\n")) {
-                if (!line.trim()) continue;
-                try {
-                    const event = JSON.parse(line) as AgentEvent;
-                    if (Number.isSafeInteger(event.seq) && event.seq > seq) seq = event.seq;
-                } catch {
-                    // 跳过损坏行并继续查找有效序号。
-                }
-            }
-        }
+        const seq = await readLastSeqFromTail(this.eventFilePath(sessionId));
         this.seqCache.set(sessionId, seq);
         return seq;
     }
@@ -128,6 +120,82 @@ export class EventLog {
         this.seqCache.delete(sessionId);
     }
 
+    /** 清掉某会话的 seq 缓存（日志已在外部删除时用）。 */
+    forget(sessionId: string): void {
+        this.seqCache.delete(sessionId);
+    }
+
+}
+
+/**
+ * 只读文件尾部求最后一条事件的 seq：大会话日志可达十几 MB，全量读入再逐行解析
+ * 只为取一个数字，首次打开会卡顿并吃掉数十 MB 内存。这里从尾部按窗口回读，找到
+ * 第一条有效事件即返回；窗口内没有（尾巴是超长行或大量损坏行）就往前翻倍。
+ */
+async function readLastSeqFromTail(filePath: string): Promise<number> {
+    let handle: fs.promises.FileHandle;
+    try {
+        handle = await fs.promises.open(filePath, "r");
+    } catch (error: any) {
+        if (error?.code === "ENOENT") return 0;
+        throw error;
+    }
+
+    try {
+        let { size } = await handle.stat();
+        let window = TAIL_WINDOW_BYTES;
+        let rest = "";
+        while (size > 0) {
+            const length = Math.min(window, size);
+            const start = size - length;
+            const buffer = Buffer.allocUnsafe(length);
+            const { bytesRead } = await handle.read(buffer, 0, length, start);
+            // rest 是上次已读部分里属于最后一行之后的内容，需与本次拼接
+            const text = buffer.subarray(0, bytesRead).toString("utf8") + rest;
+            const lines = text.split("\n");
+            // 窗口没覆盖到文件头时，首行很可能是被截断的半行
+            const skipFirst = start > 0;
+            for (let index = lines.length - 1; index >= (skipFirst ? 1 : 0); index--) {
+                const seq = parseSeq(lines[index]);
+                if (seq !== undefined) return seq;
+            }
+            if (!skipFirst) break;
+            // 整窗都没有有效事件：保留首行（可能是跨窗口的一条）继续往前
+            rest = lines[0];
+            size = start;
+            if (window >= TAIL_WINDOW_MAX_BYTES) {
+                // 兜底：窗口已达上限，换整文件扫描，保证结果正确而非静默返回 0
+                return await scanWholeFileForLastSeq(filePath);
+            }
+            window *= 2;
+        }
+        return 0;
+    } finally {
+        await handle.close();
+    }
+}
+
+/** 解析一行事件取出 seq；空行或损坏行返回 undefined。 */
+function parseSeq(line: string | undefined): number | undefined {
+    if (!line || !line.trim()) return undefined;
+    try {
+        const event = JSON.parse(line) as AgentEvent;
+        return Number.isSafeInteger(event.seq) ? event.seq : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
+/** 尾部回读放弃时的整文件兜底：只保留最大值，不保留解析结果。 */
+async function scanWholeFileForLastSeq(filePath: string): Promise<number> {
+    const text = await readFileIfExists(filePath);
+    if (!text) return 0;
+    let seq = 0;
+    for (const line of text.split("\n")) {
+        const value = parseSeq(line);
+        if (value !== undefined && value > seq) seq = value;
+    }
+    return seq;
 }
 
 async function readFileIfExists(filePath: string): Promise<string | null> {
