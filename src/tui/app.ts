@@ -207,6 +207,7 @@ export class ChatApp {
     private readonly activeTurnSessions = new Set<string>();
     private readonly pendingBackgroundResults = new Map<string, Array<{ text: string; trigger: "pending" }>>();
     private readonly unsubscribeBackgroundTaskCompletion: () => void;
+    private readonly unsubscribeBackgroundTaskStart: () => void;
     /** 等待用户作答的提问（按会话；同一个会话同时只会有一个回合在跑）。 */
     private readonly pendingQuestions = new Map<string, PendingQuestion>();
     /** 按会话隔离的未发送输入草稿：暂存、防抖与落盘由 DraftStore 统一承担。 */
@@ -352,12 +353,22 @@ export class ChatApp {
         this.bindEditor();
         bindGlobalKeys(this.tui, this.createKeyHost());
         this.agent.onTurnFinished = (sessionId) => this.onAgentTurnFinished(sessionId);
+        // 任务管理器是进程级单例：它的回调可能在 app 已退出后仍被触发，
+        // 因此每个回调都先自查生命周期，绝不假定自身仍然有效。
+        this.unsubscribeBackgroundTaskStart = backgroundTaskManager.onTaskStarted(() => {
+            if (!this.isLive()) return;
+            // 任务数变化要立刻可见，否则状态栏只在 spinner 心跳时才刷新
+            this.renderStatusBar();
+        });
         this.unsubscribeBackgroundTaskCompletion = backgroundTaskManager.onTaskCompleted(task => {
-            const sessionId = task.sessionId;
-            if (!sessionId || this.exiting || !this.activeTurnSessions.has(sessionId)) return;
-            const pending = this.pendingBackgroundResults.get(sessionId) ?? [];
-            pending.push({ text: formatBackgroundTaskNotification(task), trigger: "pending" });
-            this.pendingBackgroundResults.set(sessionId, pending);
+            if (!this.isLive()) return;
+            // 回调运行在任务管理器的异步边界上，任何异常都会逃逸成未处理拒绝，
+            // 进而打乱宿主（尤其是测试）的后续流程，因此整体兜底。
+            try {
+                this.handleBackgroundTaskCompleted(task);
+            } catch (error) {
+                console.error("⚠️ [TUI] 处理后台任务完成通知失败:", error);
+            }
         });
         // 提问通道装配后 `ask_user` 才会下发给模型。
         setUserQuestionChannel({ ask: (request, signal) => this.askUser(request, signal) });
@@ -582,6 +593,12 @@ export class ChatApp {
                 break;
             case "/tasks":
                 await this.showBackgroundTasks(rest, sessionId);
+                break;
+            case "/ps":
+                this.showProcesses(sessionId);
+                break;
+            case "/stop":
+                await this.stopWork(rest, sessionId);
                 break;
             case "/reload":
                 await this.requestRuntimeReload(sessionId);
@@ -991,6 +1008,108 @@ export class ChatApp {
     }
 
     /** 查看或管理当前会话的后台 shell 任务。 */
+    /**
+     * /ps：列出本实例正在跑的东西——当前回合 + 后台任务。
+     * 与 Codex 的 /ps 一致：只看"还在跑"，已完成的不列。
+     */
+    private showProcesses(sessionId: string | null): void {
+        const scope = sessionId ?? undefined;
+        const running = backgroundTaskManager.list(scope).filter(task => task.status === "running");
+        const turnBusy = sessionId ? this.agent.isSessionBusy(sessionId) : false;
+
+        const lines: string[] = [];
+        if (turnBusy) {
+            const phase = this.turnState.phase(sessionId);
+            const what = phase?.toolName ? `执行工具 ${phase.toolName}` : this.describeTurnPhase(phase?.phase);
+            lines.push(`- 当前回合：${what}（/stop 可中止）`);
+        }
+        for (const task of running) {
+            const command = task.command.replace(/\s+/g, " ").trim();
+            const elapsed = this.formatElapsed(task.startedAt);
+            lines.push(`- ${task.id} [运行中${elapsed ? ` ${elapsed}` : ""}] ${command}`);
+        }
+
+        if (lines.length === 0) {
+            this.store.pushSystemMessage("没有正在运行的任务", sessionId ?? undefined);
+            return;
+        }
+        this.store.pushSystemMessage(
+            [`运行中：`, ...lines, "", "用法：/stop（中止当前回合）· /stop <task_id> · /stop all"].join("\n"),
+            sessionId ?? undefined,
+        );
+    }
+
+    /** 回合阶段的展示文案；未开始或无阶段时返回通用描述。 */
+    private describeTurnPhase(phase: SessionPhaseType | undefined): string {
+        switch (phase) {
+            case "waiting": return "等待响应";
+            case "reasoning": return "思考中";
+            case "generating": return "生成回复";
+            case "compacting": return "压缩上下文";
+            case "tool": return "执行工具";
+            default: return "处理中";
+        }
+    }
+
+    /** 已运行时长（分钟精度，超过 1 小时带小时）。 */
+    private formatElapsed(startedAt: string): string {
+        const started = Date.parse(startedAt);
+        if (!Number.isFinite(started)) return "";
+        const seconds = Math.max(0, Math.floor((Date.now() - started) / 1_000));
+        if (seconds < 60) return `${seconds}s`;
+        const minutes = Math.floor(seconds / 60);
+        if (minutes < 60) return `${minutes}m`;
+        return `${Math.floor(minutes / 60)}h${minutes % 60}m`;
+    }
+
+    /**
+     * /stop：无参数时中止当前回合；带 all 终止本会话全部后台任务；
+     * 带 task_id 终止单个后台任务。与 Codex 一致，优先处理"当前正在跑的事"。
+     */
+    private async stopWork(args: string[], sessionId: string | null): Promise<void> {
+        const target = args[0]?.trim().toLowerCase();
+        const scope = sessionId ?? undefined;
+
+        if (!target) {
+            if (!sessionId) {
+                this.store.pushSystemMessage("没有打开的会话，无可中止的回合", sessionId ?? undefined);
+                return;
+            }
+            if (!this.agent.isSessionBusy(sessionId)) {
+                this.store.pushSystemMessage("当前没有正在运行的回合", sessionId);
+                return;
+            }
+            await this.abortCurrent();
+            this.store.pushSystemMessage("已请求中止当前回合", sessionId);
+            return;
+        }
+
+        if (target === "all") {
+            const running = backgroundTaskManager.list(scope).filter(task => task.status === "running");
+            if (running.length === 0) {
+                this.store.pushSystemMessage("没有正在运行的后台任务", sessionId ?? undefined);
+                return;
+            }
+            let stopped = 0;
+            for (const task of running) {
+                if (backgroundTaskManager.stop(task.id, scope)) stopped += 1;
+            }
+            this.store.pushSystemMessage(`已请求终止 ${stopped} 个后台任务`, sessionId ?? undefined);
+            return;
+        }
+
+        const task = backgroundTaskManager.get(target, scope);
+        if (!task) {
+            this.store.pushSystemMessage(`后台任务不存在或不属于当前会话：${target}`, sessionId ?? undefined);
+            return;
+        }
+        const wasRunning = backgroundTaskManager.stop(target, scope);
+        this.store.pushSystemMessage(
+            wasRunning ? `已请求终止后台任务 ${target}` : `后台任务 ${target} 当前状态：${task.status}`,
+            sessionId ?? undefined,
+        );
+    }
+
     private async showBackgroundTasks(args: string[], sessionId: string | null): Promise<void> {
         const [rawAction, taskId, rawWaitSeconds] = args;
         const action = (rawAction ?? "list").toLowerCase();
@@ -1320,7 +1439,91 @@ export class ChatApp {
         }
     }
 
-    private async send(text: string, targetSessionId?: string, images: ImageAssetRef[] = []): Promise<void> {
+    /** 后台任务完成：回落状态栏计数，并把结果送到该会话（必要时驱动新一轮）。 */
+    private handleBackgroundTaskCompleted(task: BackgroundTaskSummary): void {
+        // 无论当前是否有回合在跑，都要先让状态栏的数字回落
+        this.renderStatusBar();
+
+        const sessionId = task.sessionId;
+        if (!sessionId) return;
+
+        const notification = formatBackgroundTaskNotification(task);
+        if (this.activeTurnSessions.has(sessionId)) {
+            // 回合进行中：结果随下一次请求带给模型，不额外驱动一轮
+            const pending = this.pendingBackgroundResults.get(sessionId) ?? [];
+            pending.push({ text: notification, trigger: "pending" });
+            this.pendingBackgroundResults.set(sessionId, pending);
+            return;
+        }
+
+        // 回合已结束：没有在跑的回合可挂靠，直接把结果当作新输入驱动一轮，
+        // 否则结果只会留在内存里直到用户下次说话才被看到。
+        void this.runBackgroundCompletionTurn(sessionId, notification);
+    }
+
+    /**
+     * 本实例是否仍可安全执行副作用。
+     * backgroundTaskManager 是进程级单例，其回调可能在 app 退出后仍被触发。
+     */
+    private isLive(): boolean {
+        return !this.exiting;
+    }
+
+    /**
+     * 回合已结束时把积压的后台任务结果驱动成新一轮。
+     *
+     * 结果以完整通知文本给模型（它需要结构化字段），时间线只显示一行摘要。
+     * 会话正在跑或已归档时不动：前者会被 consumePendingMessages 捎上，后者是只读。
+     */
+    private async runBackgroundCompletionTurn(sessionId: string, notification: string): Promise<void> {
+        await this.driveIdleSession(sessionId, [notification]);
+    }
+
+    /**
+     * 在会话空闲时把一批"无回合可挂靠"的文本驱动成一轮。
+     * 忙/归档/退出/切换中一律不动，等后续时机再送。
+     */
+    private async driveIdleSession(sessionId: string, texts: string[]): Promise<void> {
+        if (texts.length === 0) return;
+        if (!this.isLive() || this.switching || this.runtimeReloading) return;
+        // 只驱动本实例已载入视图的会话：任务可能在 app 退出、会话被接管之后才完成，
+        // 那时驱动本实例的 send 只会操作一份失效的视图。
+        if (!this.store.hasSessionView(sessionId)) return;
+        if (this.agent.isSessionBusy(sessionId)) return;
+        if (this.isSessionArchived(sessionId)) return;
+
+        const text = texts.join("\n");
+        const display = this.backgroundCompletionDisplay(texts);
+        await this.send(text, sessionId, [], display);
+    }
+
+    /** 后台任务结果在时间线上的展示摘要：不把整段 JSON 甩给用户。 */
+    private backgroundCompletionDisplay(texts: string[]): string | undefined {
+        const ids: string[] = [];
+        const statuses: string[] = [];
+        for (const text of texts) {
+            const id = /"task_id":\s*"([^"]+)"/.exec(text)?.[1];
+            const status = /"status":\s*"([^"]+)"/.exec(text)?.[1];
+            if (id) ids.push(id);
+            if (status) statuses.push(status);
+        }
+        if (ids.length === 0) return undefined;
+        const labels: Record<string, string> = {
+            completed: "已完成",
+            failed: "失败",
+            stopped: "已终止",
+            timed_out: "超时",
+        };
+        const statusText = statuses.map(status => labels[status] ?? status).join("、");
+        return `⚙ 后台任务 ${ids.join("、")} ${statusText}`;
+    }
+
+    private async send(
+        text: string,
+        targetSessionId?: string,
+        images: ImageAssetRef[] = [],
+        displayText?: string,
+    ): Promise<void> {
         const sessionId = targetSessionId ?? this.store.currentSessionId;
         if (!sessionId) return;
         if (this.isSessionArchived(sessionId)) return;
@@ -1328,8 +1531,10 @@ export class ChatApp {
         // 运行态由 turnState 的 phase 承担；这里只同步输入框可用性
         this.setSessionPhase(sessionId, "waiting");
         this.syncSubmitState();
-        this.store.addUserMessage(this.formatImageInput(text, images), sessionId);
-        this.setSessionTitleIfAbsent(sessionId, text);
+        // displayText 只影响落盘与时间线：后台任务通知发给模型的是完整 JSON，
+        // 但用户看到的那条消息应是可读摘要。
+        this.store.addUserMessage(this.formatImageInput(displayText ?? text, images), sessionId);
+        this.setSessionTitleIfAbsent(sessionId, displayText ?? text);
         if (this.store.currentSessionId === sessionId && !this.detailed) {
             this.scrollView.scrollToEnd();
         }
@@ -1342,6 +1547,7 @@ export class ChatApp {
         try {
             const result = await this.agent.sendMessage(sessionId, text, {
                 images,
+                ...(displayText ? { displayText } : {}),
                 consumePendingMessages: () => {
                     // 回合执行中到达的会话间结果：本轮后续请求直接带上（下一次 HTTP 请求时附加）
                     const peerResults = this.agent.takePeerResults(sessionId);
@@ -1378,7 +1584,13 @@ export class ChatApp {
             }
         } finally {
             this.activeTurnSessions.delete(sessionId);
-            this.pendingBackgroundResults.delete(sessionId);
+            // 回合结束即"本会话不再有活跃回合"：此刻仍积压的后台任务结果，
+            // 是在回合收尾瞬间到达的，没有回合可挂靠了，交给空闲驱动逻辑送出去。
+            const leftover = this.pendingBackgroundResults.get(sessionId);
+            if (leftover && leftover.length > 0) {
+                this.pendingBackgroundResults.delete(sessionId);
+                void this.driveIdleSession(sessionId, leftover.map(item => item.text));
+            }
             const durationMs = Date.now() - sendStartTime;
             herdrReporter.report("idle");
             // 阶段清除即表示本会话空闲：turnState 内部不再有「先复位谁」的顺序问题
@@ -2427,6 +2639,7 @@ export class ChatApp {
             now: Date.now(),
             latestPromptTokens: this.store.latestPromptTokens,
             awaitingAnswer: this.pendingQuestions.size,
+            backgroundRunning: sessionId ? backgroundTaskManager.runningCount(sessionId) : 0,
             totalTokens: this.store.totalTokens,
             promptTokens: this.store.promptTokens,
             completionTokens: this.store.completionTokens,
@@ -2689,6 +2902,7 @@ export class ChatApp {
         if (this.exiting) return;
         this.exiting = true;
         this.unsubscribeBackgroundTaskCompletion();
+        this.unsubscribeBackgroundTaskStart();
         // 先释放本实例持有的会话 socket：让等待中的其他实例能立刻接管
         herdrReporter.release();
         this.stopSpinnerTimer();

@@ -108,11 +108,18 @@ class BackgroundTaskManager {
     private readonly tasks = new Map<string, BackgroundTaskRecord>();
     private readonly foregroundRuns = new Set<ForegroundShellRun>();
     private readonly completionListeners = new Set<(task: BackgroundTaskSummary) => void>();
+    private readonly startListeners = new Set<(task: BackgroundTaskSummary) => void>();
     private nextTaskId = 1;
 
     onTaskCompleted(listener: (task: BackgroundTaskSummary) => void): () => void {
         this.completionListeners.add(listener);
         return () => this.completionListeners.delete(listener);
+    }
+
+    /** 任务进入 running：让界面能在启动瞬间反映"有后台任务在跑"。 */
+    onTaskStarted(listener: (task: BackgroundTaskSummary) => void): () => void {
+        this.startListeners.add(listener);
+        return () => this.startListeners.delete(listener);
     }
 
     startShell(options: ShellProcessOptions): ShellProcessHandle {
@@ -375,6 +382,7 @@ class BackgroundTaskManager {
             done,
         };
         this.tasks.set(id, task);
+        this.notifyTaskStarted(task.summary);
 
         const timeoutSeconds = Math.min(
             MAX_BACKGROUND_TIMEOUT_SECONDS,
@@ -398,6 +406,28 @@ class BackgroundTaskManager {
             ...(includeOutput && stderr ? { stderr: trimOutput(stderr) } : {}),
             ...(task.outputTruncated ? { outputTruncated: true } : {}),
         };
+    }
+
+    private notifyTaskStarted(task: BackgroundTaskSummary): void {
+        for (const listener of this.startListeners) {
+            try {
+                listener(task);
+            } catch (error) {
+                console.error("后台任务启动通知失败", error);
+            }
+        }
+    }
+
+    /** 当前会话仍在运行的后台任务数。 */
+    runningCount(sessionId?: string): number {
+        this.prune();
+        let count = 0;
+        for (const task of this.tasks.values()) {
+            if (task.summary.status !== "running") continue;
+            if (sessionId !== undefined && task.summary.sessionId !== sessionId) continue;
+            count += 1;
+        }
+        return count;
     }
 
     private notifyTaskCompleted(task: BackgroundTaskSummary): void {

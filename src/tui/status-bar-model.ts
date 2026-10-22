@@ -29,6 +29,8 @@ export interface StatusBarInput {
     now: number;
     /** 正在等用户作答的会话数（提问挂起，tab 条同时打 `?` 标记）。 */
     awaitingAnswer?: number;
+    /** 当前会话仍在运行的后台 shell 任务数；0 或省略时不占位。 */
+    backgroundRunning?: number;
     latestPromptTokens: number;
     totalTokens: number;
     promptTokens: number;
@@ -148,7 +150,11 @@ export function buildStatusBarModel(input: StatusBarInput): StatusBarModel {
     const questionTag = input.awaitingAnswer
         ? theme.statusWarn(`❓${input.awaitingAnswer} 待作答`)
         : "";
-    const line1Right = [questionTag, statusHint, cwdTag].filter(Boolean).join("  ");
+    // 后台任务没有浮层可看，只能在这里体现；否则用户看不出还有长任务在跑
+    const backgroundTag = input.backgroundRunning
+        ? theme.dim(`⚙${input.backgroundRunning} 后台`)
+        : "";
+    const line1Right = [questionTag, backgroundTag, statusHint, cwdTag].filter(Boolean).join("  ");
 
     // 第 1 行左侧末尾：会话累计平均生成速率；请求进行中置灰表示还没算上本轮
     const rateTag = input.lastRate ? formatRateTag(input.lastRate, input.phase !== undefined) : "";

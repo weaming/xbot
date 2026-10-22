@@ -42,6 +42,17 @@ describe("状态栏模型", () => {
         expect(plain(model.line2.right)).toBe("sess-abcdef123456");
     });
 
+    test("后台任务运行时显示计数，0 或未设置时不占位", () => {
+        const withTasks = buildStatusBarModel(input({ backgroundRunning: 2 }));
+        expect(plain(withTasks.line1.right)).toContain("⚙2 后台");
+
+        const without = buildStatusBarModel(input({ backgroundRunning: 0 }));
+        expect(plain(without.line1.right)).not.toContain("后台");
+
+        const unset = buildStatusBarModel(input());
+        expect(plain(unset.line1.right)).not.toContain("后台");
+    });
+
     test("无会话时显示「无会话」", () => {
         const model = buildStatusBarModel(input({ sessionId: null }));
 
