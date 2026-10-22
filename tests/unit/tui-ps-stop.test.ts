@@ -1,8 +1,8 @@
 /**
- * /ps 与 /stop：对齐 Codex 的进程视图与终止语义。
+ * /ps 与 /stop：只操作当前会话运行中的后台任务。
  *
- * /ps   —— 只列"还在跑"的：当前回合 + 后台任务
- * /stop —— 无参中止当前回合；<task_id> 或 all 终止后台任务
+ * /ps   —— 只列运行中的后台任务
+ * /stop —— 无参或 all 终止所有运行中的后台任务；<task_id> 终止单个任务
  */
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
@@ -89,27 +89,50 @@ afterEach(() => {
 });
 
 describe("/ps", () => {
-    test("无任何运行时提示没有正在运行的任务", async () => {
+    test("无后台任务时提示没有正在运行的后台任务", async () => {
         const { app, store } = makeApp();
         await app.handleCommand("/ps");
-        expect(lastSystemText(store)).toContain("没有正在运行的任务");
+        expect(lastSystemText(store)).toContain("没有正在运行的后台任务");
     });
 
-    test("列出当前回合与后台任务", async () => {
+    test("无会话时提示无法查看后台任务", async () => {
+        const store = new ChatStore();
+        store.setCurrentSession(null);
+        const app: any = new ChatApp(makeAgent(), store);
+
+        await app.handleCommand("/ps");
+        expect(lastSystemText(store)).toContain("没有打开的会话，无法查看后台任务");
+    });
+
+    test("只列出后台任务，不列当前回合", async () => {
         const cleanup = fakeRunningTask("fake_1");
         try {
             const { app, store } = makeApp(makeAgent({ isSessionBusy: () => true }));
-            app.turnState.setPhase(SESSION, "tool", "bash");
-
             await app.handleCommand("/ps");
             const text = lastSystemText(store);
 
-            expect(text).toContain("当前回合");
-            expect(text).toContain("执行工具 bash");
+            expect(text).not.toContain("当前回合");
             expect(text).toContain("fake_1");
             expect(text).toContain("npm run dev");
-            // 运行时长以 m 结尾（伪造 90s 前启动）
-            expect(text).toMatch(/运行中 1m/);
+            expect(text).toContain("后台任务（1 个运行中）");
+            expect(text).toMatch(/fake_1 · 1m/);
+        } finally {
+            cleanup();
+        }
+    });
+
+    test("只有当前回合在运行时提示没有后台任务", async () => {
+        const { app, store } = makeApp(makeAgent({ isSessionBusy: () => true }));
+        await app.handleCommand("/ps");
+        expect(lastSystemText(store)).toContain("没有正在运行的后台任务");
+    });
+
+    test("不列出其他会话的后台任务", async () => {
+        const cleanup = fakeRunningTask("fake_other", "other-session");
+        try {
+            const { app, store } = makeApp();
+            await app.handleCommand("/ps");
+            expect(lastSystemText(store)).toContain("没有正在运行的后台任务");
         } finally {
             cleanup();
         }
@@ -127,6 +150,42 @@ describe("/ps", () => {
             expect(lastSystemText(store)).not.toContain("fake_done");
         } finally {
             manager.tasks.delete("fake_done");
+        }
+    });
+
+    test("命令与最近输出按列宽截断，且不显示终端控制码", async () => {
+        const cleanup = fakeRunningTask("fake_preview", SESSION, `运行 ${"长".repeat(50)}`);
+        const manager: any = backgroundTaskManager;
+        manager.tasks.get("fake_preview").stdoutChunks = [Buffer.from("旧输出\n\x1b[31m最新输出\x1b[0m")];
+        manager.tasks.get("fake_preview").stderrChunks = [Buffer.from("错误信息\n最后错误")];
+        try {
+            const { app, store } = makeApp();
+            await app.handleCommand("/ps");
+            const output = lastSystemText(store);
+
+            expect(output).toContain("最新输出");
+            expect(output).toContain("错误：最后错误");
+            expect(output).not.toContain("旧输出");
+            expect(output).not.toContain("\x1b");
+            expect(output).toContain("…");
+        } finally {
+            cleanup();
+        }
+    });
+
+    test("大量后台任务只展示前 16 个并标明剩余数量", async () => {
+        const cleanups = Array.from({ length: 18 }, (_, index) => fakeRunningTask(`fake_many_${index}`));
+        try {
+            const { app, store } = makeApp();
+            await app.handleCommand("/ps");
+            const output = lastSystemText(store);
+
+            expect(output).toContain("后台任务（18 个运行中）");
+            expect(output).toContain("fake_many_15");
+            expect(output).not.toContain("fake_many_16");
+            expect(output).toContain("…还有 2 个任务");
+        } finally {
+            cleanups.forEach(cleanup => cleanup());
         }
     });
 
@@ -239,13 +298,13 @@ describe("后台任务完成后驱动新一轮", () => {
 });
 
 describe("/stop", () => {
-    test("无参数且空闲时提示没有正在运行的回合", async () => {
+    test("无参数且没有后台任务时如实提示", async () => {
         const { app, store } = makeApp(makeAgent({ isSessionBusy: () => false }));
         await app.handleCommand("/stop");
-        expect(lastSystemText(store)).toContain("当前没有正在运行的回合");
+        expect(lastSystemText(store)).toContain("没有正在运行的后台任务");
     });
 
-    test("无参数且回合进行中时中止当前回合", async () => {
+    test("无参数且回合进行中时不终止回合", async () => {
         let aborted = "";
         const { app, store } = makeApp(makeAgent({
             isSessionBusy: () => true,
@@ -256,17 +315,48 @@ describe("/stop", () => {
         }));
 
         await app.handleCommand("/stop");
-        expect(aborted).toBe(SESSION);
-        expect(lastSystemText(store)).toContain("已请求中止当前回合");
+        expect(aborted).toBe("");
+        expect(lastSystemText(store)).toContain("没有正在运行的后台任务");
     });
 
-    test("无会话时提示无可中止的回合", async () => {
+    test("无会话时提示无法终止后台任务", async () => {
         const store = new ChatStore();
         store.setCurrentSession(null);
         const app: any = new ChatApp(makeAgent(), store);
 
         await app.handleCommand("/stop");
-        expect(lastSystemText(store)).toContain("没有打开的会话");
+        expect(lastSystemText(store)).toContain("没有打开的会话，无法终止后台任务");
+    });
+
+    test("无参数终止当前会话全部运行中的后台任务，不终止当前回合或其他会话任务", async () => {
+        const cleanupA = fakeRunningTask("fake_default_a");
+        const cleanupB = fakeRunningTask("fake_default_b");
+        const cleanupOther = fakeRunningTask("fake_other_session", "other-session");
+        const manager: any = backgroundTaskManager;
+        const originalStop = manager.stop.bind(manager);
+        const stopped: string[] = [];
+        let aborted = false;
+        manager.stop = (taskId: string, sessionId?: string) => {
+            expect(sessionId).toBe(SESSION);
+            stopped.push(taskId);
+            manager.tasks.delete(taskId);
+            return true;
+        };
+        try {
+            const { app, store } = makeApp(makeAgent({
+                isSessionBusy: () => true,
+                abortSession: async () => { aborted = true; return true; },
+            }));
+            await app.handleCommand("/stop");
+            expect(stopped.sort()).toEqual(["fake_default_a", "fake_default_b"]);
+            expect(aborted).toBe(false);
+            expect(lastSystemText(store)).toContain("已请求终止 2 个后台任务");
+        } finally {
+            manager.stop = originalStop;
+            cleanupA();
+            cleanupB();
+            cleanupOther();
+        }
     });
 
     test("带 task_id 终止对应后台任务", async () => {

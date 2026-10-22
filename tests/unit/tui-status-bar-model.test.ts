@@ -45,6 +45,7 @@ describe("状态栏模型", () => {
     test("后台任务运行时显示计数，0 或未设置时不占位", () => {
         const withTasks = buildStatusBarModel(input({ backgroundRunning: 2 }));
         expect(plain(withTasks.line1.right)).toContain("⚙2 后台");
+        expect(plain(withTasks.line1.right)).toContain("/ps · /stop");
 
         const without = buildStatusBarModel(input({ backgroundRunning: 0 }));
         expect(plain(without.line1.right)).not.toContain("后台");

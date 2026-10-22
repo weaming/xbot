@@ -152,7 +152,7 @@ export function buildStatusBarModel(input: StatusBarInput): StatusBarModel {
         : "";
     // 后台任务没有浮层可看，只能在这里体现；否则用户看不出还有长任务在跑
     const backgroundTag = input.backgroundRunning
-        ? theme.dim(`⚙${input.backgroundRunning} 后台`)
+        ? theme.dim(`⚙${input.backgroundRunning} 后台 · /ps · /stop`)
         : "";
     const line1Right = [questionTag, backgroundTag, statusHint, cwdTag].filter(Boolean).join("  ");
 

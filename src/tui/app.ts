@@ -55,6 +55,7 @@ import {
 } from "./panel-overlay.js";
 import { PanelStack } from "./panel-stack.js";
 import { PendingQueue, type PendingMessage } from "./pending-queue.js";
+import { truncatePlain } from "./panel-text.js";
 import { parseWheelEvent, type WheelEvent } from "./panel-input.js";
 import { PromptEditor } from "./prompt-editor.js";
 import { StatusBar } from "./status-bar.js";
@@ -123,6 +124,8 @@ interface PendingQuestion {
 /** 需要当前会话才能执行的命令（无会话时直接提示，不静默失败）。 */
 const SESSION_REQUIRED_COMMANDS = new Set(["/clear", "/archive", "/unarchive", "/delete", "/close", "/compact", "/continue", "/system", "/model"]);
 const GLOBAL_RUNTIME_RELOAD_KEY = "__global__";
+const MAX_SHOWN_BACKGROUND_TASKS = 16;
+const MAX_TASK_TEXT_COLUMNS = 72;
 
 function formatBackgroundTaskDetails(task: BackgroundTaskSummary): string {
     const statusLabels: Record<BackgroundTaskSummary["status"], string> = {
@@ -1007,48 +1010,36 @@ export class ChatApp {
         return true;
     }
 
-    /** 查看或管理当前会话的后台 shell 任务。 */
-    /**
-     * /ps：列出本实例正在跑的东西——当前回合 + 后台任务。
-     * 与 Codex 的 /ps 一致：只看"还在跑"，已完成的不列。
-     */
+    /** 列出当前会话运行中的后台 shell 任务。 */
     private showProcesses(sessionId: string | null): void {
-        const scope = sessionId ?? undefined;
-        const running = backgroundTaskManager.list(scope).filter(task => task.status === "running");
-        const turnBusy = sessionId ? this.agent.isSessionBusy(sessionId) : false;
-
-        const lines: string[] = [];
-        if (turnBusy) {
-            const phase = this.turnState.phase(sessionId);
-            const what = phase?.toolName ? `执行工具 ${phase.toolName}` : this.describeTurnPhase(phase?.phase);
-            lines.push(`- 当前回合：${what}（/stop 可中止）`);
-        }
-        for (const task of running) {
-            const command = task.command.replace(/\s+/g, " ").trim();
-            const elapsed = this.formatElapsed(task.startedAt);
-            lines.push(`- ${task.id} [运行中${elapsed ? ` ${elapsed}` : ""}] ${command}`);
-        }
-
-        if (lines.length === 0) {
-            this.store.pushSystemMessage("没有正在运行的任务", sessionId ?? undefined);
+        if (!sessionId) {
+            this.store.pushSystemMessage("没有打开的会话，无法查看后台任务");
             return;
         }
-        this.store.pushSystemMessage(
-            [`运行中：`, ...lines, "", "用法：/stop（中止当前回合）· /stop <task_id> · /stop all"].join("\n"),
-            sessionId ?? undefined,
-        );
-    }
 
-    /** 回合阶段的展示文案；未开始或无阶段时返回通用描述。 */
-    private describeTurnPhase(phase: SessionPhaseType | undefined): string {
-        switch (phase) {
-            case "waiting": return "等待响应";
-            case "reasoning": return "思考中";
-            case "generating": return "生成回复";
-            case "compacting": return "压缩上下文";
-            case "tool": return "执行工具";
-            default: return "处理中";
+        const running = backgroundTaskManager.list(sessionId).filter(task => task.status === "running");
+        if (running.length === 0) {
+            this.store.pushSystemMessage("没有正在运行的后台任务", sessionId);
+            return;
         }
+
+        const lines = [`后台任务（${running.length} 个运行中）：`, ""];
+        for (const task of running.slice(0, MAX_SHOWN_BACKGROUND_TASKS)) {
+            const command = truncatePlain(task.command, MAX_TASK_TEXT_COLUMNS);
+            const elapsed = this.formatElapsed(task.startedAt);
+            lines.push(`  • ${task.id}${elapsed ? ` · ${elapsed}` : ""}  ${command}`);
+
+            const stdoutLine = task.stdout?.trim().split(/\r\n|\r|\n/).at(-1);
+            const stderrLine = task.stderr?.trim().split(/\r\n|\r|\n/).at(-1);
+            if (stdoutLine) lines.push(`    ↳ ${truncatePlain(stdoutLine, MAX_TASK_TEXT_COLUMNS)}`);
+            if (stderrLine) lines.push(`    ↳ 错误：${truncatePlain(stderrLine, MAX_TASK_TEXT_COLUMNS - 6)}`);
+        }
+
+        if (running.length > MAX_SHOWN_BACKGROUND_TASKS) {
+            lines.push(`  …还有 ${running.length - MAX_SHOWN_BACKGROUND_TASKS} 个任务`);
+        }
+        lines.push("", "使用 /stop <task_id> 终止指定任务，/stop 终止全部");
+        this.store.pushSystemMessage(lines.join("\n"), sessionId);
     }
 
     /** 已运行时长（分钟精度，超过 1 小时带小时）。 */
@@ -1062,51 +1053,37 @@ export class ChatApp {
         return `${Math.floor(minutes / 60)}h${minutes % 60}m`;
     }
 
-    /**
-     * /stop：无参数时中止当前回合；带 all 终止本会话全部后台任务；
-     * 带 task_id 终止单个后台任务。与 Codex 一致，优先处理"当前正在跑的事"。
-     */
+    /** 终止当前会话的后台任务；无参数或 all 终止全部运行中的任务。 */
     private async stopWork(args: string[], sessionId: string | null): Promise<void> {
         const target = args[0]?.trim().toLowerCase();
-        const scope = sessionId ?? undefined;
-
-        if (!target) {
-            if (!sessionId) {
-                this.store.pushSystemMessage("没有打开的会话，无可中止的回合", sessionId ?? undefined);
-                return;
-            }
-            if (!this.agent.isSessionBusy(sessionId)) {
-                this.store.pushSystemMessage("当前没有正在运行的回合", sessionId);
-                return;
-            }
-            await this.abortCurrent();
-            this.store.pushSystemMessage("已请求中止当前回合", sessionId);
+        if (!sessionId) {
+            this.store.pushSystemMessage("没有打开的会话，无法终止后台任务");
             return;
         }
 
-        if (target === "all") {
-            const running = backgroundTaskManager.list(scope).filter(task => task.status === "running");
+        if (!target || target === "all") {
+            const running = backgroundTaskManager.list(sessionId).filter(task => task.status === "running");
             if (running.length === 0) {
-                this.store.pushSystemMessage("没有正在运行的后台任务", sessionId ?? undefined);
+                this.store.pushSystemMessage("没有正在运行的后台任务", sessionId);
                 return;
             }
             let stopped = 0;
             for (const task of running) {
-                if (backgroundTaskManager.stop(task.id, scope)) stopped += 1;
+                if (backgroundTaskManager.stop(task.id, sessionId)) stopped += 1;
             }
-            this.store.pushSystemMessage(`已请求终止 ${stopped} 个后台任务`, sessionId ?? undefined);
+            this.store.pushSystemMessage(`已请求终止 ${stopped} 个后台任务`, sessionId);
             return;
         }
 
-        const task = backgroundTaskManager.get(target, scope);
+        const task = backgroundTaskManager.get(target, sessionId);
         if (!task) {
-            this.store.pushSystemMessage(`后台任务不存在或不属于当前会话：${target}`, sessionId ?? undefined);
+            this.store.pushSystemMessage(`后台任务不存在或不属于当前会话：${target}`, sessionId);
             return;
         }
-        const wasRunning = backgroundTaskManager.stop(target, scope);
+        const wasRunning = backgroundTaskManager.stop(target, sessionId);
         this.store.pushSystemMessage(
             wasRunning ? `已请求终止后台任务 ${target}` : `后台任务 ${target} 当前状态：${task.status}`,
-            sessionId ?? undefined,
+            sessionId,
         );
     }
 
