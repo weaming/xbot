@@ -56,6 +56,7 @@ import {
     type PanelOverlay,
 } from "./panel-overlay.js";
 import { PanelStack } from "./panel-stack.js";
+import { PendingQueue, type PendingMessage } from "./pending-queue.js";
 import { parseWheelEvent, type WheelEvent } from "./panel-input.js";
 import { PromptEditor } from "./prompt-editor.js";
 import { StatusBar } from "./status-bar.js";
@@ -91,7 +92,7 @@ import {
 import { ToolBlockText } from "./tool-block-text.js";
 import { editorTheme, markdownTheme, theme } from "./theme.js";
 import { setTuiLogSession } from "./runtime-context.js";
-import { loadRichDrafts, persistRichDrafts } from "./draft-store.js";
+import { DraftStore, loadRichDrafts, persistRichDrafts } from "./draft-store.js";
 import { isCmdDown, isCmdGateSupported } from "./cmd-modifier.js";
 import { herdrReporter } from "./herdr-reporter.js";
 import { notifyTurnResult } from "./notifier.js";
@@ -220,17 +221,19 @@ export class ChatApp {
     /** pending 列表一次最多显示的消息行数（不含 header），超出时窗口化。 */
     private static readonly PENDING_MAX_VISIBLE = 5;
     /** 按会话隔离的入队消息队列与选中索引。 */
-    private readonly sessionPending = new Map<string, { messages: Array<string | { text: string; images: ImageAssetRef[] }>; index: number }>();
+    private readonly pending = new PendingQueue();
     /** 只在现有回合仍运行时注入的后台任务完成通知。 */
     private readonly activeTurnSessions = new Set<string>();
     private readonly pendingBackgroundResults = new Map<string, Array<{ text: string; trigger: "pending" }>>();
     private readonly unsubscribeBackgroundTaskCompletion: () => void;
     /** 等待用户作答的提问（按会话；同一个会话同时只会有一个回合在跑）。 */
     private readonly pendingQuestions = new Map<string, PendingQuestion>();
-    /** 按会话隔离的未发送输入草稿内容。 */
-    private readonly sessionDrafts = new Map<string, TuiDraft | string>();
-    /** 草稿落盘防抖定时器（连续输入只在停顿后写一次）。 */
-    private draftSaveTimer: ReturnType<typeof setTimeout> | null = null;
+    /** 按会话隔离的未发送输入草稿：暂存、防抖与落盘由 DraftStore 统一承担。 */
+    private readonly drafts = new DraftStore({
+        // marker 展开依赖编辑器持有的 paste 缓存；实例化时编辑器尚未就绪，故延迟到调用时解析
+        expand: (sessionId, text) => this.editor.expandSessionDraft(sessionId, text),
+        persist: richDrafts => persistRichDrafts(richDrafts),
+    });
     /** 按会话记录当前的实时执行阶段与开始时间。 */
     private readonly turnState = new TurnStateStore();
     /** 会话归属快照：面板/切换的认领入口必须让用户看得见归属，异步探测后缓存。 */
@@ -284,38 +287,20 @@ export class ChatApp {
         return false;
     }
 
-    private getPendingState(sessionId: string | null = this.store.currentSessionId): { messages: Array<string | { text: string; images: ImageAssetRef[] }>; index: number } {
-        const key = sessionId ?? "";
-        let state = this.sessionPending.get(key);
-        if (!state) {
-            state = { messages: [], index: 0 };
-            this.sessionPending.set(key, state);
-        }
-        return state;
-    }
-
     get pendingMessages(): string[] {
-        const messages = this.getPendingState().messages;
-        if (messages.every(message => typeof message === "string")) return messages as string[];
-        return messages.map(message => this.toPendingMessage(message).text);
+        return this.pending.messages(this.store.currentSessionId).map(message => this.formatPendingInput(message));
     }
 
     set pendingMessages(messages: string[]) {
-        const state = this.getPendingState();
-        state.messages = [...messages];
-        if (state.messages.length === 0) {
-            state.index = 0;
-        } else if (state.index >= state.messages.length) {
-            state.index = state.messages.length - 1;
-        }
+        this.pending.replace(this.store.currentSessionId, [...messages]);
     }
 
     get pendingIndex(): number {
-        return this.getPendingState().index;
+        return this.pending.index(this.store.currentSessionId);
     }
 
     set pendingIndex(index: number) {
-        this.getPendingState().index = index;
+        this.pending.setIndex(this.store.currentSessionId, index);
     }
 
     constructor(
@@ -400,7 +385,7 @@ export class ChatApp {
     async init(startupMessage?: string): Promise<void> {
         // 恢复上次退出前各会话的输入草稿（切回对应会话时填回输入框）
         for (const [sessionId, draft] of loadRichDrafts()) {
-            this.sessionDrafts.set(sessionId, draft);
+            this.drafts.set(sessionId, typeof draft === "string" ? draft : draft.text, typeof draft === "string" ? [] : draft.images);
         }
         this.agent.onEvent = (requestId, sessionId, event) => {
             this.store.applyEvent(requestId, sessionId, event);
@@ -512,18 +497,16 @@ export class ChatApp {
             || this.switching
             || this.turnState.isBusy(sessionId)
             || (sessionId ? this.agent.isSessionBusy(sessionId) : false);
+        const message: PendingMessage = images.length > 0 ? { text, images } : text;
         if (isBusy) {
-            const state = this.getPendingState(sessionId);
-            state.messages.push(images.length > 0 ? { text, images } : text);
-            state.index = state.messages.length - 1;
+            this.pending.push(sessionId, message);
             if (!sessionId || sessionId === this.store.currentSessionId) {
                 this.renderPending();
             }
             return;
         }
-        const state = this.getPendingState(sessionId);
-        if (state.messages.length > 0) {
-            state.messages.push(images.length > 0 ? { text, images } : text);
+        if (!this.pending.isEmpty(sessionId)) {
+            this.pending.push(sessionId, message);
             this.sendNextPending(sessionId);
             return;
         }
@@ -544,8 +527,9 @@ export class ChatApp {
      */
     renderPending(): void {
         this.pendingList.clear();
-        const state = this.getPendingState();
-        if (state.messages.length === 0) {
+        const sessionId = this.store.currentSessionId;
+        const total = this.pending.count(sessionId);
+        if (total === 0) {
             this.layout.setMinSize(this.pendingList, 0);
             this.tui.requestRender();
             return;
@@ -553,7 +537,7 @@ export class ChatApp {
         const views = this.pendingRowViews();
         const width = process.stdout.columns > 0 ? process.stdout.columns : 80;
         const innerWidth = Math.max(10, width - 2); // 预留「> 」前缀
-        const header = `⏵ ${state.messages.length} pending (${state.index + 1}/${state.messages.length})  ·  ⌥↑/⌥↓ 选择  ⌥⌫ 删除`;
+        const header = `⏵ ${total} pending (${this.pending.index(sessionId) + 1}/${total})  ·  ⌥↑/⌥↓ 选择  ⌥⌫ 删除`;
         this.pendingList.addChild(new Text(theme.dim(truncateToWidth(header, width, "…")), 0, 0));
         for (const view of views) {
             const styled = view.selected
@@ -566,35 +550,21 @@ export class ChatApp {
         this.tui.requestRender();
     }
 
-    /** 计算 pending 队列当前可见行的视图（带窗口化），每行带 prefix/selected/text。 */
+    /** 计算 pending 队列当前可见行的视图（窗口化规则在 PendingQueue 内）。 */
     private pendingRowViews(): Array<{ prefix: string; selected: boolean; text: string }> {
-        const state = this.getPendingState();
-        const total = state.messages.length;
-        if (total === 0) return [];
-        const max = Math.min(total, ChatApp.PENDING_MAX_VISIBLE);
-        // 围绕 pendingIndex 居中窗口化
-        const half = Math.floor(max / 2);
-        let start = Math.max(0, state.index - half);
-        const end = Math.min(total, start + max);
-        start = Math.max(0, end - max);
-        const views: Array<{ prefix: string; selected: boolean; text: string }> = [];
-        for (let index = start; index < end; index += 1) {
-            views.push({
-                prefix: index === state.index ? `> ${index + 1})` : `  ${index + 1})`,
-                selected: index === state.index,
-                text: this.formatPendingInput(state.messages[index]),
-            });
-        }
-        return views;
+        return this.pending
+            .window(this.store.currentSessionId, ChatApp.PENDING_MAX_VISIBLE, message => this.formatPendingInput(message))
+            .map(view => ({
+                prefix: view.selected ? `> ${view.ordinal})` : `  ${view.ordinal})`,
+                selected: view.selected,
+                text: view.text,
+            }));
     }
 
     /** 清空 pending 队列（会话清空/新建/关闭/删除/退出时使用）。 */
     clearPending(sessionId: string | null = this.store.currentSessionId): void {
-        const key = sessionId ?? "";
-        const state = this.sessionPending.get(key);
-        if (!state || state.messages.length === 0) return;
-        state.messages = [];
-        state.index = 0;
+        if (this.pending.isEmpty(sessionId)) return;
+        this.pending.clear(sessionId);
         if (!sessionId || sessionId === this.store.currentSessionId) {
             this.renderPending();
         }
@@ -602,14 +572,7 @@ export class ChatApp {
 
     /** 按索引删除 pending 消息（越界返回 false），由 Backspace 键调用。 */
     deletePending(index: number, sessionId: string | null = this.store.currentSessionId): boolean {
-        const state = this.getPendingState(sessionId);
-        if (index < 0 || index >= state.messages.length) return false;
-        state.messages.splice(index, 1);
-        if (state.messages.length === 0) {
-            state.index = 0;
-        } else if (state.index >= state.messages.length) {
-            state.index = state.messages.length - 1;
-        }
+        if (!this.pending.removeAt(sessionId, index)) return false;
         if (!sessionId || sessionId === this.store.currentSessionId) {
             this.renderPending();
         }
@@ -895,7 +858,7 @@ export class ChatApp {
             return;
         }
         const isCurrent = this.store.currentSessionId === sessionId;
-        this.sessionPending.delete(sessionId);
+        this.pending.clear(sessionId);
         this.dropDraft(sessionId);
         this.editor.clearSessionPastes(sessionId);
         if (isCurrent) {
@@ -960,9 +923,9 @@ export class ChatApp {
             toggleQuestionPanel: () => this.toggleQuestionPanel(),
             continueCurrent: () => { void this.continueCurrent(); },
             editorText: () => this.editor.getText(),
-            pendingCount: () => this.getPendingState().messages.length,
-            pendingIndex: () => this.getPendingState().index,
-            setPendingIndex: (index) => { this.getPendingState().index = index; },
+            pendingCount: () => this.pending.count(this.store.currentSessionId),
+            pendingIndex: () => this.pending.index(this.store.currentSessionId),
+            setPendingIndex: (index) => { this.pending.setIndex(this.store.currentSessionId, index); },
             renderPending: () => this.renderPending(),
             deletePending: (index) => { this.deletePending(index); },
             isDetailed: () => this.detailed,
@@ -1234,58 +1197,17 @@ export class ChatApp {
 
     /** 记录会话草稿并调度落盘；图片附件也属于草稿。 */
     private setDraft(sessionId: string, text: string, images: ImageAssetRef[] = []): void {
-        const expandedText = this.editor.expandSessionDraft(sessionId, text);
-        if (expandedText || images.length > 0) {
-            this.sessionDrafts.set(sessionId, images.length > 0
-                ? { text: expandedText, images: [...images] }
-                : expandedText);
-        } else {
-            this.sessionDrafts.delete(sessionId);
-        }
-        this.scheduleSaveDrafts();
+        this.drafts.set(sessionId, text, images);
     }
 
     /** 清除会话草稿（发送成功、命令执行、删除会话）并调度落盘。 */
     private dropDraft(sessionId: string): void {
-        if (!this.sessionDrafts.delete(sessionId)) return;
-        this.scheduleSaveDrafts();
-    }
-
-    /** 草稿落盘防抖：连续输入只在停顿后写一次。 */
-    private scheduleSaveDrafts(): void {
-        if (this.draftSaveTimer) return;
-        this.draftSaveTimer = setTimeout(() => {
-            this.draftSaveTimer = null;
-            void persistRichDrafts(this.draftsForPersist()).catch(() => {});
-        }, 300);
-    }
-
-    /** 落盘用草稿表：把 paste marker 展开为原文（重启后没有缓存也能还原内容）。 */
-    private draftsForPersist(): Map<string, TuiDraft> {
-        const drafts = new Map<string, TuiDraft>();
-        for (const [sessionId, draftValue] of this.sessionDrafts) {
-            const draft = typeof draftValue === "string"
-                ? { text: draftValue, images: [] }
-                : draftValue;
-            drafts.set(sessionId, {
-                text: this.editor.expandSessionDraft(sessionId, draft.text),
-                images: [...draft.images],
-            });
-        }
-        return drafts;
+        this.drafts.delete(sessionId);
     }
 
     /** 立即落盘（退出前调用，保证最后一次输入不丢）。 */
     private async flushDrafts(): Promise<void> {
-        if (this.draftSaveTimer) {
-            clearTimeout(this.draftSaveTimer);
-            this.draftSaveTimer = null;
-        }
-        try {
-            await persistRichDrafts(this.draftsForPersist());
-        } catch {
-            // 草稿落盘失败不阻塞 TUI。
-        }
+        await this.drafts.flush();
     }
 
     /**
@@ -1440,14 +1362,12 @@ export class ChatApp {
             const result = await this.agent.sendMessage(sessionId, text, {
                 images,
                 consumePendingMessages: () => {
-                    const state = this.getPendingState(sessionId);
                     // 回合执行中到达的会话间结果：本轮后续请求直接带上（下一次 HTTP 请求时附加）
                     const peerResults = this.agent.takePeerResults(sessionId);
                     const backgroundResults = this.pendingBackgroundResults.get(sessionId) ?? [];
                     this.pendingBackgroundResults.delete(sessionId);
-                    if (state.messages.length === 0 && peerResults.length === 0 && backgroundResults.length === 0) return undefined;
-                    const consumed = state.messages.splice(0);
-                    state.index = 0;
+                    if (this.pending.isEmpty(sessionId) && peerResults.length === 0 && backgroundResults.length === 0) return undefined;
+                    const consumed = this.pending.drain(sessionId);
                     if (this.store.currentSessionId === sessionId) {
                         this.renderPending();
                     }
@@ -1563,7 +1483,7 @@ export class ChatApp {
      * 正显示时退回未选中（有别的已持有会话则切过去）。
      */
     private async handleSessionReleased(sessionId: string, cause: SessionReleaseCause = "peer"): Promise<void> {
-        this.sessionPending.delete(sessionId);
+        this.pending.clear(sessionId);
         this.closeQuestionPanel(sessionId);
         this.store.removeSessionView(sessionId);
         void this.refreshOwnership(true);
@@ -1594,22 +1514,16 @@ export class ChatApp {
         await this.ensureClaimed(sessionId);
         const modelSelection = await this.agent.getSessionModelSelection(sessionId);
 
-        // 切换会话时退出标题重命名态（草稿由 sessionDrafts 保存，切回时恢复）
+        // 切换会话时退出标题重命名态（草稿由 DraftStore 保存，切回时恢复）
         this.cancelRename();
 
         // 恢复会话绑定的工作目录：工具执行、bash、路径渲染与 AGENTS PWD 都以此为基准。
         const sessionCwd = await this.agent.getSessionCwd(sessionId);
         this.activateSessionCwd(sessionCwd);
 
-        const rootPending = this.sessionPending.get("");
-        if (rootPending && rootPending.messages.length > 0) {
-            const targetState = this.getPendingState(sessionId);
-            if (targetState.messages.length === 0) {
-                targetState.messages = [...rootPending.messages];
-                targetState.index = rootPending.index;
-            }
-            this.sessionPending.delete("");
-        }
+        // 新建会话前输入的队列搬到新会话（仅当新会话自己还是空的）
+        if (this.pending.isEmpty(sessionId)) this.pending.adoptRoot(sessionId);
+        else this.pending.clear(null);
 
         const currentId = this.store.currentSessionId;
         if (currentId && currentId !== sessionId) {
@@ -1634,7 +1548,7 @@ export class ChatApp {
             this.editor.setCompact(false);
             this.editor.setSessionContext(sessionId);
             // 恢复目标 session 的草稿内容（若无则置空）
-            const draftValue = this.sessionDrafts.get(sessionId);
+            const draftValue = this.drafts.get(sessionId);
             const draft = typeof draftValue === "string"
                 ? { text: draftValue, images: [] }
                 : (draftValue ?? { text: "", images: [] });
@@ -1695,13 +1609,11 @@ export class ChatApp {
         if (this.agent.isSessionBusy(sessionId)) return;
         if (this.isSessionArchived(sessionId)) return;
 
-        const state = this.getPendingState(sessionId);
-        if (state.messages.length === 0) return;
+        if (this.pending.isEmpty(sessionId)) return;
 
-        const allPending = state.messages.splice(0).map(message => this.toPendingMessage(message));
+        const allPending = this.pending.drain(sessionId).map(message => this.toPendingMessage(message));
         const combined = allPending.map(message => message.text).join("\n");
         const images = allPending.flatMap(message => message.images);
-        state.index = 0;
 
         if (this.store.currentSessionId === sessionId) {
             this.renderPending();
@@ -1782,7 +1694,7 @@ export class ChatApp {
         }
         const isCurrent = this.store.currentSessionId === sessionId;
         const summary = this.store.sessions.find(session => session.sessionId === sessionId);
-        this.sessionPending.delete(sessionId);
+        this.pending.clear(sessionId);
         // 归档不动草稿与 paste 缓存：切回来（或取消归档）时输入框内容原样恢复
         if (isCurrent) {
             this.turnState.lock(sessionId, "switching");
@@ -1870,7 +1782,7 @@ export class ChatApp {
             return;
         }
 
-        this.sessionPending.delete(sessionId);
+        this.pending.clear(sessionId);
         this.turnState.lock(sessionId, "switching");
         this.syncSubmitState();
         try {
@@ -2637,7 +2549,7 @@ export class ChatApp {
         if (this.store.currentSessionId !== sessionId) {
             await this.selectSession(sessionId);
         }
-        // 快照输入框原文。预填标题会触发 onChange 把文本写进 sessionDrafts，
+        // 快照输入框原文。预填标题会触发 onChange 把文本写进草稿，
         // 若不单独保存原文，Esc 取消会把标题当草稿恢复回来。
         this.renameDraft = this.editor.getText();
 

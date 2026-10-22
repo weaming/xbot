@@ -482,8 +482,9 @@ describe("ChatApp pending queue", () => {
         const store = new ChatStore();
         const app = new ChatApp(agent as any, store);
         store.currentSessionId = "session-a";
-        (app as any).sessionPending.set("session-a", { messages: ["a1", "a2"], index: 1 });
-        (app as any).sessionPending.set("session-b", { messages: ["b1"], index: 0 });
+        (app as any).pending.replace("session-a", ["a1", "a2"]);
+        (app as any).pending.setIndex("session-a", 1);
+        (app as any).pending.replace("session-b", ["b1"]);
 
         // session-b 处于 busy 状态时，切过去不应自动出队，队列保持完整
         (agent as any).isSessionBusy = (sid?: string) => sid === "session-b";
@@ -501,8 +502,8 @@ describe("ChatApp pending queue", () => {
         expect(app.pendingMessages).toEqual(["b1"]);
         expect(app.pendingIndex).toBe(0);
 
-        // 在 session-b 中添加一条 pending
-        app.pendingMessages.push("b2");
+        // 在 session-b 中添加一条 pending（getter 返回快照，改它不会写回队列，必须显式入队）
+        (app as any).pending.push("session-b", "b2");
         expect(app.pendingMessages).toEqual(["b1", "b2"]);
 
         // 切换回 session-a，session-a 处于 idle 会自动将所有 pending 组合发送
@@ -531,7 +532,7 @@ describe("ChatApp pending queue", () => {
         (app as any).layout.setMinSize = () => {};
         (app as any).store.setAllToolBlocksExpanded = () => {};
 
-        (app as any).sessionPending.set("session-a", { messages: ["a-queued"], index: 0 });
+        (app as any).pending.replace("session-a", ["a-queued"]);
 
         const sentMap: { sessionId: string; text: string }[] = [];
         (app as any).agent.sendMessage = async (sid: string, text: string) => {
@@ -550,7 +551,7 @@ describe("ChatApp pending queue", () => {
             { sessionId: "session-a", text: "a-first" },
             { sessionId: "session-a", text: "a-queued" },
         ]);
-        expect((app as any).sessionPending.get("session-a")?.messages).toEqual([]);
+        expect((app as any).pending.messages("session-a")).toEqual([]);
     });
 
     test("renderStatusBar 正确显示当前模型和思考强度，以及最后收到消息的输入token与模型总额百分比（为0项不展示）", () => {
@@ -852,7 +853,7 @@ describe("ChatApp pending queue", () => {
         expect(scrollToEndCalls).toBe(1);
 
         // 2. 消费 pending 消息：普通模式自动滚动到底部
-        (app as any).getPendingState("sess-scroll-test").messages.push("pending msg 1");
+        (app as any).pending.push("sess-scroll-test", "pending msg 1");
         consumeFn?.();
         expect(scrollToEndCalls).toBe(2);
 
@@ -866,7 +867,7 @@ describe("ChatApp pending queue", () => {
         await (app as any).send("user message 2");
         expect(scrollToEndCalls).toBe(0);
 
-        (app as any).getPendingState("sess-scroll-test").messages.push("pending msg 2");
+        (app as any).pending.push("sess-scroll-test", "pending msg 2");
         consumeFn?.();
         expect(scrollToEndCalls).toBe(0);
     });
@@ -1216,11 +1217,11 @@ describe("ChatApp Ctrl+C 快捷键", () => {
         expect((app as any).editor.getText()).toBe("旧标题");
         await (app as any).commitRename("sess-draft-keep", "新标题");
         expect((app as any).editor.getText()).toBe("未发送的草稿");
-        expect((app as any).sessionDrafts.get("sess-draft-keep")).toBe("未发送的草稿");
+        expect((app as any).drafts.get("sess-draft-keep")).toBe("未发送的草稿");
 
         // 2. 归档：草稿保留，取消归档/切回时仍在
         await (app as any).archiveSessionById("sess-draft-keep");
-        expect((app as any).sessionDrafts.get("sess-draft-keep")).toBe("未发送的草稿");
+        expect((app as any).drafts.get("sess-draft-keep")).toBe("未发送的草稿");
     });
 
     test("草稿落盘后重启可恢复", async () => {
@@ -1232,7 +1233,7 @@ describe("ChatApp Ctrl+C 快捷键", () => {
 
         const second = new ChatApp(agent as any, new ChatStore());
         await second.init();
-        expect((second as any).sessionDrafts.get("sess-restart")).toBe("重启前的草稿");
+        expect((second as any).drafts.get("sess-restart")).toBe("重启前的草稿");
     });
 
     test("空闲时放行并提示 ⌃D 退出，不中止也不退出", () => {
