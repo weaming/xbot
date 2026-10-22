@@ -44,9 +44,36 @@ function resolveTokenizerFile(): string {
 
 /** 懒加载分词器；失败只警告一次，之后永久走回退路径。 */
 export function loadTokenizer(): Promise<Tokenizer | null> {
-    loading ??= (async () => {
+    loading ??= loadTokenizerOnce();
+    return loading;
+}
+
+/**
+ * 加载 tokenizers 原生模块。
+ * 单文件分发时启动器把 .node 解到外部目录并告知路径，此时优先用该路径；
+ * 否则走普通包解析（开发态与 bundle 态）。
+ */
+async function loadNativeModule(): Promise<typeof import("tokenizers")> {
+    const nativeDir = process.env.XBOT_NATIVE_DIR;
+    if (nativeDir) {
+        const nativePath = path.join(nativeDir, "tokenizers.node");
+        if (fs.existsSync(nativePath)) {
+            const { createRequire } = await import("node:module");
+            const require = createRequire(import.meta.url);
+            return require(nativePath) as typeof import("tokenizers");
+        }
+    }
+    return import("tokenizers");
+}
+
+function loadTokenizerOnce(): Promise<Tokenizer | null> {
+    return (async () => {
         try {
-            const { Tokenizer } = await import("tokenizers");
+            const { Tokenizer } = await loadNativeModule();
+            // 单文件分发时启动器把词表经 fd 注入，直接从内存解析，不落盘
+            const inline = readTokenizerFromFd();
+            if (inline) return Tokenizer.fromString(inline);
+
             const file = resolveTokenizerFile();
             if (!fs.existsSync(file)) throw new Error(`词表文件不存在: ${file}`);
             return Tokenizer.fromFile(file);
@@ -55,7 +82,29 @@ export function loadTokenizer(): Promise<Tokenizer | null> {
             return null;
         }
     })();
-    return loading;
+}
+
+/** 从启动器注入的 fd 读取词表 JSON；未注入时返回 null。 */
+function readTokenizerFromFd(): string | null {
+    const raw = process.env.XBOT_TOKENIZER_FD;
+    if (!raw) return null;
+    const fd = Number(raw);
+    if (!Number.isInteger(fd) || fd < 3) return null;
+
+    const chunks: Buffer[] = [];
+    const buffer = Buffer.alloc(1 << 16);
+    for (;;) {
+        let read: number;
+        try {
+            read = fs.readSync(fd, buffer, 0, buffer.length, null);
+        } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "EAGAIN") continue;
+            throw error;
+        }
+        if (read === 0) break;
+        chunks.push(Buffer.from(buffer.subarray(0, read)));
+    }
+    return Buffer.concat(chunks).toString("utf8");
 }
 
 /** 文本的精确 token 数；分词器不可用或模型不匹配时回退启发式估算。 */
