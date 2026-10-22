@@ -37,8 +37,8 @@ export interface AutoCompactOptions {
     onUsage?: (usage: UsageInfo) => void;
     persistCompactedEvent?: (payload: {
         compactedContext: string;
-        /** 保留段起始消息 id：重放时用它精确恢复上下文窗口。 */
         keepFromMessageId?: string;
+        keepFromPosition?: { turnIndex: number; messageIndex: number };
         usage?: UsageInfo;
     }) => Promise<void>;
 }
@@ -185,6 +185,19 @@ export function applyCompaction(
     });
 }
 
+/** 将内存消息 id 转为可跨重启重放的回合位置。 */
+export function findCompactionKeepFromPosition(
+    session: Session,
+    keepFromMessageId?: string,
+): { turnIndex: number; messageIndex: number } | undefined {
+    if (!keepFromMessageId) return undefined;
+    for (const [turnIndex, turn] of session.turns.entries()) {
+        const messageIndex = turn.messages.findIndex(message => message.id === keepFromMessageId);
+        if (messageIndex >= 0) return { turnIndex, messageIndex };
+    }
+    throw new Error(`压缩保留消息不存在: ${keepFromMessageId}`);
+}
+
 /**
  * 检查会话是否达到 Token 压缩阈值，并在需要时自动执行压缩。
  * 压缩把上次压缩点之后的全部回合折叠成一段摘要：压缩后的上下文从总结开始，
@@ -267,12 +280,14 @@ export async function autoCompactIfNeeded(
         }
 
         // 保留段起点之前（含上次保留段所在 turn 的头部）都折叠进摘要，保留段留在窗口里
+        const keepFromPosition = findCompactionKeepFromPosition(session, keepFromMessageId);
         applyCompaction(session, compactedContext, { keepFromMessageId });
 
         if (options.persistCompactedEvent) {
             await options.persistCompactedEvent({
                 compactedContext,
                 ...(keepFromMessageId ? { keepFromMessageId } : {}),
+                ...(keepFromPosition ? { keepFromPosition } : {}),
                 ...(usage.requestCount ? { usage } : {}),
             });
         }

@@ -105,8 +105,10 @@ export interface AgentEventPayloads {
     context_compacted: {
         compactedContext: string;
         instruction?: string;
-        /** 保留段起始消息 id：重放时用它精确恢复上下文窗口（旧事件没有该字段）。 */
+        /** 保留段起始消息 id，供当前进程定位。 */
         keepFromMessageId?: string;
+        /** 持久化位置，避免重放时重新生成的消息 id 使边界失效。 */
+        keepFromPosition?: { turnIndex: number; messageIndex: number };
         usage?: UsageInfo;
     };
     /**

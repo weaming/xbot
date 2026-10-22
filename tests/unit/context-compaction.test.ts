@@ -121,7 +121,13 @@ describe("autoCompactIfNeeded 分段折叠摘要", () => {
             return { content: "SUMMARY", toolCalls: 0, messages: [] };
         };
 
-        const result = await autoCompactIfNeeded(session, { model: "deepseek-chat" });
+        let persistedPosition: { turnIndex: number; messageIndex: number } | undefined;
+        const result = await autoCompactIfNeeded(session, {
+            model: "deepseek-chat",
+            persistCompactedEvent: async payload => {
+                persistedPosition = payload.keepFromPosition;
+            },
+        });
 
         expect(result.wasCompacted).toBe(true);
         expect(histories).toHaveLength(1);
@@ -139,6 +145,7 @@ describe("autoCompactIfNeeded 分段折叠摘要", () => {
         expect(JSON.stringify(contextAfter)).not.toContain("尾部问题");
         // 保留段起点是消息级边界，落在最后一条消息上
         expect(session.compactedKeepFromMessageId).toBe(session.turns[1]!.messages[1]!.id);
+        expect(persistedPosition).toEqual({ turnIndex: 1, messageIndex: 1 });
     });
 
     test("优先按完整 turn 保留：预算够时切点落在 turn 边界", async () => {
@@ -267,8 +274,8 @@ describe("context_compacted 事件重放", () => {
 
         const { session } = await new SessionReplay(log).replayTo(sessionId);
         expect(session.compactedContext).toBe("SUMMARY");
-        // 边界跟着事件走：重启后上下文窗口与压缩时一致，不会把保留段丢掉
-        expect(session.compactedKeepFromMessageId).toBe("msg-keep-from");
+        // 旧事件没有稳定位置且消息不存在时，回退到压缩时的回合边界。
+        expect(session.compactedKeepFromMessageId).toBeUndefined();
     });
 });
 

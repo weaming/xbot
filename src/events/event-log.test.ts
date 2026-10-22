@@ -6,6 +6,7 @@ import { EventLog } from "./event-log.js";
 import { SessionReplay, createEmptySession } from "./session-replay.js";
 import type { ChatMessage } from "../types/session.js";
 import type { UsageInfo } from "../types/chat.js";
+import { getSessionContextHistory } from "../utils/conversation-history.js";
 
 let tmpDir: string;
 let savedEnv: Record<string, string | undefined> = {};
@@ -75,6 +76,51 @@ async function appendTurn(
 }
 
 describe("EventLog", () => {
+    it("重放压缩边界时按持久化位置恢复保留消息", async () => {
+        const log = new EventLog();
+        const sessionId = "sess-compact-position";
+        await log.append(sessionId, "session_created", { cwd: tmpDir });
+        await appendTurn(log, sessionId, { userMessages: ["旧问题"], messages: [{ role: "assistant", content: "旧回答" }] });
+        await appendTurn(log, sessionId, { userMessages: ["保留问题"], messages: [{ role: "assistant", content: "保留回答" }] });
+        await log.append(sessionId, "context_compacted", {
+            compactedContext: "摘要",
+            keepFromMessageId: "重启前的消息 ID",
+            keepFromPosition: { turnIndex: 1, messageIndex: 1 },
+        });
+        await appendTurn(log, sessionId, { userMessages: ["新问题"], messages: [{ role: "assistant", content: "新回答" }] });
+
+        const replay = new SessionReplay(log);
+        const first = await replay.replayTo(sessionId);
+        const second = await replay.replayTo(sessionId);
+        const expected = ["<conversation_summary", "已确认上述历史上下文", "保留回答", "新问题", "新回答"];
+        for (const { session } of [first, second]) {
+            const contents = getSessionContextHistory(session).map(message => String(message.content));
+            expect(contents).toHaveLength(expected.length);
+            for (const [index, prefix] of expected.entries()) {
+                expect(contents[index]).toContain(prefix);
+            }
+            expect(contents.join("\n")).not.toContain("旧问题");
+        }
+    });
+
+    it("旧压缩事件的消息 ID 失效时保留压缩后的回合", async () => {
+        const log = new EventLog();
+        const sessionId = "sess-compact-legacy";
+        await log.append(sessionId, "session_created", { cwd: tmpDir });
+        await appendTurn(log, sessionId, { userMessages: ["旧问题"], messages: [{ role: "assistant", content: "旧回答" }] });
+        await log.append(sessionId, "context_compacted", {
+            compactedContext: "摘要",
+            keepFromMessageId: "已失效的消息 ID",
+        });
+        await appendTurn(log, sessionId, { userMessages: ["新问题"], messages: [{ role: "assistant", content: "新回答" }] });
+
+        const { session } = await new SessionReplay(log).replayTo(sessionId);
+        const contents = getSessionContextHistory(session).map(message => String(message.content));
+        expect(contents).toHaveLength(4);
+        expect(contents[2]).toBe("新问题");
+        expect(contents[3]).toBe("新回答");
+    });
+
     it("append seq 递增，read 支持 fromSeq/limit", async () => {
         const log = new EventLog();
         const sessionId = "sess-1";

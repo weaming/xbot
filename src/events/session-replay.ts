@@ -287,9 +287,19 @@ function applyEvent(session: Session, event: AgentEvent): void {
             session.cwd = event.payload.cwd ?? getToolCwd();
             break;
         case "context_compacted":
+            const position = event.payload.keepFromPosition;
+            const positionedMessageId = position
+                ? session.turns[position.turnIndex]?.messages[position.messageIndex]?.id
+                : undefined;
+            const recordedMessageId = event.payload.keepFromMessageId;
+            const existingMessageId = recordedMessageId && session.turns.some(turn =>
+                turn.messages.some(message => message.id === recordedMessageId),
+            ) ? recordedMessageId : undefined;
             replaceWithCompactedContext(session, event.payload.compactedContext, {
                 ...(event.payload.instruction ? { instruction: event.payload.instruction } : {}),
-                ...(event.payload.keepFromMessageId ? { keepFromMessageId: event.payload.keepFromMessageId } : {}),
+                ...((positionedMessageId ?? existingMessageId)
+                    ? { keepFromMessageId: positionedMessageId ?? existingMessageId }
+                    : {}),
             });
             break;
         case "standalone_turn":

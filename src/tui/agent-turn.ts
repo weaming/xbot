@@ -11,7 +11,7 @@ import {
     runChatQuery,
 } from "../services/chat-runtime.js";
 import { buildCompactPrompt } from "../utils/compaction-prompt.js";
-import { applyCompaction, autoCompactIfNeeded, buildCompactionHistory, planCompaction } from "../services/auto-compact.js";
+import { applyCompaction, autoCompactIfNeeded, buildCompactionHistory, findCompactionKeepFromPosition, planCompaction } from "../services/auto-compact.js";
 import { acquireSessionLock, type SessionLockHandle } from "../utils/session-lock.js";
 import { DEFAULT_MEMORY_USER_ID } from "../utils/runtime-paths.js";
 import { emptyUsage, mergeUsage, type UIEvent } from "../events/ui-events.js";
@@ -138,10 +138,11 @@ export async function runSessionTurn(
                     signal: abortController.signal,
                     onProgress: message => host.notify(requestId, sessionId, { type: "progress", message }),
                     onUsage: usage => host.notify(requestId, sessionId, { type: "usage", usage }),
-                    persistCompactedEvent: async ({ compactedContext, keepFromMessageId, usage }) => {
+                    persistCompactedEvent: async ({ compactedContext, keepFromMessageId, keepFromPosition, usage }) => {
                         await host.replay.appendAgentEvent(activeSession, "context_compacted", {
                             compactedContext,
                             ...(keepFromMessageId ? { keepFromMessageId } : {}),
+                            ...(keepFromPosition ? { keepFromPosition } : {}),
                             usage,
                         });
                         host.updateActiveSeq(sessionId, await host.eventLog.lastSeq(sessionId, { forceRefresh: true }));
@@ -231,11 +232,13 @@ export async function compactSessionContext(
         });
         const compactedContext = response.content.trim();
         if (!compactedContext) throw new Error("压缩结果为空");
+        const keepFromPosition = findCompactionKeepFromPosition(session, keepFromMessageId);
         applyCompaction(session, compactedContext, { instruction, keepFromMessageId });
         await host.replay.appendAgentEvent(session, "context_compacted", {
             compactedContext,
             instruction,
             ...(keepFromMessageId ? { keepFromMessageId } : {}),
+            ...(keepFromPosition ? { keepFromPosition } : {}),
             usage: usage.requestCount ? usage : undefined,
         });
         host.updateActiveSeq(sessionId, await host.eventLog.lastSeq(sessionId, { forceRefresh: true }));
