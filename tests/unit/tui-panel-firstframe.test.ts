@@ -85,15 +85,15 @@ async function makeApp() {
 
 /** 注入「已渲染」状态：面板 16 行（80x24 下矩形为 row 4-19 / col 4-75）。 */
 function injectRenderedPanel(app: any, height = 16) {
-    // 与 ChatApp 的真实字段保持一致：activePanelEntry = { kind, panel, handle }
-    app.activePanelEntry = {
+    // 面板栈是唯一数据源：压一个"已渲染 height 行"的假浮层等价于面板已就绪
+    app.panels.push({
         kind: "session",
         panel: { handleInput: () => {}, updateItems: () => {}, dispose: () => {} },
-        handle: {
+        meta: {
             handle: { hide() {}, focus() {}, isFocused: () => true },
             height: () => height,
         },
-    };
+    });
 }
 
 describe("浮层首帧滚轮命中判定", () => {
@@ -101,7 +101,7 @@ describe("浮层首帧滚轮命中判定", () => {
         const app = await makeApp();
         (app as any).openSessionPanel();
 
-        const overlay = (app as any).activePanelEntry.handle;
+        const overlay = (app as any).panels.top().meta;
         expect(overlay.height()).toBe(0);
         expect((app as any).isWheelOutsidePanel(WHEEL_IN_DEGRADED_ROW)).toBe(true);
     });

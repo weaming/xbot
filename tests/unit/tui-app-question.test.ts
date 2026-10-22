@@ -114,7 +114,7 @@ describe("ChatApp 提问接线", () => {
         tui.setFocus = (component: unknown) => focusCalls.push(component);
         const pending = getUserQuestionChannel()!.ask(request());
 
-        const entry = (app as any).activePanelEntry;
+        const entry = (app as any).panels.find("question");
         expect(entry.kind).toBe("question");
         expect(focusCalls.at(-1)).toBe(entry.panel);
 
@@ -126,7 +126,7 @@ describe("ChatApp 提问接线", () => {
             cancelled: false,
             answers: [{ header: "部署方式", question: "这次部署走哪条路？", selected: ["方案 A"] }],
         });
-        expect((app as any).activePanelEntry).toBeNull();
+        expect((app as any).panels.find("question")).toBeUndefined();
         expect((app as any).pendingQuestions.size).toBe(0);
         expect(focusCalls.at(-1)).toBe((app as any).editor);
         expect(tui.flashCalls).toEqual([]);
@@ -136,12 +136,12 @@ describe("ChatApp 提问接线", () => {
         const { app, tui, store } = makeApp();
         const pending = getUserQuestionChannel()!.ask(request(OTHER));
 
-        expect((app as any).activePanelEntry).toBeNull();
+        expect((app as any).panels.find("question")).toBeUndefined();
         expect(tui.flashCalls.some((line: string) => line.includes("别的会话") && line.includes("等"))).toBe(true);
 
         await (app as any).selectSession(OTHER);
         expect(store.currentSessionId).toBe(OTHER);
-        expect((app as any).activePanelEntry?.kind).toBe("question");
+        expect((app as any).panels.find("question")).toBeDefined();
 
         // 取消整次提问
         (app as any).handlePanelInput("\x03");
@@ -152,11 +152,11 @@ describe("ChatApp 提问接线", () => {
         const { app } = makeApp();
         const controller = new AbortController();
         const pending = getUserQuestionChannel()!.ask(request(), controller.signal);
-        expect((app as any).activePanelEntry?.kind).toBe("question");
+        expect((app as any).panels.find("question")).toBeDefined();
 
         controller.abort();
         expect(await pending).toEqual({ cancelled: true });
-        expect((app as any).activePanelEntry).toBeNull();
+        expect((app as any).panels.find("question")).toBeUndefined();
         expect((app as any).pendingQuestions.size).toBe(0);
     });
 
@@ -167,7 +167,7 @@ describe("ChatApp 提问接线", () => {
 
         const answer = await getUserQuestionChannel()!.ask(request(), controller.signal);
         expect(answer).toEqual({ cancelled: true });
-        expect((app as any).activePanelEntry).toBeNull();
+        expect((app as any).panels.find("question")).toBeUndefined();
         expect((app as any).pendingQuestions.size).toBe(0);
     });
 

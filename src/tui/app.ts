@@ -55,6 +55,7 @@ import {
     type OverlayBounds,
     type PanelOverlay,
 } from "./panel-overlay.js";
+import { PanelStack } from "./panel-stack.js";
 import { parseWheelEvent, type WheelEvent } from "./panel-input.js";
 import { PromptEditor } from "./prompt-editor.js";
 import { StatusBar } from "./status-bar.js";
@@ -108,14 +109,6 @@ import { buildMcpStatusHelpText, setMcpNoticeHandler, type McpNotice } from "../
 import { StreamingReasoningBlock } from "./streaming-reasoning.js";
 import type { ImageAssetRef, TuiDraft } from "../types/image.js";
 import { backgroundTaskManager, type BackgroundTaskSummary } from "../tools/background-tasks.js";
-
-/** 当前打开的浮层面板：kind 用于派发输入，panel 提供 handleInput，handle 控制显隐。 */
-type ActivePanelEntry =
-    | { kind: "session"; panel: SessionPanel; handle: PanelOverlay }
-    | { kind: "todo"; panel: TodoPanel; handle: PanelOverlay }
-    | { kind: "shortcut"; panel: ShortcutPanel; handle: PanelOverlay }
-    | { kind: "model"; panel: ModelPanel; handle: PanelOverlay }
-    | { kind: "question"; panel: QuestionPanel; sessionId: string };
 
 /**
  * 挂着的提问（`ask_user` 工具在等用户作答）。
@@ -206,10 +199,11 @@ export class ChatApp {
     /** 当前可见 tab 的会话 id，顺序即 Ctrl+1..9 的顺序。 */
     private tabVisibleIds: string[] = [];
     /**
-     * 当前独占输入的面板（互斥）。用单一判别联合替代并列字段，
-     * 从结构上排除「两个面板同时非空」，`??` 链也不再有静默取第一个的隐患。
+     * 浮层面板栈：唯一的数据源。
+     * 输入路由、关闭动作、同类互斥都由它维护，app 只负责装配各层的面板实例。
      */
-    private activePanelEntry: ActivePanelEntry | null = null;
+    private readonly panels = new PanelStack((data) => this.isScrollKey(data));
+
     private currentModelSelection?: ChatModelSelection;
     private readonly statusBar = new StatusBar();
     /** 提问区位于聊天视口之后、输入框之前，不覆盖对话正文。 */
@@ -769,7 +763,7 @@ export class ChatApp {
     }
 
     private openModelPanel(sessionId: string): void {
-        if (this.activePanelEntry || this.exiting) return;
+        if (!this.panels.isEmpty || this.exiting) return;
         if (this.agent.isSessionBusy(sessionId)) {
             this.store.pushSystemMessage("当前会话正在执行，暂不能切换模型。", sessionId);
             return;
@@ -794,7 +788,12 @@ export class ChatApp {
             complete: (selection, makeDefault) => this.applyModelSelection(sessionId, selection, makeDefault),
         });
         const handle = openPanelOverlay(this.tui, panel, "model");
-        this.activePanelEntry = { kind: "model", panel, handle };
+        this.panels.push({
+            kind: "model",
+            panel,
+            meta: handle,
+            onClose: () => this.afterPanelClosed(handle),
+        });
         this.writeWheelLog("打开面板 model");
         this.tui.requestRender();
     }
@@ -846,13 +845,7 @@ export class ChatApp {
     }
 
     private closeModelPanel(): void {
-        const entry = this.activePanelEntry;
-        if (entry?.kind !== "model") return;
-        entry.handle.handle.hide();
-        this.activePanelEntry = null;
-        this.restoreFocus();
-        this.tui.requestRender();
-        this.syncQuestionPanel();
+        this.panels.remove("model");
     }
 
     private async showSystemPrompt(): Promise<void> {
@@ -996,23 +989,27 @@ export class ChatApp {
 
     /** 面板打开时独占键盘输入；返回 true 表示已消费。 */
     private handlePanelInput(data: string): boolean {
-        const entry = this.activePanelEntry;
-        if (!entry) return false;
-        if (entry.kind === "question") {
-            if (matchesKey(data, Key.ctrlShift("q"))) {
-                this.collapseQuestionPanel(entry.sessionId);
-                return true;
-            }
-            if (parseWheelEvent(data) || matchesKey(data, Key.pageUp) || matchesKey(data, Key.pageDown)) {
-                return false;
-            }
-            entry.panel.handleInput(data);
+        if (this.panels.isEmpty) return false;
+        // 面板外的滚轮不转给面板：让视口继续滚动，避免误滚面板内容
+        if (this.isWheelOutsidePanel(data)) {
             this.tui.requestRender();
             return true;
         }
-        if (!this.isWheelOutsidePanel(data)) entry.panel.handleInput(data);
+
+        const consumed = this.panels.routeInput(data);
         this.tui.requestRender();
-        return true;
+        return consumed;
+    }
+
+    /**
+     * 交由聊天视口处置的输入。
+     *
+     * 翻页键一律下沉；滚轮只在下沉到"面板外"时才下沉——
+     * 面板内的滚轮仍归面板（列表要能滚），面板外的滚轮不该带动面板。
+     * isWheelOutsidePanel 已在前面处理过"面板外"的情况，能走到这里的滚轮都在面板内。
+     */
+    private isScrollKey(data: string): boolean {
+        return matchesKey(data, Key.pageUp) || matchesKey(data, Key.pageDown);
     }
 
     /** Ctrl+1..9：选中会话条上从左到右第 N 个可见 tab（所见即所得）。 */
@@ -1228,10 +1225,11 @@ export class ChatApp {
         }
     }
 
-    /** 当前打开的浮层（三个面板互斥，至多一个非空）。 */
+    /** 栈顶若不是提问面板，返回它的浮层句柄（提问面板不是浮层，而是底部停靠区）。 */
     private activePanelOverlay(): PanelOverlay | null {
-        const entry = this.activePanelEntry;
-        return entry && entry.kind !== "question" ? entry.handle : null;
+        const layer = this.panels.top();
+        if (!layer || layer.kind === "question") return null;
+        return (layer.meta as PanelOverlay | undefined) ?? null;
     }
 
     /** 记录会话草稿并调度落盘；图片附件也属于草稿。 */
@@ -1296,8 +1294,9 @@ export class ChatApp {
      * 失焦后滚轮会被它消费去滚背景。
      */
     private restoreFocus(): void {
-        if (this.activePanelEntry?.kind === "question") {
-            this.tui.setFocus(this.activePanelEntry.panel);
+        const questionLayer = this.panels.find("question");
+        if (questionLayer && this.panels.top() === questionLayer) {
+            this.tui.setFocus(questionLayer.panel as any);
             return;
         }
         const overlay = this.activePanelOverlay();
@@ -1888,7 +1887,7 @@ export class ChatApp {
 
     /** 打开会话面板（⌘P / Ctrl+P / /sessions）：搜索、切换、重命名、删除、归档。 */
     private openSessionPanel(): void {
-        if (this.activePanelEntry || this.exiting) return;
+        if (!this.panels.isEmpty || this.exiting) return;
         const panel = new SessionPanel(this.buildSessionPanelItems(), {
             select: (sessionId) => {
                 void this.openSessionFromPanel(sessionId);
@@ -1914,7 +1913,16 @@ export class ChatApp {
         });
 
         const handle = openPanelOverlay(this.tui, panel, "session");
-        this.activePanelEntry = { kind: "session", panel, handle };
+        this.panels.push({
+            kind: "session",
+            panel,
+            meta: handle,
+            onClose: () => {
+                panel.dispose();
+                this.stopOwnershipTimer();
+                this.afterPanelClosed(handle);
+            },
+        });
         // 打开时先校正一次归属，之后按节流轮询（他实例的认领/忙闲会变）
         void this.refreshOwnership(true);
         this.startOwnershipTimer();
@@ -1973,62 +1981,52 @@ export class ChatApp {
     }
 
     private closeSessionPanel(): void {
-        const entry = this.activePanelEntry;
-        if (entry?.kind !== "session") return;
-        entry.panel.dispose();
-        entry.handle.handle.hide();
-        this.activePanelEntry = null;
-        this.stopOwnershipTimer();
-        this.restoreFocus();
-        this.tui.requestRender();
-        this.syncQuestionPanel();
+        this.panels.remove("session");
     }
 
     /** 打开任务清单面板（Ctrl+T / /todo / 状态栏 ☐ 链接）：只读展示当前会话 todo。 */
     private openTodoPanel(): void {
-        if (this.activePanelEntry || this.exiting) return;
+        if (!this.panels.isEmpty || this.exiting) return;
         const panel = new TodoPanel({
             visibleRows: panelContentRows(this.tui),
             load: () => readSessionTodos(this.store.currentSessionId ?? undefined),
             close: () => this.closeTodoPanel(),
         });
         const handle = openPanelOverlay(this.tui, panel, "todo");
-        this.activePanelEntry = { kind: "todo", panel, handle };
+        this.panels.push({
+            kind: "todo",
+            panel,
+            meta: handle,
+            onClose: () => this.afterPanelClosed(handle),
+        });
         this.writeWheelLog("打开面板 todo");
         this.tui.requestRender();
     }
 
     private closeTodoPanel(): void {
-        const entry = this.activePanelEntry;
-        if (entry?.kind !== "todo") return;
-        entry.handle.handle.hide();
-        this.activePanelEntry = null;
-        this.restoreFocus();
-        this.tui.requestRender();
-        this.syncQuestionPanel();
+        this.panels.remove("todo");
     }
 
     /** 打开快捷键面板（Ctrl+/ / F1 / /keys）：只读展示全部键位，行数按终端高度推算。 */
     private openShortcutPanel(): void {
-        if (this.activePanelEntry || this.exiting) return;
+        if (!this.panels.isEmpty || this.exiting) return;
         const panel = new ShortcutPanel({
             visibleRows: panelContentRows(this.tui),
             close: () => this.closeShortcutPanel(),
         });
         const handle = openPanelOverlay(this.tui, panel, "shortcut");
-        this.activePanelEntry = { kind: "shortcut", panel, handle };
+        this.panels.push({
+            kind: "shortcut",
+            panel,
+            meta: handle,
+            onClose: () => this.afterPanelClosed(handle),
+        });
         this.writeWheelLog("打开面板 shortcut");
         this.tui.requestRender();
     }
 
     private closeShortcutPanel(): void {
-        const entry = this.activePanelEntry;
-        if (entry?.kind !== "shortcut") return;
-        entry.handle.handle.hide();
-        this.activePanelEntry = null;
-        this.restoreFocus();
-        this.tui.requestRender();
-        this.syncQuestionPanel();
+        this.panels.remove("shortcut");
     }
 
     // ── 用户提问（ask_user） ──────────────────────────────────────────────
@@ -2084,7 +2082,7 @@ export class ChatApp {
         if (this.exiting) return;
         const pending = this.pendingQuestions.get(sessionId);
         if (!pending || sessionId !== this.store.currentSessionId) return;
-        if (this.activePanelEntry) return;
+        if (!this.panels.isEmpty) return;
 
         if (this.collapsedQuestionSessions.has(sessionId)) {
             this.showCollapsedQuestionDock(sessionId);
@@ -2113,33 +2111,57 @@ export class ChatApp {
         this.questionDock.clear();
         this.questionDock.addChild(new PanelFrame(panel, theme.question));
         this.questionDockSessionId = sessionId;
-        this.activePanelEntry = { kind: "question", panel, sessionId };
+        this.panels.push({
+            kind: "question",
+            panel,
+            sessionId,
+            // ⌃⇧Q 折叠而不是关闭：这是提问面板独有的键位，声明在层上而非路由函数里
+            intercept: (data) => {
+                if (!matchesKey(data, Key.ctrlShift("q"))) return false;
+                this.collapseQuestionPanel(sessionId);
+                return true;
+            },
+            onClose: () => this.clearQuestionDock(sessionId),
+        });
         this.restoreFocus();
         this.tui.requestRender();
+    }
+
+    /** 摘掉底部提问区但不改栈（栈内的 onClose 与外部收尾共用）。 */
+    private clearQuestionDock(sessionId?: string): void {
+        if (sessionId && this.questionDockSessionId && this.questionDockSessionId !== sessionId) return;
+        this.questionDock.clear();
+        this.questionDockSessionId = null;
+    }
+
+    /** 任意浮层关闭后的统一收尾：还原焦点并让被压在下面的提问重新露出来。 */
+    private afterPanelClosed(handle: PanelOverlay): void {
+        handle.handle.hide();
+        this.restoreFocus();
+        this.tui.requestRender();
+        this.syncQuestionPanel();
     }
 
     /**
      * 收起提问面板但不结算：切回阅读正文时保留题目选择与自填内容。
      */
     private closeQuestionPanel(sessionId?: string): void {
-        const entry = this.activePanelEntry;
-        if (sessionId && entry?.kind === "question" && entry.sessionId !== sessionId) return;
+        const layer = this.panels.find("question");
+        if (sessionId && layer?.sessionId && layer.sessionId !== sessionId) return;
         if (sessionId && this.questionDockSessionId && this.questionDockSessionId !== sessionId) return;
-        if (entry?.kind === "question") this.activePanelEntry = null;
-        if (this.questionDockSessionId) {
-            this.questionDock.clear();
-            this.questionDockSessionId = null;
-        }
-        if (!this.activePanelEntry) this.restoreFocus();
+        if (layer) this.panels.remove("question");
+        else this.clearQuestionDock(sessionId);
+        if (this.panels.isEmpty) this.restoreFocus();
         this.tui.requestRender();
     }
 
     /** Esc 收起问题供阅读；⌃⇧Q 可重新打开。 */
     private collapseQuestionPanel(sessionId: string): void {
-        const entry = this.activePanelEntry;
-        if (entry?.kind !== "question" || entry.sessionId !== sessionId) return;
-        this.activePanelEntry = null;
+        const layer = this.panels.find("question");
+        if (layer?.sessionId !== sessionId) return;
+        // 折叠前先入集合，避免 onClose 清掉 dock 后又立刻按"未折叠"重开
         this.collapsedQuestionSessions.add(sessionId);
+        this.panels.remove("question");
         this.showCollapsedQuestionDock(sessionId);
         this.restoreFocus();
         this.tui.requestRender();
@@ -2161,7 +2183,7 @@ export class ChatApp {
     /** 切换折叠态；没有当前会话的待答问题时不处理。 */
     private toggleQuestionPanel(): void {
         const sessionId = this.store.currentSessionId;
-        if (!sessionId || !this.pendingQuestions.has(sessionId) || this.activePanelEntry) return;
+        if (!sessionId || !this.pendingQuestions.has(sessionId) || !this.panels.isEmpty) return;
         this.collapsedQuestionSessions.delete(sessionId);
         this.openQuestionPanel(sessionId);
     }
@@ -2184,16 +2206,8 @@ export class ChatApp {
 
     /** 关闭当前打开的任意面板（退出时统一收尾）；会话面板需 dispose 释放确认定时器。 */
     private closeActivePanel(): void {
-        const entry = this.activePanelEntry;
-        if (!entry) return;
-        if (entry.kind === "question") {
-            this.closeQuestionPanel(entry.sessionId);
-            return;
-        }
-        if (entry.kind === "session") entry.panel.dispose();
-        entry.handle.handle.hide();
-        this.activePanelEntry = null;
-        this.stopOwnershipTimer();
+        // 每层的关闭动作（隐藏浮层、dispose、停定时器、还原焦点）都由 onClose 承担
+        this.panels.clear();
     }
 
     private buildSessionPanelItems(): SessionPanelItem[] {
@@ -2286,7 +2300,7 @@ export class ChatApp {
     }
 
     private hasSessionPanelOpen(): boolean {
-        return this.activePanelEntry?.kind === "session";
+        return this.panels.has("session");
     }
 
     private async switchSession(delta: number, includeArchived = false): Promise<void> {
@@ -2576,10 +2590,10 @@ export class ChatApp {
 
     /** 面板打开时把最新会话列表推回面板；未打开则空操作。 */
     private syncSessionPanelItems(spinner?: string): void {
-        const entry = this.activePanelEntry;
-        if (entry?.kind !== "session") return;
+        const layer = this.panels.find("session");
+        if (!layer) return;
         const frame = spinner ?? SPINNER_FRAMES[this.spinnerIndex % SPINNER_FRAMES.length];
-        entry.panel.updateItems(this.buildSessionPanelItems(), frame);
+        (layer.panel as SessionPanel).updateItems(this.buildSessionPanelItems(), frame);
     }
 
     /** 本实例持有的会话：tab 条与切换范围都以此为准（未持有的一律不出现在 tab 条）。 */

@@ -88,7 +88,7 @@ function makeApp() {
 
 /** 当前激活的面板 kind；无面板时为 null。 */
 function activeKind(app: any): string | null {
-    return app.activePanelEntry?.kind ?? null;
+    return app.panels.top()?.kind ?? null;
 }
 
 describe("特征：面板互斥", () => {

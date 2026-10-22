@@ -29,6 +29,39 @@ mock.module("../../src/services/chat-runtime.js", () => ({
 const { ChatApp } = await import("../../src/tui/app.js");
 const { ChatStore } = await import("../../src/tui/store.js");
 
+
+/**
+ * 往面板栈里塞一个假浮层：等价于"某个面板已打开并已渲染 height 行"。
+ * 面板栈是唯一数据源，测试必须通过 panels 读写，不能再直接改 app 字段。
+ */
+function pushFakePanel(
+    app: any,
+    options: {
+        kind?: string;
+        height?: number;
+        bounds?: { row: number; col: number; width: number; height: number };
+        handleInput?: (data: string) => void;
+        focus?: () => void;
+    } = {},
+): void {
+    const height = options.height ?? 16;
+    const panel = {
+        handleInput: options.handleInput ?? (() => {}),
+        updateItems: () => {},
+        dispose: () => {},
+    };
+    const handle = {
+        handle: {
+            hide() {},
+            focus: options.focus ?? (() => {}),
+            isFocused: () => true,
+            ...(options.bounds ? { getBounds: () => options.bounds } : {}),
+        },
+        height: () => height,
+    };
+    (app as any).panels.push({ kind: options.kind ?? "session", panel, meta: handle });
+}
+
 let tmpDir: string;
 let originalWorkspace: string | undefined;
 let originalStateDir: string | undefined;
@@ -866,14 +899,7 @@ describe("ChatApp pending queue", () => {
         const app = new ChatApp(agent as any, store);
         await app.init();
 
-        (app as any).activePanelEntry = {
-            kind: "session",
-            panel: { handleInput: () => {}, updateItems: () => {}, dispose: () => {} },
-            handle: {
-                handle: { hide() {}, focus() {}, isFocused: () => true, getBounds: () => ({ row: 4, col: 4, width: 72, height: 16 }) },
-                height: () => 16,
-            },
-        };
+        pushFakePanel(app, { bounds: { row: 4, col: 4, width: 72, height: 16 } });
 
         // 默认关闭：不写文件
         const logFile = getTuiWheelLogFile();
@@ -908,14 +934,7 @@ describe("ChatApp pending queue", () => {
         (app as any).tui.setFocus = () => {
             editorFocused++;
         };
-        (app as any).activePanelEntry = {
-            kind: "session",
-            panel: { handleInput: () => {}, updateItems: () => {}, dispose: () => {} },
-            handle: {
-                handle: { hide() {}, focus: () => { panelFocused++; }, isFocused: () => true },
-                height: () => 16,
-            },
-        };
+        pushFakePanel(app, { focus: () => { panelFocused++; } });
 
         // 面板打开：焦点回面板（否则 TuiAltScreen 会自己消费滚轮去滚背景）
         (app as any).restoreFocus();
@@ -923,7 +942,7 @@ describe("ChatApp pending queue", () => {
         expect(editorFocused).toBe(0);
 
         // 面板关闭：焦点回输入框
-        (app as any).activePanelEntry = null;
+        (app as any).panels.clear();
         (app as any).restoreFocus();
         expect(panelFocused).toBe(1);
         expect(editorFocused).toBe(1);
@@ -937,14 +956,11 @@ describe("ChatApp pending queue", () => {
 
         const received: string[] = [];
         // 面板矩形：row 10 / col 20 / 40x10（0-based），对应 SGR 坐标 row+1 / col+1
-        (app as any).activePanelEntry = {
-            kind: "session",
-            panel: { handleInput: (data: string) => received.push(data), updateItems: () => {}, dispose: () => {} },
-            handle: {
-                handle: { hide() {}, focus() {}, isFocused: () => true, getBounds: () => ({ row: 10, col: 20, width: 40, height: 10 }) },
-                height: () => 10,
-            },
-        };
+        pushFakePanel(app, {
+            height: 10,
+            bounds: { row: 10, col: 20, width: 40, height: 10 },
+            handleInput: (data: string) => received.push(data),
+        });
 
         const send = (data: string) => (app as any).tui.inputListeners.forEach((fn: (d: string) => any) => fn(data));
 
@@ -1613,7 +1629,7 @@ describe("ChatApp 会话条", () => {
         ]);
 
         (app as any).openSessionPanel();
-        const entry = (app as any).activePanelEntry;
+        const entry = (app as any).panels.top();
         expect(entry?.kind).toBe("session");
 
         // 搜索到待删会话，保证光标落在它上面
@@ -1627,7 +1643,7 @@ describe("ChatApp 会话条", () => {
         await new Promise(resolve => setTimeout(resolve, 10));
 
         // 面板仍是同一个实例（未被关闭），列表已剔除该会话
-        expect((app as any).activePanelEntry?.panel).toBe(entry.panel);
+        expect((app as any).panels.find("session")?.panel).toBe(entry.panel);
         expect(store.sessions.map((session: any) => session.sessionId)).toEqual(["sess-keep"]);
         expect(entry.panel.getSelectedId()).toBeNull();
     });
@@ -1641,12 +1657,12 @@ describe("ChatApp 会话条", () => {
         store.setSessions([{ sessionId: "sess-busy", messageCount: 1, title: "运行中会话" }]);
 
         (app as any).openSessionPanel();
-        const entry = (app as any).activePanelEntry;
+        const entry = (app as any).panels.top();
         entry.panel.handleInput("\x18");
         entry.panel.handleInput("\x18");
         await new Promise(resolve => setTimeout(resolve, 10));
 
-        expect((app as any).activePanelEntry?.panel).toBe(entry.panel);
+        expect((app as any).panels.find("session")?.panel).toBe(entry.panel);
         expect(store.sessions.map((session: any) => session.sessionId)).toEqual(["sess-busy"]);
         expect((app as any).tui.flashCalls).toContain("会话执行中，暂不能删除");
     });
@@ -1663,14 +1679,14 @@ describe("ChatApp 会话条", () => {
         store.setSessions([{ sessionId: "sess-archived", messageCount: 1, title: "已归档会话", archived: true }]);
 
         (app as any).openSessionPanel();
-        const entry = (app as any).activePanelEntry;
+        const entry = (app as any).panels.top();
         expect(entry?.kind).toBe("session");
 
         // ⌃A 对已归档会话是取消归档：可逆，无需二次确认
         entry.panel.handleInput("\x01");
         await new Promise(resolve => setTimeout(resolve, 10));
 
-        expect((app as any).activePanelEntry?.panel).toBe(entry.panel);
+        expect((app as any).panels.find("session")?.panel).toBe(entry.panel);
         expect(unarchived).toEqual(["sess-archived"]);
         expect(store.sessions.find((session: any) => session.sessionId === "sess-archived")?.archived).toBe(false);
         expect((app as any).tui.flashCalls).toContain("已取消归档");
@@ -1684,14 +1700,14 @@ describe("ChatApp 会话条", () => {
         store.setSessions([{ sessionId: "sess-arch", messageCount: 1, title: "待归档会话" }]);
 
         (app as any).openSessionPanel();
-        const entry = (app as any).activePanelEntry;
+        const entry = (app as any).panels.top();
 
         // ⌃A 归档需二次确认
         entry.panel.handleInput("\x01");
         entry.panel.handleInput("\x01");
         await new Promise(resolve => setTimeout(resolve, 10));
 
-        expect((app as any).activePanelEntry?.panel).toBe(entry.panel);
+        expect((app as any).panels.find("session")?.panel).toBe(entry.panel);
         expect(store.sessions.find((session: any) => session.sessionId === "sess-arch")?.archived).toBe(true);
     });
 });
