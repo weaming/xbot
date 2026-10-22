@@ -747,8 +747,8 @@ export class LocalTuiAgent implements TuiAgent {
         return loadInputHistory(sessionId);
     }
 
-    async appendInputHistory(sessionId: string, text: string): Promise<void> {
-        await appendInputHistory(sessionId, text);
+    async appendInputHistory(sessionId: string, text: string, ts?: string): Promise<void> {
+        await appendInputHistory(sessionId, text, ts);
     }
 
     /**

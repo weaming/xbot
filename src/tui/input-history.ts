@@ -48,7 +48,7 @@ export function loadInputHistory(sessionId: string): string[] {
 }
 
 /** 追加一条输入：文件锁内读改写 + 原子替换（临时文件 rename）。 */
-export async function appendInputHistory(sessionId: string, text: string): Promise<void> {
+export async function appendInputHistory(sessionId: string, text: string, ts = new Date().toISOString()): Promise<void> {
     const trimmed = text.trim();
     if (!trimmed) return;
 
@@ -57,7 +57,8 @@ export async function appendInputHistory(sessionId: string, text: string): Promi
         const latestOfSession = entries.find(entry => entry.sessionId === sessionId);
         if (latestOfSession?.text === trimmed) return;
 
-        entries.unshift({ sessionId, text: trimmed, ts: new Date().toISOString() });
+        entries.unshift({ sessionId, text: trimmed, ts });
+        entries.sort((left, right) => right.ts.localeCompare(left.ts));
         if (entries.length > MAX_HISTORY) entries.length = MAX_HISTORY;
 
         const filePath = getTuiInputHistoryFile();

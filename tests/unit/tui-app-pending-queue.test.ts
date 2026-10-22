@@ -391,7 +391,7 @@ describe("ChatApp pending queue", () => {
         expect((app as any).pendingIndex).toBe(0);
     });
 
-    test("当前消息被中止后仍加入输入历史", async () => {
+    test("提交消息后立即加入输入历史，回合中止不重复加入", async () => {
         const agent = makeFakeAgent();
         const store = new ChatStore();
         const app = new ChatApp(agent as any, store);
@@ -407,7 +407,7 @@ describe("ChatApp pending queue", () => {
         };
         (app as any).agent.sendMessage = async () => ({ aborted: true });
 
-        await (app as any).send("被中止的消息");
+        app.enqueueOrSend("被中止的消息");
         await Promise.resolve();
 
         expect(editorHistory).toEqual(["被中止的消息"]);

@@ -511,6 +511,8 @@ export class ChatApp {
             void this.startSessionWith(text, images);
             return;
         }
+        if (this.isSessionArchived(sessionId)) return;
+        this.recordSubmittedInput(sessionId, text);
         const isBusy = this.busy || this.runtimeReloading || this.switching || (sessionId ? this.agent.isSessionBusy(sessionId) : false);
         if (isBusy) {
             const state = this.getPendingState(sessionId);
@@ -521,7 +523,6 @@ export class ChatApp {
             }
             return;
         }
-        if (sessionId && this.isSessionArchived(sessionId)) return;
         const state = this.getPendingState(sessionId);
         if (state.messages.length > 0) {
             state.messages.push(images.length > 0 ? { text, images } : text);
@@ -529,6 +530,13 @@ export class ChatApp {
             return;
         }
         void this.send(text, sessionId, images);
+    }
+
+    private recordSubmittedInput(sessionId: string, text: string): void {
+        this.editor.addToHistory(text);
+        void this.agent.appendInputHistory(sessionId, text, new Date().toISOString()).catch((error: unknown) => {
+            this.tui.flash(`⚠️ 保存输入历史失败：${error instanceof Error ? error.message : String(error)}`);
+        });
     }
 
     /**
@@ -613,8 +621,9 @@ export class ChatApp {
     private async handleCommand(raw: string): Promise<void> {
         const sessionId = this.store.currentSessionId;
         const [command, ...rest] = raw.split(/\s+/);
+        if (sessionId) this.recordSubmittedInput(sessionId, raw.trim());
+        else this.editor.addToHistory(raw.trim());
         if (!sessionId && SESSION_REQUIRED_COMMANDS.has(command)) {
-            this.editor.addToHistory(raw.trim());
             this.editor.setText("");
             this.tui.flash("没有打开的会话：直接输入消息即新建，或 ⌃N");
             return;
@@ -688,9 +697,7 @@ export class ChatApp {
             default:
                 this.store.pushSystemMessage(`未知命令: ${command}（/help 查看可用命令）`, sessionId ?? undefined);
         }
-        this.editor.addToHistory(raw.trim());
         if (sessionId) {
-            void this.agent.appendInputHistory(sessionId, raw.trim()).catch(() => {});
             this.dropDraft(sessionId);
         }
         this.editor.setText("");
@@ -1392,7 +1399,10 @@ export class ChatApp {
             return;
         }
         const sessionId = this.store.currentSessionId;
-        if (sessionId) await this.send(text, sessionId, images);
+        if (sessionId) {
+            this.recordSubmittedInput(sessionId, text);
+            await this.send(text, sessionId, images);
+        }
     }
 
     private async send(text: string, targetSessionId?: string, images: ImageAssetRef[] = []): Promise<void> {
@@ -1413,7 +1423,6 @@ export class ChatApp {
         }
         const messageCountBeforeRequest = this.store.getMessages(sessionId).length;
         const sendStartTime = Date.now();
-        let isRequestHandled = false;
         let success = false;
         let turnError: string | undefined;
         herdrReporter.report("working");
@@ -1447,7 +1456,6 @@ export class ChatApp {
                     ];
                 },
             });
-            isRequestHandled = true;
             success = result.aborted !== true;
         } catch (error: any) {
             const errorMessage = `⚠️ ${error.message}`;
@@ -1471,9 +1479,6 @@ export class ChatApp {
             this.clearSessionPhase(sessionId);
             if (this.store.currentSessionId === sessionId) {
                 this.editor.disableSubmit = false;
-                // 编辑器在提交时已清空（handleInput），这里只恢复历史记录与状态，
-                // 避免清掉生成期间用户新输入的草稿。
-                if (isRequestHandled) this.editor.addToHistory(text);
                 this.syncCurrentSessionState();
                 this.restoreFocus();
             }
@@ -1481,11 +1486,6 @@ export class ChatApp {
             if (this.detailed) {
                 this.syncMessages();
             }
-            // 请求正常返回即记录输入；用户中止只终止生成，不丢弃已提交的消息。
-            if (isRequestHandled) {
-                void this.agent.appendInputHistory(sessionId, text).catch(() => {});
-            }
-
             // 发送终端通知（通知到 Ghostty 等终端代理的系统通知）
             const session = this.store.sessions.find(s => s.sessionId === sessionId);
             const sessionName = session?.lastUserMessage ? truncateInline(session.lastUserMessage, 20) : undefined;

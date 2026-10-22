@@ -82,7 +82,7 @@ export interface TuiAgent {
     /** 本实例内发起过网络请求的会话用量统计（退出时展示用）。 */
     getInstanceNetworkStats(): InstanceNetworkStats;
     loadInputHistory(sessionId: string): string[];
-    appendInputHistory(sessionId: string, text: string): Promise<void>;
+    appendInputHistory(sessionId: string, text: string, ts?: string): Promise<void>;
     /** 会话绑定的工作目录（无持久化记录时回退当前工具目录）。 */
     getSessionCwd(sessionId: string): Promise<string>;
     /** 重命名会话标题：空会话先落盘再记录，标题为空时不生效。 */
