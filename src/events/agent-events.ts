@@ -135,3 +135,21 @@ export type AgentEvent = {
         payload: AgentEventPayloads[T];
     };
 }[AgentEventType];
+
+/**
+ * 是否为自动注入的上下文事件（群聊状态更新等）：不算用户活动。
+ *
+ * 会话更新时间与归档判定都要忽略它 —— 归档后这类注入仍会落盘，若当成活动会让
+ * 归档态失效、闲置会话被顶到列表最前。
+ * 兜底识别旧事件（injected 标记落地前写下的）：注入内容恒为一条以 "[群聊状态更新" 开头的 system 消息。
+ */
+export function isInjectedContext(event: AgentEvent): boolean {
+    if (event.type !== "standalone_turn") return false;
+    if (event.payload.injected === true) return true;
+
+    const messages = event.payload.messages ?? [];
+    return messages.length > 0
+        && messages.every(message => message.role === "system"
+            && typeof message.content === "string"
+            && message.content.startsWith("[群聊状态更新"));
+}

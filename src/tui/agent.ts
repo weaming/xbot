@@ -389,18 +389,8 @@ export class LocalTuiAgent implements TuiAgent {
     }
 
     async listSessions(): Promise<TuiSessionSummary[]> {
-        const ids = new Set<string>(this.activeSessions.keys());
-        const eventsDir = getSessionsDir("events");
-        try {
-            for (const fileName of fs.readdirSync(eventsDir)) {
-                if (fileName.endsWith(".jsonl")) {
-                    ids.add(fileName.slice(0, -".jsonl".length));
-                }
-            }
-        } catch {
-            // 目录不存在时没有已保存会话。
-        }
-
+        const ids = this.listSavedSessionIds();
+        for (const sessionId of this.activeSessions.keys()) ids.add(sessionId);
         const sessions: TuiSessionSummary[] = [];
         for (const sessionId of ids) {
             const events = await this.eventLog.read(sessionId);
@@ -411,8 +401,31 @@ export class LocalTuiAgent implements TuiAgent {
         return sortSessions(sessions);
     }
 
+    /** 磁盘上已落盘的会话 id。 */
+    listSavedSessionIds(): Set<string> {
+        const ids = new Set<string>();
+        try {
+            for (const fileName of fs.readdirSync(getSessionsDir("events"))) {
+                if (fileName.endsWith(".jsonl")) ids.add(fileName.slice(0, -".jsonl".length));
+            }
+        } catch {
+            // 目录不存在时没有已保存会话。
+        }
+        return ids;
+    }
+
+    /** 本进程内存里正在使用的会话 id。 */
+    listActiveSessionIds(): string[] {
+        return [...this.activeSessions.keys()];
+    }
+
     async readSessionEvents(sessionId: string): Promise<AgentEvent[]> {
         return this.eventLog.read(sessionId);
+    }
+
+    /** 丢弃某会话的缓存事件（清理后调用，避免用旧缓存把它又列出来）。 */
+    forgetSession(sessionId: string): void {
+        this.eventLog.forget(sessionId);
     }
 
     /** 会话最近收到的会话间结果（供 session_status 回查）：只扫日志尾部窗口。 */

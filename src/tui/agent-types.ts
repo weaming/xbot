@@ -49,6 +49,10 @@ export interface TuiAgent {
     /** 新建会话（内存态，未认领）；cwd 缺省用 TUI 启动目录。 */
     createSession(cwd?: string): Promise<{ sessionId: string }>;
     listSessions(): Promise<TuiSessionSummary[]>;
+    /** 本进程内存里正在使用的会话 id（清理时必须跳过，避免删掉活跃会话）。 */
+    listActiveSessionIds(): string[];
+    /** 丢弃该会话的进程内缓存（磁盘上的日志已删除时调用）。 */
+    forgetSession(sessionId: string): void;
     readSessionEvents(sessionId: string): Promise<AgentEvent[]>;
     clearSession(sessionId: string): Promise<void>;
     deleteSession(sessionId: string): Promise<void>;

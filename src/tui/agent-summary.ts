@@ -2,24 +2,9 @@
  * 会话摘要与实例用量聚合：纯函数，不依赖 agent 实例状态。
  */
 
-import type { AgentEvent } from "../events/agent-events.js";
+import { isInjectedContext, type AgentEvent } from "../events/agent-events.js";
 import type { UsageInfo } from "../types/chat.js";
 import type { InstanceNetworkStats, TuiSessionSummary } from "./agent-types.js";
-
-/**
- * 是否为自动注入的上下文事件（群聊状态更新等）：不算用户活动，不参与会话更新时间。
- * 兜底识别旧事件（injected 标记落地前写下的）：注入内容恒为一条以 "[群聊状态更新" 开头的 system 消息。
- */
-function isInjectedContext(event: AgentEvent): boolean {
-    if (event.type !== "standalone_turn") return false;
-    if (event.payload.injected === true) return true;
-
-    const messages = event.payload.messages ?? [];
-    return messages.length > 0
-        && messages.every(message => message.role === "system"
-            && typeof message.content === "string"
-            && message.content.startsWith("[群聊状态更新"));
-}
 
 /** 由事件流派生会话摘要（标题、消息数、归档态、更新时间）。 */
 export function summarizeEvents(sessionId: string, events: AgentEvent[]): TuiSessionSummary {

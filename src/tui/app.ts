@@ -23,6 +23,7 @@ import {
 import type { Component } from "@earendil-works/pi-tui";
 import { describeClaimFailure } from "../control/channel.js";
 import { cleanupStaleSockets, describeOwnership, type PeerOwnership } from "../control/registry.js";
+import { cleanupArchivedSessions } from "../events/session-cleanup.js";
 import type { TuiAgent } from "./agent.js";
 import type { SessionReleaseCause } from "./agent-types.js";
 import { openExternalUrl } from "./app-helpers.js";
@@ -245,7 +246,6 @@ export class ChatApp {
     private exiting = false;
     /** 高危操作的待确认状态：同一标签在 2 秒内再按一次才执行。 */
     private pendingConfirm: { label: string; run: () => void; armedAt: number } | null = null;
-
     /** todo 读取 TTL 缓存：spinner 120ms 高频重绘期间避免反复 stat 文件。 */
     private todoCache: { sessionId: string | null; atMs: number; todos: TodoItem[] } | null = null;
     private static readonly TODO_CACHE_TTL_MS = 500;
@@ -1644,6 +1644,15 @@ export class ChatApp {
     private async refreshSessions(): Promise<void> {
         // 清理无监听者的残留 socket（进程崩溃不会自动删）；连得上的一律保留
         await cleanupStaleSockets().catch(() => []);
+        // 先回收过期归档会话，再列会话：列表现成于磁盘，已被删掉的会话不该出现（哪怕一瞬）
+        await cleanupArchivedSessions({
+            protectedIds: this.agent.listActiveSessionIds(),
+            onRemoved: (sessionIds) => {
+                for (const sessionId of sessionIds) this.agent.forgetSession(sessionId);
+            },
+        }).catch((error) => {
+            console.warn("⚠️ [TUI] 归档会话清理失败:", (error as Error)?.message ?? error);
+        });
         this.store.setSessions(await this.agent.listSessions());
     }
 

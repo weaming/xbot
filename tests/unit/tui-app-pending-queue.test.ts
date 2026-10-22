@@ -128,6 +128,7 @@ function makeFakeAgent(): FakeAgent {
         peerPendingStats: () => ({ awaiting: 0, queued: 0 }),
         appendPeerMessage: async () => {},
         listSessions: async () => [],
+        listActiveSessionIds: () => [],
         readSessionEvents: async () => [],
         createSession: async () => ({ sessionId: "sess-pending-test" }),
         appendInputHistory: async () => {},
