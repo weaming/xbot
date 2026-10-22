@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 )
 
@@ -39,13 +40,52 @@ func packFrom(self, dir string, mf Manifest, out string) error {
 	}
 	selfData = stripPayload(selfData)
 
-	outData := append(selfData, marker...)
-	outData = append(outData, payload...)
-
-	if err := os.WriteFile(out, outData, 0o755); err != nil {
+	// 分两步写：先落纯净启动器并重签名，再追加 payload。
+	//
+	// Go 的 linker-signed 签名（flags 0x20002）在 macOS 上会被 AMFI 判为
+	// "Unrecoverable CT signature issue"；一旦命中安全策略就被 SIGKILL。
+	// 重新做 ad-hoc 签名（flags 0x2）即可修正，但 codesign 无法处理已经
+	// 追加过数据的文件（main executable failed strict validation），
+	// 而签名之后再追加字节不影响签名覆盖范围，所以顺序不能反。
+	if err := os.WriteFile(out, selfData, 0o755); err != nil {
 		return err
 	}
+	if err := resign(out); err != nil {
+		return err
+	}
+
+	f, err := os.OpenFile(out, os.O_WRONLY|os.O_APPEND, 0o755)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(marker)
+	if err == nil {
+		_, err = f.Write(payload)
+	}
+	if closeErr := f.Close(); err != nil || closeErr != nil {
+		if err != nil {
+			return err
+		}
+		return closeErr
+	}
 	return os.Chmod(out, 0o755)
+}
+
+// resign 对未追加 payload 的启动器重新做 ad-hoc 签名，把 linker-signed
+// （flags 0x20002）换成 adhoc（flags 0x2），避免 AMFI 判为签名损坏。
+// 非 macOS 或缺 codesign 时跳过。
+func resign(path string) error {
+	if runtime.GOOS != "darwin" {
+		return nil
+	}
+	codesign, err := exec.LookPath("codesign")
+	if err != nil {
+		return nil
+	}
+	cmd := exec.Command(codesign, "--force", "--sign", "-", path)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 // entryName 是产物内固定的入口文件名。
