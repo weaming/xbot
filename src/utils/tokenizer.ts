@@ -3,16 +3,17 @@
  *
  * - 懒加载：首次用到时才读取词表（约 100ms），不进 TUI 启动路径；
  * - 缓存：`StoredChatMessage` 内容不可变，按消息 id 记账，判定只算新增消息；
- * - 回退：原生模块/词表不可用、或模型不是 DeepSeek 系（各家 tokenizer 不同）时，
+ * - 回退：词表不可用、或模型不是 DeepSeek 系（各家 tokenizer 不同）时，
  *   退回 `token-estimator.ts` 的启发式估算，保证调用方永远拿得到值。
  *
- * 异步是硬约束：`tokenizers` 的 encode 返回 Promise，所以 token 计数链路整体是 async。
+ * 纯 JS 实现（`deepseek-tokenizer.ts`）：不依赖原生模块，单文件分发时零磁盘写入。
+ * 对外仍为 async，与既有调用链保持一致。
  */
 
 import fs from "node:fs";
 import path from "node:path";
 import tokenizerFile from "../../assets/deepseek-v4-tokenizer.tokjson" with { type: "file" };
-import type { Tokenizer } from "tokenizers";
+import { DeepSeekTokenizer, type TokenizerJSON } from "./deepseek-tokenizer.js";
 import type { ChatMessage, ConversationTurn, StoredChatMessage } from "../types/session.js";
 import { estimateTextTokens } from "./token-estimator.js";
 
@@ -21,7 +22,7 @@ const MESSAGE_OVERHEAD_TOKENS = 4;
 /** 单条 tool_call 的结构开销（type / 字段名）。 */
 const TOOL_CALL_OVERHEAD_TOKENS = 10;
 
-let loading: Promise<Tokenizer | null> | undefined;
+let loading: Promise<DeepSeekTokenizer | null> | undefined;
 /** 已精确统计过的消息（内容不可变的 StoredChatMessage 按 id 记账）。 */
 const messageCache = new Map<string, number>();
 
@@ -43,45 +44,33 @@ function resolveTokenizerFile(): string {
 }
 
 /** 懒加载分词器；失败只警告一次，之后永久走回退路径。 */
-export function loadTokenizer(): Promise<Tokenizer | null> {
+export function loadTokenizer(): Promise<DeepSeekTokenizer | null> {
     loading ??= loadTokenizerOnce();
     return loading;
 }
 
-/**
- * 加载 tokenizers 原生模块。
- * 单文件分发时启动器把 .node 解到外部目录并告知路径，此时优先用该路径；
- * 否则走普通包解析（开发态与 bundle 态）。
- */
-async function loadNativeModule(): Promise<typeof import("tokenizers")> {
-    const nativeDir = process.env.XBOT_NATIVE_DIR;
-    if (nativeDir) {
-        const nativePath = path.join(nativeDir, "tokenizers.node");
-        if (fs.existsSync(nativePath)) {
-            const { createRequire } = await import("node:module");
-            const require = createRequire(import.meta.url);
-            return require(nativePath) as typeof import("tokenizers");
-        }
-    }
-    return import("tokenizers");
-}
-
-function loadTokenizerOnce(): Promise<Tokenizer | null> {
-    return (async () => {
+function loadTokenizerOnce(): Promise<DeepSeekTokenizer | null> {
+    return (async (): Promise<DeepSeekTokenizer | null> => {
         try {
-            const { Tokenizer } = await loadNativeModule();
-            // 单文件分发时启动器把词表经 fd 注入，直接从内存解析，不落盘
-            const inline = readTokenizerFromFd();
-            if (inline) return Tokenizer.fromString(inline);
-
-            const file = resolveTokenizerFile();
-            if (!fs.existsSync(file)) throw new Error(`词表文件不存在: ${file}`);
-            return Tokenizer.fromFile(file);
+            return new DeepSeekTokenizer(readTokenizerJSON());
         } catch (error) {
             console.warn("⚠️ [tokenizer] 加载失败，回退启发式估算:", (error as Error)?.message ?? error);
             return null;
         }
     })();
+}
+
+/**
+ * 读取词表 JSON。
+ * 单文件分发时启动器经 fd 注入，直接从内存解析；否则读随包分发的文件。
+ */
+function readTokenizerJSON(): TokenizerJSON {
+    const inline = readTokenizerFromFd();
+    if (inline) return JSON.parse(inline) as TokenizerJSON;
+
+    const file = resolveTokenizerFile();
+    if (!fs.existsSync(file)) throw new Error(`词表文件不存在: ${file}`);
+    return JSON.parse(fs.readFileSync(file, "utf8")) as TokenizerJSON;
 }
 
 /** 从启动器注入的 fd 读取词表 JSON；未注入时返回 null。 */
@@ -90,6 +79,13 @@ function readTokenizerFromFd(): string | null {
     if (!raw) return null;
     const fd = Number(raw);
     if (!Number.isInteger(fd) || fd < 3) return null;
+
+    // fd 可能已关闭或指向非文件（环境变量残留时会误读），先确认是普通文件
+    try {
+        if (!fs.fstatSync(fd).isFile()) return null;
+    } catch {
+        return null;
+    }
 
     const chunks: Buffer[] = [];
     const buffer = Buffer.alloc(1 << 16);
@@ -104,7 +100,8 @@ function readTokenizerFromFd(): string | null {
         if (read === 0) break;
         chunks.push(Buffer.from(buffer.subarray(0, read)));
     }
-    return Buffer.concat(chunks).toString("utf8");
+    const text = Buffer.concat(chunks).toString("utf8");
+    return text.length > 0 ? text : null;
 }
 
 /** 文本的精确 token 数；分词器不可用或模型不匹配时回退启发式估算。 */
@@ -115,14 +112,8 @@ export async function countTextTokens(text: string, model?: string): Promise<num
     const tokenizer = await loadTokenizer();
     if (!tokenizer) return estimateTextTokens(text);
 
-    // tokenizers 的 encode 返回 Promise<Encoding>（类型声明是同步签名，运行时是异步）；
-    // Bun 下拿 ids 要走 getIds()（napi 对象的 getter 属性读不到）
-    const encoded = (await tokenizer.encode(text)) as unknown as {
-        ids?: number[];
-        getIds?: () => number[];
-    };
-    const ids = encoded?.ids ?? encoded?.getIds?.();
-    return Array.isArray(ids) ? ids.length : estimateTextTokens(text);
+    const ids = tokenizer.encode(text);
+    return ids.length > 0 ? ids.length : estimateTextTokens(text);
 }
 
 /** 单条消息的精确 token 数（内容 + tool_calls 参数 + 结构开销）。 */
