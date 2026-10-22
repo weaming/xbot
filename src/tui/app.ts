@@ -11,11 +11,9 @@ import {
     Container,
     Key,
     KeybindingsManager,
-    Markdown,
     ProcessTerminal,
     ScrollView,
     setKeybindings,
-    Spacer,
     Text,
     TUI_KEYBINDINGS,
     TuiAltScreen,
@@ -27,8 +25,7 @@ import { describeClaimFailure } from "../control/channel.js";
 import { cleanupStaleSockets, describeOwnership, type PeerOwnership } from "../control/registry.js";
 import type { TuiAgent } from "./agent.js";
 import type { SessionReleaseCause } from "./agent-types.js";
-import { collectCollapsedFileBlocks, openExternalUrl } from "./app-helpers.js";
-import { PeerMessageView, renderPeerPlain } from "./peer-message.js";
+import { openExternalUrl } from "./app-helpers.js";
 import {
     buildHelpText,
     buildSkillsHelpText,
@@ -61,7 +58,6 @@ import { parseWheelEvent, type WheelEvent } from "./panel-input.js";
 import { PromptEditor } from "./prompt-editor.js";
 import { StatusBar } from "./status-bar.js";
 import { TodoBar } from "./todo-bar.js";
-import { ReasoningBlock } from "./reasoning-block.js";
 import { buildSessionBar, type SessionBarStyles, type SessionBarTab } from "./session-bar.js";
 import { SPINNER_FRAMES, type SessionOwnerState } from "./session-marker.js";
 import { SessionPanel, type SessionPanelItem } from "./session-panel.js";
@@ -79,18 +75,8 @@ import {
 } from "../utils/user-question.js";
 
 import { getTuiWheelLogFile } from "../utils/tui-state-paths.js";
-import { ChatStore, type AssistantTimelineItem, type UiMessage } from "./store.js";
-import { findLastTextItem } from "./store-message.js";
-import {
-    isAskUserTool,
-    isFileMutationTool,
-    isTodoTool,
-    renderCollapsedToolBlock,
-    renderExpandedToolBlock,
-    renderCollapsedFileBlocks,
-} from "./tool-block-display.js";
-import { ToolBlockText } from "./tool-block-text.js";
-import { editorTheme, markdownTheme, theme } from "./theme.js";
+import { ChatStore } from "./store.js";
+import { editorTheme, theme } from "./theme.js";
 import { setTuiLogSession } from "./runtime-context.js";
 import { DraftStore, loadRichDrafts, persistRichDrafts } from "./draft-store.js";
 import { isCmdDown, isCmdGateSupported } from "./cmd-modifier.js";
@@ -107,7 +93,14 @@ import { readSessionTodos, type TodoItem } from "../tools/todo-tool.js";
 import { deepSeekPhaseInfo, isDeepSeekPricingEndpoint, normalizeDeepSeekModel } from "../pricing/deepseek.js";
 import { getContextWindowForModel } from "../utils/token-budget.js";
 import { buildMcpStatusHelpText, setMcpNoticeHandler, type McpNotice } from "../mcp/client-manager.js";
-import { StreamingReasoningBlock } from "./streaming-reasoning.js";
+import {
+    createMessageComponent,
+    messageRenderKey,
+    renderSystemText,
+    updateMessageComponent,
+    type MessageComponents,
+    type RenderContext,
+} from "./render/messages.js";
 import type { ImageAssetRef, TuiDraft } from "../types/image.js";
 import { backgroundTaskManager, type BackgroundTaskSummary } from "../tools/background-tasks.js";
 
@@ -125,18 +118,6 @@ interface PendingQuestion {
     settle(answer: UserAnswer): void;
 }
 
-interface MessageComponents {
-    messageId: number;
-    root: Container;
-    body?: Text;
-    /** 群消息专用视图：按折叠态在单行文本与 Markdown 块之间切换。 */
-    peerView?: PeerMessageView;
-    timeline?: Container;
-    /** 流式 reasoning 视口块缓存（按 timeline item 持久，增量追加）。 */
-    reasoningBlocks?: Map<AssistantTimelineItem, StreamingReasoningBlock>;
-    /** 上次渲染时的内容指纹：用于跳过未变化消息的重建。 */
-    renderKey?: string;
-}
 
 /** 需要当前会话才能执行的命令（无会话时直接提示，不静默失败）。 */
 const SESSION_REQUIRED_COMMANDS = new Set(["/clear", "/archive", "/unarchive", "/delete", "/close", "/compact", "/continue", "/system", "/model"]);
@@ -2362,11 +2343,13 @@ export class ChatApp {
 
     private toggleReasoning(): void {
         this.showReasoning = !this.showReasoning;
+        const ctx = this.renderContext();
         for (const entry of this.messageComponents.values()) {
             if (!entry.timeline) continue;
             const message = this.store.getMessageById(entry.messageId);
             if (message && message.role === "assistant") {
-                this.updateMessageComponent(entry, message);
+                updateMessageComponent(entry, message, ctx);
+                entry.renderKey = messageRenderKey(message, ctx);
             }
         }
         this.tui.requestRender();
@@ -2389,16 +2372,20 @@ export class ChatApp {
 
         // 精准局部更新：assistant 走时间线；群消息等 system 文本要按折叠态重排，
         // 否则 Ctrl+O 展开后群消息仍停留在"只有第一行"的折叠形态。
+        const ctx = this.renderContext();
         for (const entry of this.messageComponents.values()) {
             const message = this.store.getMessageById(entry.messageId);
             if (!message) continue;
 
             if (entry.timeline) {
-                if (message.role === "assistant") this.updateMessageComponent(entry, message);
+                if (message.role === "assistant") {
+                    updateMessageComponent(entry, message, ctx);
+                    entry.renderKey = messageRenderKey(message, ctx);
+                }
                 continue;
             }
             if (entry.body && message.role !== "user") {
-                entry.body.setText(this.renderSystemText(message));
+                entry.body.setText(renderSystemText(message));
                 entry.body.invalidate();
             }
         }
@@ -2600,66 +2587,9 @@ export class ChatApp {
         }
     }
 
-    private clearMessages(): void {
-        this.messagesContainer.clear();
-        this.messageComponents.clear();
-    }
-
-    private syncMessages(): void {
-        const ordered: Component[] = [];
-        const seen = new Set<number>();
-        for (const message of this.store.messages) {
-            seen.add(message.id);
-            let entry = this.messageComponents.get(message.id);
-            if (!entry) {
-                entry = this.createMessageComponent(message);
-                this.messageComponents.set(message.id, entry);
-            }
-            // 内容未变化则跳过重建：流式消息每帧指纹都会变，仅重建活跃消息；
-            // 已封口的历史消息指纹稳定，不再重复 new Markdown / ToolBlock。
-            const key = this.messageRenderKey(message);
-            if (entry.renderKey !== key) {
-                this.updateMessageComponent(entry, message);
-                entry.renderKey = key;
-            }
-            ordered.push(entry.root);
-        }
-        // 群消息可插入到任意位置：按消息顺序重建子节点，避免新消息只能追加到末尾
-        for (const id of [...this.messageComponents.keys()]) {
-            if (!seen.has(id)) this.messageComponents.delete(id);
-        }
-        this.messagesContainer.children = ordered;
-        this.tui.requestRender();
-    }
-
-    /**
-     * 消息内容指纹：覆盖影响渲染的所有字段。流式消息随 text/timeline 变化，
-     * 折叠态（detailed/showReasoning）变化时通过前缀位一并纳入，保证切换后重绘。
-     */
-    private messageRenderKey(message: UiMessage): string {
-        // 折叠态纳入指纹：切换 detailed/showReasoning 后历史消息需重绘。
-        const flags = `${this.detailed ? 1 : 0}${this.showReasoning ? 1 : 0}`;
-        if (message.role === "assistant") {
-            const timeline = message.timeline ?? [];
-            const last = timeline[timeline.length - 1];
-            const lastText = last && "text" in last ? last.text.length : 0;
-            // 只有流式且尚无 timeline 的等待态才受 spinner 影响，单独纳入，避免 120ms
-            // tick 让所有历史消息指纹失效。用「timeline 长度 + 末段长度 + 流式标记 +
-            // text 长度」近似内容，避免对长文本做完整字符串拼接。
-            const waiting = message.streaming && timeline.length === 0
-                ? `|s${this.spinnerIndex % SPINNER_FRAMES.length}`
-                : "";
-            // 工具块状态：result/expanded 就绪后 timeline 长度不变，须单列指纹
-            const tools = (message.toolBlocks ?? [])
-                .map(block => `${block.id}:${block.expanded ? 1 : 0}:${block.result === undefined ? 0 : block.result.length}`)
-                .join(",");
-            return `${flags}|a|${message.streaming ? 1 : 0}|${timeline.length}|${lastText}|${message.text.length}|${message.reasoning?.length ?? 0}|${tools}${waiting}`;
-        }
-        return `${flags}|${message.role}|${message.text.length}|${message.peer ? 1 : 0}`;
-    }
-
     /** 流式 delta 高频触发时按帧合并同步，避免每 token 全量重建组件。 */
     private syncTimer: ReturnType<typeof setTimeout> | null = null;
+
     private scheduleSyncMessages(): void {
         if (this.syncTimer) return;
         this.syncTimer = setTimeout(() => {
@@ -2668,163 +2598,54 @@ export class ChatApp {
         }, 16);
     }
 
-    private createMessageComponent(message: UiMessage): MessageComponents {
-        const root = new Container();
-        const base = { messageId: message.id, root };
-        let result: MessageComponents;
-    if (message.role === "assistant") {
-        const timeline = new Container();
-        root.addChild(timeline);
-        result = { ...base, timeline, reasoningBlocks: new Map() };
-    } else if (message.role === "user") {
-            const body = new Text(theme.user(`❯ ${message.text}`), 1, 1, theme.userBackground);
-            root.addChild(body);
-            result = { ...base, body };
-        } else if (message.peer) {
-            // 会话间消息/结果：同一套视图，按方向与状态配色
-            const peerView = new PeerMessageView({ text: message.text, peer: message.peer });
-            root.addChild(peerView);
-            result = { ...base, peerView };
-        } else {
-            const body = new Text(this.renderSystemText(message), 1, 0);
-            root.addChild(body);
-            result = { ...base, body };
-        }
-        // 消息底部空行：回复后 2 行（分隔下一条消息），用户消息后 1 行（与回复衔接）
-        root.addChild(new Spacer(1));
-        return result;
+    private clearMessages(): void {
+        this.messagesContainer.clear();
+        this.messageComponents.clear();
     }
 
-    private updateMessageComponent(entry: MessageComponents, message: UiMessage): void {
-        if (message.role === "assistant" && entry.timeline) {
-            this.updateAssistantTimeline(entry, message);
-            entry.root.children = [entry.timeline, new Spacer(1)];
-            entry.root.invalidate();
-            return;
-        }
+    /** 把 store 的消息投影成组件树；逐条按内容指纹决定是否重建。 */
+    private syncMessages(): void {
+        const ctx = this.renderContext();
+        const ordered: Component[] = [];
+        const seen = new Set<number>();
 
-        if (entry.peerView) {
-            entry.peerView.setMessage({ text: message.text, peer: message.peer! });
-            entry.peerView.invalidate();
-            return;
-        }
-
-        if (!entry.body) return;
-        if (message.role === "user") {
-            entry.body.setText(theme.user(`❯ ${message.text}`));
-        } else {
-            entry.body.setText(this.renderSystemText(message));
-        }
-        entry.body.invalidate();
-    }
-
-    /** 系统消息的纯文本形态：会话间消息/结果走专用渲染，其余原样。 */
-    private renderSystemText(message: UiMessage): string {
-        if (message.peer) return renderPeerPlain({ text: message.text, peer: message.peer });
-        return message.text;
-    }
-
-    /** 按 assistant turn 的时间线渲染思考、正文和工具调用。 */
-    private updateAssistantTimeline(entry: MessageComponents, message: UiMessage): void {
-        const container = entry.timeline!;
-        const timeline = message.timeline ?? (message.text ? [{ type: "text", text: message.text }] : []);
-        const showDetail = message.streaming || this.detailed;
-        const children: Component[] = [];
-        // 末条正文只渲染一次：循环外算好，避免每个 text item 都从尾扫一遍 timeline
-        const lastTextItem = findLastTextItem(timeline);
-
-        if (message.streaming && timeline.length === 0) {
-            const spinnerChar = SPINNER_FRAMES[this.spinnerIndex % SPINNER_FRAMES.length];
-            children.push(new Text(theme.dim(`${spinnerChar} 等待响应...`), 1, 0));
-        }
-
-        for (let index = 0; index < timeline.length; index++) {
-            const item = timeline[index];
-            const fileBlocks = !showDetail ? collectCollapsedFileBlocks(timeline, index) : [];
-            const component = fileBlocks.length > 0
-                ? new ToolBlockText(renderCollapsedFileBlocks(fileBlocks), 1, true)
-                : this.renderTimelineItem(item, lastTextItem, showDetail, entry);
-            if (!component) continue;
-            if (children.length > 0) children.push(new Spacer(1));
-            children.push(component);
-            if (fileBlocks.length > 0) index += fileBlocks.length - 1;
-        }
-
-        container.children = children;
-        container.invalidate();
-    }
-
-    private renderTimelineItem(
-        item: AssistantTimelineItem,
-        lastTextItem: AssistantTimelineItem | undefined,
-        showDetail: boolean,
-        entry: MessageComponents,
-    ): Component | undefined {
-        if (item.type === "reasoning") {
-            if (!showDetail || !this.showReasoning) return undefined;
-            if (this.detailed) {
-                // 详细模式：完整 Markdown（人工展开全量内容）
-                return new ReasoningBlock(item.text);
+        for (const message of this.store.messages) {
+            seen.add(message.id);
+            let entry = this.messageComponents.get(message.id);
+            if (!entry) {
+                entry = createMessageComponent(message);
+                this.messageComponents.set(message.id, entry);
             }
-            return this.syncStreamingReasoning(entry, item);
+            // 内容未变化则跳过重建：流式消息每帧指纹都会变，仅重建活跃消息；
+            // 已封口的历史消息指纹稳定，不再重复 new Markdown / ToolBlock。
+            const key = messageRenderKey(message, ctx);
+            if (entry.renderKey !== key) {
+                updateMessageComponent(entry, message, ctx);
+                entry.renderKey = key;
+            }
+            ordered.push(entry.root);
         }
 
-        if (item.type === "user") {
-            if (!item.text) return undefined;
-            // 与独立用户消息一致：上下各留 1 行同色背景（否则时间线里的用户消息会紧贴前后内容）
-            return new Text(theme.user(`❯ ${item.text}`), 1, 1, theme.userBackground);
+        // 群消息可插入到任意位置：按消息顺序重建子节点，避免新消息只能追加到末尾
+        for (const id of [...this.messageComponents.keys()]) {
+            if (!seen.has(id)) this.messageComponents.delete(id);
         }
-
-        if (item.type === "peer") {
-            // 回合执行中到达的会话间消息/结果：同样始终渲染全文
-            return new PeerMessageView({ text: item.text, peer: item.peer });
-        }
-
-        if (item.type === "text") {
-            if (!item.text) return undefined;
-            const isLastText = lastTextItem === item;
-            if (!showDetail && !isLastText) return undefined;
-            return new Markdown(item.text, 1, 0, markdownTheme);
-        }
-
-        if (item.type !== "tool") return undefined;
-
-        // todo 已由底部常驻条展示最新状态，不再出现在事件流里
-        if (item.block && isTodoTool(item.block.name)) return undefined;
-        const isFileMutation = item.block && isFileMutationTool(item.block.name);
-        // 提问与文件变更同理：折叠态也要看得见「问了什么、答了什么」（浮层收起后事件流是唯一留痕）
-        const isAskUser = item.block && isAskUserTool(item.block.name);
-        // 文件变更工具在折叠模式下也保留（结果就绪后）
-        const shouldShowTool = showDetail || isAskUser || (isFileMutation && item.block.result !== undefined);
-        if (!shouldShowTool) return undefined;
-        const text = item.block.expanded
-            ? renderExpandedToolBlock(item.block)
-            : renderCollapsedToolBlock(item.block);
-        return new ToolBlockText(text, 1, isFileMutation);
+        this.messagesContainer.children = ordered;
+        this.tui.requestRender();
     }
 
-    /** 流式 reasoning：增量消费 item.text，渲染固定 UI 行视口（块高恒定，历史不跳动）。 */
-    private syncStreamingReasoning(
-        entry: MessageComponents,
-        item: Extract<AssistantTimelineItem, { type: "reasoning" }>,
-    ): StreamingReasoningBlock {
-        const blocks = entry.reasoningBlocks ??= new Map();
-        let block = blocks.get(item);
-        if (!block) {
-            block = new StreamingReasoningBlock();
-            blocks.set(item, block);
-        }
-        const width = Math.max(10, this.tui.terminal.columns - 2);
-        const offset = item.renderedOffset ?? 0;
-        if (item.text.length < offset || block.width !== width) {
-            // 文本回退或终端 resize：全量重建窗口
-            block.reset(item.text, width);
-        } else {
-            block.append(item.text.slice(offset), width);
-        }
-        item.renderedOffset = item.text.length;
-        return block;
+    /** 渲染器需要的显示开关快照（渲染层不持有 ChatApp 状态）。 */
+    private renderContext(): RenderContext {
+        return {
+            detailed: this.detailed,
+            showReasoning: this.showReasoning,
+            spinnerIndex: this.spinnerIndex,
+            columns: this.tui.terminal.columns,
+        };
     }
+
+
+
 
     /** 高危操作二次确认：同一标签在 EXIT_CONFIRM_MS 窗口内再按一次才执行，首次给出提示。 */
     private requestConfirm(label: string, run: () => void): void {
