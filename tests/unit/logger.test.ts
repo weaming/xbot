@@ -83,6 +83,24 @@ describe("AI 交互日志", () => {
             content: "第一行\n第二行",
         });
     });
+
+    test("图片数据只在交换日志中保留类型和长度", () => {
+        const request = {
+            messages: [{
+                role: "user",
+                content: [
+                    { type: "image_url", image_url: { url: "data:image/png;base64,aGVsbG8=" } },
+                    { type: "image_data", image: { mimeType: "image/png", data: "aGVsbG8=" } },
+                ],
+            }],
+        };
+
+        const entry = JSON.parse(formatAIInteractionLogEntry("REQUEST", request));
+        expect(JSON.stringify(entry)).not.toContain("aGVsbG8=");
+        expect(entry.content.messages[0].content[0].image_url.url).toBe("[image/png base64_chars=8]");
+        expect(entry.content.messages[0].content[1].image.data).toBe("[image/png base64_chars=8]");
+        expect(request.messages[0].content[0].image_url.url).toBe("data:image/png;base64,aGVsbG8=");
+    });
 });
 
 describe("LLM exchange 链式增量记录", () => {

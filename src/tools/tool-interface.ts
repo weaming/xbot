@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
-import type { ImageAssetContent, ImageDataContent, ImageDataRef } from "../types/image.js";
+import { createToolImageAsset } from "../utils/image-assets.js";
+import type { ImageAssetContent, ImageDataContent } from "../types/image.js";
 import type { ToolResultPolicy } from "../types/session.js";
 
 export type ToolImageContent = ImageAssetContent | ImageDataContent;
@@ -97,48 +99,39 @@ export function toolResultToText(result: ToolExecutionResult): string {
     return toolContentToText(result.content);
 }
 
-function createImageDataRef(block: ToolContentBlock, index: number): ImageDataRef | undefined {
-    if (typeof block.data !== "string" || !block.mimeType?.startsWith("image/")) return undefined;
-
-    const digest = createHash("sha256")
-        .update(`${block.mimeType}:${block.data}`)
-        .digest("hex")
-        .slice(0, 20);
-    const extension = block.mimeType.split("/")[1]?.replace(/[^a-z0-9]+/gi, "") || "bin";
-    return {
-        id: `tool_img_${digest}`,
-        data: block.data,
-        filename: `tool-image-${index + 1}.${extension}`,
-        mimeType: block.mimeType,
-    };
-}
-
 /** 将工具返回的图片转换为可在后续模型请求中恢复的图片引用。 */
-export function toolContentToImageContent(content: ToolContentBlock[]): ToolImageContent[] {
-    return normalizeToolContent(content).flatMap((block, index): ToolImageContent[] => {
+export async function toolContentToImageContent(content: ToolContentBlock[], sessionId?: string): Promise<ToolImageContent[]> {
+    const images = await Promise.all(normalizeToolContent(content).map(async (block, index): Promise<ToolImageContent[]> => {
         if (block.type !== "image") return [];
+        if (typeof block.data === "string" && block.mimeType?.startsWith("image/")) {
+            const filename = block.path ? path.basename(block.path) : `tool-image-${index + 1}`;
+            const image = await createToolImageAsset(Buffer.from(block.data, "base64"), filename, block.mimeType, sessionId);
+            return [{ type: "image_asset", image } satisfies ImageAssetContent];
+        }
 
-        if (block.path && ["image/jpeg", "image/png", "image/gif", "image/webp"].includes(block.mimeType ?? "")) {
-            const image = createImageDataRef(block, index);
-            if (image) {
-                return [{ type: "image_data" as const, image } satisfies ImageDataContent];
+        if (block.path && block.mimeType && ["image/jpeg", "image/png", "image/gif", "image/webp"].includes(block.mimeType)) {
+            try {
+                const input = await fs.promises.readFile(block.path);
+                const image = await createToolImageAsset(input, path.basename(block.path), block.mimeType, sessionId);
+                return [{ type: "image_asset", image } satisfies ImageAssetContent];
+            } catch (error: any) {
+                if (error?.code !== "ENOENT" && error?.code !== "ENOTDIR") throw error;
             }
-
             return [{
                 type: "image_asset" as const,
                 image: {
                     id: `tool_path_${createHash("sha256").update(block.path).digest("hex").slice(0, 20)}`,
                     path: block.path,
                     filename: path.basename(block.path),
-                    mimeType: block.mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
-                    sizeBytes: typeof block.data === "string" ? Math.floor(block.data.length * 3 / 4) : 0,
+                    mimeType: block.mimeType,
+                    sizeBytes: 0,
                 },
             } satisfies ImageAssetContent];
         }
 
-        const image = createImageDataRef(block, index);
-        return image ? [{ type: "image_data" as const, image } satisfies ImageDataContent] : [];
-    });
+        return [];
+    }));
+    return images.flat();
 }
 
 const JSON_COMPACTION_TOOL_KEYWORDS = [

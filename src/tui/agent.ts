@@ -55,6 +55,7 @@ import type {
 } from "./agent-types.js";
 import { toUserContent, type UserMessageInput } from "../types/image.js";
 import { backgroundTaskManager } from "../tools/background-tasks.js";
+import { deleteSessionImageAssets } from "../utils/image-assets.js";
 
 export type { InstanceNetworkStats, TuiAgent, TuiSessionSummary } from "./agent-types.js";
 export { summarizeEvents } from "./agent-summary.js";
@@ -459,6 +460,7 @@ export class LocalTuiAgent implements TuiAgent {
             }
             await this.eventLog.truncate(sessionId, 0);
             await this.replay.deleteSnapshot(sessionId);
+            await deleteSessionImageAssets(sessionId);
             await this.eventLog.append(sessionId, "session_created", { cwd: getToolCwd() });
             if (session.modelSelection) {
                 await this.eventLog.append(sessionId, "model_selected", session.modelSelection);
@@ -539,6 +541,7 @@ export class LocalTuiAgent implements TuiAgent {
             lock = await acquireSessionLock(sessionId);
             await this.eventLog.delete(sessionId);
             await this.replay.deleteSnapshot(sessionId);
+            await deleteSessionImageAssets(sessionId);
             this.activeSessions.delete(sessionId);
             // 同步清理该会话的 console 日志。
             try {

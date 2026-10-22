@@ -47,6 +47,7 @@ mock.module("../../src/services/chat-runtime.js", () => ({
 
 const { LocalTuiAgent } = await import("../../src/tui/agent.js");
 const { getSessionLockFilePath } = await import("../../src/utils/session-lock.js");
+const { createToolImageAsset } = await import("../../src/utils/image-assets.js");
 
 beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-tui-multi-test-"));
@@ -189,6 +190,20 @@ describe("LocalTuiAgent 多实例并发协同", () => {
             { role: "user", content: "归档前的问题" },
             { role: "assistant", content: "reply to: 归档前的问题" },
         ]);
+    });
+
+    test("清空和删除会话时清理各自的工具图片", async () => {
+        const agent = new LocalTuiAgent();
+        const { sessionId } = await agent.createSession();
+        await agent.sendMessage(sessionId, "创建会话");
+
+        const first = await createToolImageAsset(Buffer.from("first"), "first.png", "image/png", sessionId);
+        await agent.clearSession(sessionId);
+        expect(fs.existsSync(first.path)).toBe(false);
+
+        const second = await createToolImageAsset(Buffer.from("second"), "second.png", "image/png", sessionId);
+        await agent.deleteSession(sessionId);
+        expect(fs.existsSync(second.path)).toBe(false);
     });
 });
 

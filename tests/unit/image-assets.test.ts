@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import {
     createImageAsset,
+    deleteSessionImageAssets,
     materializeDeepSeekImageMessages,
     materializeImageMessages,
     resolveDeepSeekFilesAPI,
@@ -47,22 +48,37 @@ describe("image assets", () => {
         expect(asset.path).not.toBe(originalPath);
     });
 
-    test("工具图片优先固化 base64，不依赖外部文件路径", () => {
-        const imageContent = toolContentToImageContent([{
+    test("工具图片按会话落盘并复用，历史消息只保存引用", async () => {
+        const blocks = [{
             type: "image",
             data: "aGVsbG8=",
             mimeType: "image/png",
             path: "/missing/external/image.png",
-        }]);
+        }];
+        const imageContent = await toolContentToImageContent(blocks, "session-one");
+        const second = await toolContentToImageContent(blocks, "session-one");
+        const otherSession = await toolContentToImageContent(blocks, "session-two");
 
         expect(imageContent).toHaveLength(1);
         expect(imageContent[0]).toMatchObject({
-            type: "image_data",
+            type: "image_asset",
             image: {
-                data: "aGVsbG8=",
                 mimeType: "image/png",
             },
         });
+        expect(second).toEqual(imageContent);
+        const image = (imageContent[0] as { image: { path: string } }).image;
+        expect(fs.readFileSync(image.path).toString()).toBe("hello");
+        expect(JSON.stringify(imageContent)).not.toContain("aGVsbG8=");
+
+        const request = await materializeImageMessages([{ role: "user", content: imageContent }]);
+        expect(request[0].content[0].image_url.url).toBe("data:image/png;base64,aGVsbG8=");
+
+        await deleteSessionImageAssets("session-one");
+        expect(fs.existsSync(image.path)).toBe(false);
+        expect(fs.existsSync((otherSession[0] as { image: { path: string } }).image.path)).toBe(true);
+        await expect(deleteSessionImageAssets("../")).rejects.toThrow("会话 ID 无效");
+        await expect(deleteSessionImageAssets("")).rejects.toThrow("会话 ID 无效");
     });
 
     test("官方 DeepSeek 地址自动推导 Files API", () => {
@@ -89,6 +105,31 @@ describe("image assets", () => {
             role: "user",
             content: [{ type: "text", text: `[图片文件不可用：${missingPath}]` }],
         }]);
+    });
+
+    test("旧会话内嵌图片仍能发送给模型", async () => {
+        const messages = await materializeImageMessages([{
+            role: "user",
+            content: [{
+                type: "image_data",
+                image: { id: "old", data: "aGVsbG8=", filename: "old.png", mimeType: "image/png" },
+            }],
+        }]);
+        expect(messages[0].content[0].image_url.url).toBe("data:image/png;base64,aGVsbG8=");
+    });
+
+    test("只有外部路径的工具图片也复制到会话资产目录", async () => {
+        const sourcePath = createTestImageFile(stateDir);
+        const content = await toolContentToImageContent([{
+            type: "image",
+            path: sourcePath,
+            mimeType: "image/png",
+        }], "session-path-only");
+        const assetPath = (content[0] as { image: { path: string } }).image.path;
+
+        expect(assetPath).not.toBe(sourcePath);
+        fs.unlinkSync(sourcePath);
+        expect(fs.readFileSync(assetPath)).toEqual(TEST_IMAGE_BYTES);
     });
 
     test("Files API 上传使用原始 multipart 请求并设置七天有效期", async () => {
@@ -164,7 +205,7 @@ describe("image assets", () => {
             {
                 type: "image_url",
                 image_url: {
-                    url: `data:image/jpeg;base64,${original.toString("base64")}`,
+                    url: `data:image/png;base64,${original.toString("base64")}`,
                     detail: "original",
                 },
             },

@@ -187,7 +187,17 @@ export function formatAIInteractionLogEntry(type: string, content: any): string 
         schemaVersion: 1,
     };
 
-    return JSON.stringify(entry);
+    return JSON.stringify(entry, function (key, value) {
+        if (typeof value !== "string") return value;
+        const separator = value.indexOf(";base64,");
+        if (value.startsWith("data:image/") && separator > 5) {
+            return `[${value.slice(5, separator)} base64_chars=${value.length - separator - 8}]`;
+        }
+        if (key === "data" && typeof this?.mimeType === "string" && this.mimeType.startsWith("image/")) {
+            return `[${this.mimeType} base64_chars=${value.length}]`;
+        }
+        return value;
+    });
 }
 
 /**

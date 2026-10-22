@@ -12,13 +12,17 @@ import type {
     ImageUrlRef,
     UserContent,
 } from "../types/image.js";
-import { getWorkspaceStateDir } from "./runtime-paths.js";
+import { getSessionsDir, getWorkspaceStateDir } from "./runtime-paths.js";
+import { sanitizeSessionId } from "./session-id.js";
 
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const execFileAsync = promisify(execFile);
 
-function getImageAssetsDir(): string {
-    return getWorkspaceStateDir("assets", "images");
+function getImageAssetsDir(sessionId?: string): string {
+    if (sessionId === undefined) return getWorkspaceStateDir("assets", "images");
+    const safeId = sanitizeSessionId(sessionId);
+    if (!safeId || safeId !== sessionId) throw new Error(`会话 ID 无效：${sessionId}`);
+    return getSessionsDir("assets", safeId);
 }
 
 function detectImageType(input: Buffer, filename: string): {
@@ -52,30 +56,59 @@ function detectImageType(input: Buffer, filename: string): {
 }
 
 /** 将图片原文件写入资产目录，调用方只拿到可复用的本地引用。 */
-export async function createImageAsset(input: Buffer, filename = "clipboard.jpg"): Promise<ImageAssetRef> {
-    if (input.length > MAX_IMAGE_BYTES) {
-        throw new Error("图片大小超过 32 MiB");
-    }
-
-    const imageType = detectImageType(input, filename);
+async function writeImageAsset(
+    input: Buffer,
+    filename: string,
+    mimeType: string,
+    extension: string,
+    sessionId?: string,
+): Promise<ImageAssetRef> {
     const digest = crypto.createHash("sha256").update(input).digest("hex");
     const id = `img_${digest.slice(0, 20)}`;
-    const assetPath = path.join(getImageAssetsDir(), `${id}${imageType.extension}`);
+    const assetPath = path.join(getImageAssetsDir(sessionId), `${id}${extension}`);
 
-    fs.mkdirSync(path.dirname(assetPath), { recursive: true });
+    await fs.promises.mkdir(path.dirname(assetPath), { recursive: true });
     if (!fs.existsSync(assetPath)) {
-        const tempPath = `${assetPath}.${process.pid}.tmp`;
-        fs.writeFileSync(tempPath, input);
-        fs.renameSync(tempPath, assetPath);
+        const tempPath = `${assetPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+        try {
+            await fs.promises.writeFile(tempPath, input);
+            await fs.promises.rename(tempPath, assetPath);
+        } finally {
+            await fs.promises.rm(tempPath, { force: true });
+        }
     }
 
     return {
         id,
         path: assetPath,
         filename: path.basename(filename) || "clipboard.jpg",
-        mimeType: imageType.mimeType,
+        mimeType,
         sizeBytes: input.length,
     };
+}
+
+export async function createImageAsset(input: Buffer, filename = "clipboard.jpg"): Promise<ImageAssetRef> {
+    if (input.length > MAX_IMAGE_BYTES) throw new Error("图片大小超过 32 MiB");
+    const imageType = detectImageType(input, filename);
+    return writeImageAsset(input, filename, imageType.mimeType, imageType.extension);
+}
+
+/** 工具图片按会话落盘；内容哈希保证同一会话中的重复图片只保存一次。 */
+export async function createToolImageAsset(
+    input: Buffer,
+    filename: string,
+    mimeType: string,
+    sessionId?: string,
+): Promise<ImageAssetRef> {
+    if (!mimeType.startsWith("image/")) throw new Error(`工具图片 MIME 类型无效：${mimeType}`);
+    const subtype = mimeType.slice(6).split(/[+;]/, 1)[0]?.replace(/[^a-z0-9]/gi, "").toLowerCase();
+    const extension = subtype === "jpeg" ? ".jpg" : `.${subtype || "bin"}`;
+    const displayFilename = `${path.parse(filename).name || "tool-image"}${extension}`;
+    return writeImageAsset(input, displayFilename, mimeType, extension, sessionId);
+}
+
+export async function deleteSessionImageAssets(sessionId: string): Promise<void> {
+    await fs.promises.rm(getImageAssetsDir(sessionId), { recursive: true, force: true });
 }
 
 /** 把本地图片或外部图片引用转换为 OpenAI 兼容的图片内容块。 */

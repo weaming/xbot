@@ -3,7 +3,7 @@ export interface ImageAssetRef {
     id: string;
     path: string;
     filename: string;
-    mimeType: "image/jpeg" | "image/png" | "image/gif" | "image/webp";
+    mimeType: string;
     sizeBytes: number;
     width?: number;
     height?: number;

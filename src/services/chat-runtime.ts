@@ -489,7 +489,7 @@ export async function runChatQuery(options: ChatRunOptions) {
                     : await execute();
                 return {
                     content: toolResultToText(result),
-                    imageContent: toolContentToImageContent(result.content),
+                    imageContent: await toolContentToImageContent(result.content, options.sessionId),
                     contextPolicy: result.contextPolicy,
                 };
             },
