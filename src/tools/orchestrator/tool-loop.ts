@@ -20,7 +20,7 @@ import type { ChatMessage } from "../../types/session.js";
 /** 声明式工具会改变后续请求的工具表，不能与其他工具并发。 */
 const SIDE_EFFECT_TOOL = "search_tools";
 
-export function normalizeToolExecutionOutput(output: ToolExecutionResponse): ToolExecutionOutput {
+function normalizeToolExecutionOutput(output: ToolExecutionResponse): ToolExecutionOutput {
     return typeof output === "string" ? { content: output } : output;
 }
 
@@ -55,7 +55,7 @@ function parseDiscoveredToolNames(output: string): string[] {
 }
 
 /** 执行单个工具调用并把结果追加进本回合消息。 */
-export async function processToolCall(
+async function processToolCall(
     host: ToolLoopHost,
     toolCall: ToolCall,
     mode: "serial" | "parallel",
@@ -137,7 +137,7 @@ export async function processToolCall(
  * 并发只发生在「执行」阶段，落盘严格按调用顺序：
  * 先并行跑完，再按 calls 的原顺序逐条 append，避免结果顺序依赖完成时序。
  */
-export async function runToolCalls(host: ToolLoopHost, calls: ToolCall[]): Promise<void> {
+async function runToolCalls(host: ToolLoopHost, calls: ToolCall[]): Promise<void> {
     if (calls.length === 0) return;
 
     // search_tools 改变后续请求的工具表，必须独占执行

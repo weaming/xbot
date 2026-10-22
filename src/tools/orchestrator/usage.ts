@@ -30,7 +30,7 @@ export function isAccumulatedUsage(usage: any): boolean {
  * 把上游累计值差分成本请求新增（本请求 = 本次累计 − 上次累计）。
  * 累计回退（上游会话重建、网关重启）时无法差分，退回本次累计本身。
  */
-export function deltaOfAccumulatedUsage(sessionId: string | undefined, accumulated: number): number {
+function deltaOfAccumulatedUsage(sessionId: string | undefined, accumulated: number): number {
     if (!sessionId || accumulated <= 0) return accumulated;
 
     const baseline = accumulatedUsageBaseline.get(sessionId);
@@ -42,11 +42,6 @@ export function deltaOfAccumulatedUsage(sessionId: string | undefined, accumulat
 
     if (baseline === undefined || accumulated <= baseline) return accumulated;
     return accumulated - baseline;
-}
-
-/** 清空差分基准（测试用；生产流程不需要重置）。 */
-export function resetAccumulatedUsageBaseline(): void {
-    accumulatedUsageBaseline.clear();
 }
 
 export interface UsageInput {
@@ -151,11 +146,3 @@ export function buildUsageStats(input: UsageStatsInput): LLMUsageLogEntry {
     };
 }
 
-/** 用量条目的单行日志（便于 grep 与回放核对）。 */
-export function formatUsageLogLine(entry: LLMUsageLogEntry): string {
-    return `[LLM] caller=${entry.caller}${entry.session_id ? ` session_id=${entry.session_id}` : ""}${entry.context_epoch_id ? ` context_epoch_id=${entry.context_epoch_id}` : ""}`
-        + ` model=${entry.model} prompt_tokens=${entry.prompt_tokens}`
-        + ` cache_hit_tokens=${entry.cache_hit_tokens} cache_miss_tokens=${entry.cache_miss_tokens}`
-        + ` completion_tokens=${entry.completion_tokens} reasoning_tokens=${entry.reasoning_tokens} total_tokens=${entry.total_tokens}`
-        + ` duration_ms=${entry.duration_ms} token_usage_source=${entry.token_usage_source}`;
-}

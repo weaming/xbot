@@ -11,7 +11,7 @@ import type { ChatMessage } from "../../types/session.js";
 import type { ToolImageContent } from "../tool-interface.js";
 import { materializeImageMessages } from "../../utils/image-assets.js";
 
-export function responseImagePart(part: any): any {
+function responseImagePart(part: any): any {
   return {
     type: "input_image",
     image_url: part.image_url?.url,

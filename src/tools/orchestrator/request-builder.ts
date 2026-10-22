@@ -61,7 +61,7 @@ export interface ReasoningParamsInput {
 }
 
 /** 思考强度参数：按当前协议与厂家派生，值原样下发给上游。 */
-export function buildReasoningParams(input: ReasoningParamsInput): Record<string, unknown> {
+function buildReasoningParams(input: ReasoningParamsInput): Record<string, unknown> {
     const provider = getReasoningProvider(input.protocol, input.model, input.baseURL);
     return buildReasoningEffortParams({
         protocol: input.protocol,
@@ -129,11 +129,3 @@ export function resolveEffort(
         ?? env.DEEPSEEK_REASONING_EFFORT;
 }
 
-/** 消息是否需要在发给上游前剥离 Responses 专属字段（切到 Chat Completions 时用）。 */
-export function stripProtocolMetadata(messages: ChatMessage[]): ChatMessage[] {
-    return messages.map(message => {
-        if (message.role !== "assistant" || !Array.isArray((message as any).response_output)) return message;
-        const { response_output: _responseOutput, ...rest } = message as any;
-        return rest as ChatMessage;
-    });
-}

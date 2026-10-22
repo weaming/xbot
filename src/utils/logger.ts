@@ -84,23 +84,6 @@ export interface LLMUsageLogEntry {
     tools_hash?: string;
 }
 
-/**
- * 显式 truncate 主 LLM exchange 日志。仅当 XBOT_RESET_LLM_LOG=1 时生效，
- * 避免误调用清空排查线索。
- */
-export function resetLLMExchangeLog(): boolean {
-    if (process.env.XBOT_RESET_LLM_LOG !== "1") return false;
-    const { logDir, exchangeFile } = resolveLogFiles();
-    try {
-        fs.mkdirSync(logDir, { recursive: true });
-        fs.writeFileSync(exchangeFile, '');
-        return true;
-    } catch (e) {
-        console.error("Failed to reset LLM exchange log:", e);
-        return false;
-    }
-}
-
 interface AIInteractionLogEntry {
     timestamp: string;
     type: string;
@@ -361,34 +344,3 @@ function logUsageTotals(scope: 'hourly' | 'daily', date: string): void {
     );
 }
 
-/** 每小时 05 分输出当日累计，次日 00:05 输出前一天总量。 */
-export function startLLMUsageReporter(): void {
-    let lastReportKey = '';
-
-    const reportIfDue = (): void => {
-        const now = new Date();
-        const date = hongKongDate(now.toISOString());
-        const minute = new Intl.DateTimeFormat('en-GB', {
-            timeZone: 'Asia/Hong_Kong',
-            hour: '2-digit',
-            minute: '2-digit',
-            hourCycle: 'h23',
-        }).format(now);
-
-        if (!minute.endsWith(':05')) return;
-
-        const reportKey = `${date} ${minute}`;
-        if (reportKey === lastReportKey) return;
-        lastReportKey = reportKey;
-
-        if (minute.startsWith('00:')) {
-            logUsageTotals('daily', previousHongKongDate(date));
-            return;
-        }
-
-        logUsageTotals('hourly', date);
-    };
-
-    reportIfDue();
-    setInterval(reportIfDue, 60_000).unref();
-}

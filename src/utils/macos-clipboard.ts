@@ -21,6 +21,3 @@ export function readMacOSClipboardImage(
     }
 }
 
-export function isPNGImage(data: Buffer): boolean {
-    return isPng(data);
-}

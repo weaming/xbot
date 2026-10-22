@@ -40,7 +40,7 @@ import {
 import { isAccumulatedUsage } from "./usage.js";
 
 /** 本地统计一次请求的输入 token（消息 + 工具 schema），仅作展示兜底。 */
-export async function estimateInputTokens(messages: any[], tools: any[], model?: string): Promise<number> {
+async function estimateInputTokens(messages: any[], tools: any[], model?: string): Promise<number> {
     const total = await countMessagesTokens(messages, model);
     if (tools.length === 0) return total;
     return total + (await countTextTokens(JSON.stringify(tools), model));

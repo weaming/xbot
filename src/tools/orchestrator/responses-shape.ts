@@ -4,7 +4,7 @@
  * 响应两侧（实时与重放）都依赖同一份归一化，避免措辞与字段口径漂移。
  */
 
-export function normalizeResponsesUsage(usage: any): any {
+function normalizeResponsesUsage(usage: any): any {
   if (!usage || usage.input_tokens === undefined) return usage;
   return {
     ...usage,

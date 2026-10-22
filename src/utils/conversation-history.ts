@@ -148,10 +148,6 @@ function repairToolCallPairing(messages: ChatMessage[], skipToolCallIds?: Readon
     return repaired;
 }
 
-export function getSessionMessageCount(session: Pick<Session, 'turns'>): number {
-    return getSessionHistory(session).length;
-}
-
 function updateContextEpoch(session: Session, reason: 'hard_trim' | 'compact', compactInstruction?: string): void {
     const timestamp = getShanghaiISOString();
     session.contextEpochId = createUlid();

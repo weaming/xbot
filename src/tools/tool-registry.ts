@@ -158,12 +158,6 @@ export const getOpenAIToolDefinitions = (includeLruTools: boolean = true, extraT
 export const getOpenAIToolDefinitionsByNames = (names: string[]) =>
   toolCatalog.listAllTools().filter(t => names.includes(t.name)).map(formatToolDef);
 
-export function isBuiltinTool(name: string): boolean {
-  return name === "use_skill"
-    || name === "search_tools"
-    || toolCatalog.listLocalTools().some((tool) => tool.name === name);
-}
-
 /** 获取所有已注册工具的稳定摘要，供 system prompt 构建完整工具列表。 */
 export const getAllToolSummary = (): Array<{ name: string; tags: string[]; source?: string }> =>
   toolCatalog.listAllTools()

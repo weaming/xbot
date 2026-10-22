@@ -11,7 +11,7 @@ import type { AssistantTimelineItem, ToolBlock, UiMessage } from "./store-types.
  * （store-history）必须一字不差，否则同一回合中止后切个会话/重启一次，屏幕上那句话就换了词。
  * 用户主动中止是「已中止」；进程被强杀（只剩 turn_message 的未闭合回合）只能笼统叫「中断」。
  */
-export const ABORT_LABEL = "（已中止）";
+const ABORT_LABEL = "（已中止）";
 export const INTERRUPT_LABEL = "（中断）";
 
 /**
