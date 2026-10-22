@@ -12,6 +12,7 @@
  */
 
 import { PeerClientPool, PeerConnectError, requestOnce } from "./client.js";
+import { OutboxLedger, type WaitOutcome } from "./outbox-ledger.js";
 import { getSocketPath } from "./paths.js";
 import { createPeerMessage, type PeerMessage, type PeerResult } from "./protocol.js";
 import { listOwnership, probeOwnership, type PeerOwnership } from "./registry.js";
@@ -32,16 +33,18 @@ export class PeerSendFailure extends Error {
 
 export type ClaimResult =
     | { ok: true }
+    /** 持有者忙，拒绝释放。 */
     | { ok: false; reason: "busy"; pid?: number }
+    /** 持有者无应答（进程卡死/通道异常），无法确认状态。 */
     | { ok: false; reason: "unresponsive" }
+    /** 协商已成功，但第二次绑定时被别的实例抢先——竞争失败，不是对端无应答。 */
+    | { ok: false; reason: "raced"; winnerPid?: number }
     | { ok: false; reason: "error"; message: string };
 
 export type SpawnResult = { ok: true; sessionId: string } | { ok: false; error: string };
 
 /** 前台等待的结果：除 ok 外都只解除等待（等待项保留），none 表示这条消息已不在等待表里。 */
-export type WaitOutcome =
-    | { ok: true; result: PeerResult }
-    | { ok: false; reason: "timeout" | "lost" | "aborted" | "detached" | "none" };
+export type { WaitOutcome };
 
 /** 通道层需要宿主（agent/UI）提供的会话能力。 */
 export interface SessionControlHost {
@@ -91,35 +94,14 @@ const MAX_RESULT_STASH = 200;
 /** 本实例同时派生的子会话上限：避免模型无限开子会话把进程压垮。 */
 export const MAX_SPAWNED_SESSIONS = 8;
 
-interface OutboundExpectation {
-    requester: string;
-    message: PeerMessage;
-    target: string;
-    timer: ReturnType<typeof setTimeout> | null;
-    /** 有人在阻塞等这条消息的结果：命中时直接兑现，不入队、不通知宿主。 */
-    waiter: ((outcome: WaitOutcome) => void) | null;
-}
-
-/** 本实例发出的消息在等结果；未送达的结果暂存于此供对端重连后取回。 */
-interface Outbox {
-    expectations: Map<string, OutboundExpectation>;
-    /** 已进请求者队列、等下一次请求附加的结果文本。 */
-    queue: string[];
-}
-
-function emptyOutbox(): Outbox {
-    return { expectations: new Map(), queue: [] };
-}
-
 export class SessionControl {
     private readonly servers = new Map<string, PeerServer>();
     /** 本实例派生的子会话（含已被别的实例接管或已删除的会在此处随 release 移除）。 */
     private readonly spawned = new Set<string>();
     /** 走本进程内存投递的入站消息 id：完成后直接回给本地请求者，不走 socket。 */
     private readonly localInbound = new Set<string>();
-    private readonly outboxes = new Map<string, Outbox>();
-    /** 未能送达的结果暂存（msgId 全局唯一），供发起方重连后取回。 */
-    private readonly stash = new Map<string, PeerResult>();
+    /** 出站消息台账：一条消息一个状态，替代原先散落的三个容器。 */
+    private readonly outbox: OutboxLedger;
     private readonly pool: PeerClientPool;
     private readonly resultTimeoutMs: number;
     private readonly probeTimeoutMs: number | undefined;
@@ -134,6 +116,10 @@ export class SessionControl {
         this.probeTimeoutMs = options.probeTimeoutMs;
         this.negotiateTimeoutMs = options.negotiateTimeoutMs ?? DEFAULT_NEGOTIATE_TIMEOUT_MS;
         this.maxResultsPerSession = options.maxResultsPerSession ?? DEFAULT_MAX_RESULTS_PER_SESSION;
+        this.outbox = new OutboxLedger({
+            maxQueuedPerSession: this.maxResultsPerSession,
+            maxStashed: MAX_RESULT_STASH,
+        });
         this.pool = new PeerClientPool({
             onResult: (target, result) => this.handleRemoteResult(target, result),
             onLost: (target, msgIds) => this.handleRemoteLost(target, msgIds),
@@ -167,7 +153,7 @@ export class SessionControl {
                     this.host.onReleased(sessionId);
                     return true;
                 },
-                pendingState: (msgIds) => this.takeStashedResults(msgIds),
+                pendingState: (msgIds) => this.outbox.takeStashed(msgIds),
             },
             this.probeTimeoutMs !== undefined ? { probeTimeoutMs: this.probeTimeoutMs } : {},
         );
@@ -185,6 +171,7 @@ export class SessionControl {
         const negotiation = await this.requestRelease(sessionId);
         if (!negotiation.ok) return negotiation;
 
+        // 协商成功后重新绑定：此时失败只可能是被别的实例抢先，不能再归因为「无应答」
         const second = await server.bind();
         if (second.ok) {
             this.servers.set(sessionId, server);
@@ -192,7 +179,9 @@ export class SessionControl {
         }
         if (second.reason === "error") return { ok: false, reason: "error", message: second.message };
         if (second.pid === process.pid) return { ok: false, reason: "error", message: "会话已被本实例持有" };
-        return { ok: false, reason: "unresponsive" };
+        return second.pid !== undefined
+            ? { ok: false, reason: "raced", winnerPid: second.pid }
+            : { ok: false, reason: "raced" };
     }
 
     /** 本实例主动放弃会话：关监听、释放 socket 文件、允许其他实例认领。 */
@@ -303,34 +292,23 @@ export class SessionControl {
             return;
         }
 
-        this.stashResult(result);
+        this.outbox.stashResult(result);
         this.servers.get(sessionId)?.pushResult(result);
     }
 
     /** 取走请求者待附加的结果（下一次 HTTP 请求用），取后即清。 */
     takeResults(sessionId: string): string[] {
-        const outbox = this.outboxes.get(sessionId);
-        if (!outbox || outbox.queue.length === 0) return [];
-
-        const texts = outbox.queue.splice(0);
-        this.evictOutboxes();
-        return texts;
+        return this.outbox.takeQueued(sessionId);
     }
 
     /** 本实例发出的、仍在等结果的消息数。 */
     awaitingResults(sessionId: string): number {
-        const outbox = this.outboxes.get(sessionId);
-        if (!outbox) return 0;
-        let count = 0;
-        for (const expectation of outbox.expectations.values()) {
-            if (expectation.requester === sessionId) count += 1;
-        }
-        return count;
+        return this.outbox.awaitingCount(sessionId);
     }
 
     /** 已就绪、等待下一次请求附加的结果条数。 */
     queuedResults(sessionId: string): number {
-        return this.outboxes.get(sessionId)?.queue.length ?? 0;
+        return this.outbox.queuedCount(sessionId);
     }
 
     /**
@@ -339,8 +317,10 @@ export class SessionControl {
      * 超时 / 丢失 / 中止 / 转后台只解除等待，等待项仍在，结果此后到达仍按原路入队。
      */
     waitForResult(msgId: string, timeoutMs: number, signal?: AbortSignal): Promise<WaitOutcome> {
-        const expectation = this.findOutboxByMsgId(msgId)?.expectations.get(msgId);
-        if (!expectation || expectation.waiter) return Promise.resolve({ ok: false, reason: "none" });
+        const expectation = this.outbox.get(msgId);
+        if (!expectation || expectation.state !== "awaiting" || expectation.waiter) {
+            return Promise.resolve({ ok: false, reason: "none" });
+        }
         if (signal?.aborted) return Promise.resolve({ ok: false, reason: "aborted" });
 
         return new Promise<WaitOutcome>((resolve) => {
@@ -370,14 +350,12 @@ export class SessionControl {
      * 返回本次放下的等待数（0 表示没有可放后台的等待）。
      */
     detachWaits(sessionId: string): number {
-        const outbox = this.outboxes.get(sessionId);
-        if (!outbox) return 0;
-
         let count = 0;
-        for (const expectation of outbox.expectations.values()) {
-            const waiter = expectation.waiter;
+        for (const entry of this.outbox.awaitingEntries()) {
+            if (entry.requester !== sessionId) continue;
+            const waiter = entry.waiter;
             if (!waiter) continue;
-            expectation.waiter = null;
+            entry.waiter = null;
             count += 1;
             waiter({ ok: false, reason: "detached" });
         }
@@ -389,15 +367,13 @@ export class SessionControl {
         for (const server of this.servers.values()) server.unbind();
         this.servers.clear();
         this.spawned.clear();
-        for (const outbox of this.outboxes.values()) {
-            for (const expectation of outbox.expectations.values()) {
-                if (expectation.timer) clearTimeout(expectation.timer);
-                const waiter = expectation.waiter;
-                expectation.waiter = null;
-                waiter?.({ ok: false, reason: "aborted" });
-            }
+        // 未兑现的等待一律以 aborted 结束，避免悬挂 Promise
+        for (const entry of this.outbox.awaitingEntries()) {
+            const waiter = entry.waiter;
+            entry.waiter = null;
+            waiter?.({ ok: false, reason: "aborted" });
         }
-        this.outboxes.clear();
+        this.outbox.clear();
         this.localInbound.clear();
         this.pool.closeAll();
     }
@@ -447,106 +423,44 @@ export class SessionControl {
     }
 
     private trackExpectation(requester: string, message: PeerMessage, target: string): void {
-        const outbox = this.outbox(requester);
-        const expectation: OutboundExpectation = { requester, message, target, timer: null, waiter: null };
-        expectation.timer = setTimeout(() => {
-            outbox.expectations.delete(message.id);
-            const waiter = expectation.waiter;
-            expectation.waiter = null;
-            waiter?.({ ok: false, reason: "timeout" });
+        this.outbox.addAwaiting({ msgId: message.id, requester, target, message });
+
+        const timer = setTimeout(() => {
+            // 超时是状态迁移，只能经台账做一次：重复触发不会二次上报
+            const abandoned = this.outbox.abandon(message.id);
+            if (!abandoned) return;
+            abandoned.waiter?.({ ok: false, reason: "timeout" });
             this.host.onLost(requester, [message.id], target);
         }, this.resultTimeoutMs);
-        expectation.timer.unref?.();
-        outbox.expectations.set(message.id, expectation);
+        timer.unref?.();
+        this.outbox.setTimer(message.id, timer);
     }
 
     /** 结果到达：有前台等待者就直给，否则进请求者队列等下一次请求附加。 */
     private handleRemoteResult(sourceSessionId: string, result: PeerResult): void {
-        const outbox = this.findOutboxByMsgId(result.msgId);
-        if (!outbox) return;
+        // 先完成状态迁移再回调宿主：宿主抛错也不会让条目留在半成品状态
+        const settled = this.outbox.settle(result.msgId, formatResultText(
+            this.outbox.get(result.msgId)?.target ?? sourceSessionId,
+            result,
+        ));
+        if (!settled) return;
 
-        const expectation = outbox.expectations.get(result.msgId);
-        if (!expectation) return;
-
-        outbox.expectations.delete(result.msgId);
-        if (expectation.timer) clearTimeout(expectation.timer);
-
-        const waiter = expectation.waiter;
-        expectation.waiter = null;
-        if (waiter) {
-            waiter({ ok: true, result });
+        if (settled.waiter) {
+            settled.waiter({ ok: true, result });
             return;
         }
-
-        outbox.queue.push(formatResultText(expectation.target, result));
-        this.evictOutboxes();
-        this.host.onResult(expectation.requester, expectation.message, result);
+        this.host.onResult(settled.entry.requester, settled.entry.message, result);
     }
 
     private handleRemoteLost(target: string, msgIds: string[]): void {
         for (const msgId of msgIds) {
-            const outbox = this.findOutboxByMsgId(msgId);
-            const expectation = outbox?.expectations.get(msgId);
-            if (!outbox || !expectation) continue;
-
-            outbox.expectations.delete(msgId);
-            if (expectation.timer) clearTimeout(expectation.timer);
-            const waiter = expectation.waiter;
-            expectation.waiter = null;
-            waiter?.({ ok: false, reason: "lost" });
-            this.host.onLost(expectation.requester, [msgId], target);
+            const abandoned = this.outbox.abandon(msgId);
+            if (!abandoned) continue;
+            abandoned.waiter?.({ ok: false, reason: "lost" });
+            this.host.onLost(abandoned.entry.requester, [msgId], target);
         }
     }
 
-    /** 暂存未能送达的结果：等发起方重连后 query_pending 取回。 */
-    private stashResult(result: PeerResult): void {
-        this.stash.set(result.msgId, result);
-
-        while (this.stash.size > MAX_RESULT_STASH) {
-            const oldest = this.stash.keys().next().value;
-            if (oldest === undefined) break;
-            this.stash.delete(oldest);
-        }
-    }
-
-    private takeStashedResults(msgIds: string[]): { done: PeerResult[]; pending: string[] } {
-        const done: PeerResult[] = [];
-        const pending: string[] = [];
-
-        for (const msgId of msgIds) {
-            const result = this.stash.get(msgId);
-            if (result) {
-                this.stash.delete(msgId);
-                done.push(result);
-            } else {
-                pending.push(msgId);
-            }
-        }
-        return { done, pending };
-    }
-
-    private outbox(sessionId: string): Outbox {
-        const existing = this.outboxes.get(sessionId);
-        if (existing) return existing;
-
-        const created = emptyOutbox();
-        this.outboxes.set(sessionId, created);
-        return created;
-    }
-
-    private findOutboxByMsgId(msgId: string): Outbox | undefined {
-        for (const outbox of this.outboxes.values()) {
-            if (outbox.expectations.has(msgId)) return outbox;
-        }
-        return undefined;
-    }
-
-    /** 结果队列按会话限幅：超出丢弃最早的一条，避免长会话无限增长。 */
-    private evictOutboxes(): void {
-        for (const outbox of this.outboxes.values()) {
-            while (outbox.queue.length > this.maxResultsPerSession) outbox.queue.shift();
-        }
-    }
 }
 
 /** 结果进入模型上下文时的文本形态：与时间线展示同源，避免两处措辞漂移。 */
@@ -581,5 +495,10 @@ export function describeClaimFailure(result: ClaimResult): string {
             : "会话正由其他实例执行中，turn 结束后才能接管";
     }
     if (result.reason === "unresponsive") return "无法确认持有者状态（未应答），暂不能接管";
+    if (result.reason === "raced") {
+        return result.winnerPid
+            ? `持有权被其他实例（PID ${result.winnerPid}）抢先取得，请稍后重试`
+            : "持有权被其他实例抢先取得，请稍后重试";
+    }
     return result.message;
 }

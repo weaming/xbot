@@ -7,7 +7,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { SessionControl, type SessionControlHost } from "../../src/control/channel.js";
+import { describeClaimFailure, SessionControl, type SessionControlHost } from "../../src/control/channel.js";
 import type { PeerMessage, PeerResult } from "../../src/control/protocol.js";
 import { forgetBound, locallyBoundSessionIds } from "../../src/control/registry.js";
 import { useTmpWorkspace, type TmpWorkspace } from "./test-env.js";
@@ -180,5 +180,74 @@ describe("不变量：失败不产生副作用", () => {
 
         await expect(control.send("sess-from", "no-such-session", "hi", { expectResult: true })).rejects.toThrow();
         expect(control.awaitingResults("sess-from")).toBe(0);
+    });
+});
+
+describe("不变量：认领失败必须归因准确", () => {
+    test("忙碌持有者 → busy，且带 PID", () => {
+        const text = describeClaimFailure({ ok: false, reason: "busy", pid: 1234 });
+        expect(text).toContain("PID 1234");
+        expect(text).toContain("执行中");
+    });
+
+    test("持有者无应答 → unresponsive，措辞不含「被抢先」", () => {
+        const text = describeClaimFailure({ ok: false, reason: "unresponsive" });
+        expect(text).toContain("未应答");
+        expect(text).not.toContain("抢先");
+    });
+
+    test("协商成功但被抢先 → raced，不再误报为无应答", () => {
+        const text = describeClaimFailure({ ok: false, reason: "raced", winnerPid: 4321 });
+        expect(text).toContain("抢先");
+        expect(text).toContain("PID 4321");
+        expect(text).not.toContain("未应答");
+    });
+
+    test("raced 无 PID 时仍给出可操作文案", () => {
+        const text = describeClaimFailure({ ok: false, reason: "raced" });
+        expect(text).toContain("抢先");
+        expect(text).toContain("重试");
+    });
+
+    test("成功时无文案", () => {
+        expect(describeClaimFailure({ ok: true })).toBe("");
+    });
+});
+
+describe("不变量：登记表不泄漏", () => {
+    test("超时后条目与等待项都被清理", async () => {
+        const host = makeHost();
+        const control = new SessionControl(host, {
+            probeTimeoutMs: 100,
+            negotiateTimeoutMs: 200,
+            resultTimeoutMs: 30,
+        });
+        controls.push(control);
+        await control.claim("sess-to");
+
+        await control.send("sess-from", "sess-to", "hi", { expectResult: true });
+        expect(control.awaitingResults("sess-from")).toBe(1);
+
+        // 等超时触发
+        await new Promise(resolve => setTimeout(resolve, 60));
+
+        expect(control.awaitingResults("sess-from")).toBe(0);
+        expect(host.lost).toHaveLength(1);
+    });
+
+    test("close 时未兑现的等待全部结束，不留悬挂", async () => {
+        const host = makeHost();
+        const control = makeControl(host);
+        await control.claim("sess-to");
+
+        const message = await control.send("sess-from", "sess-to", "hi", { expectResult: true });
+        const waiting = control.waitForResult(message.id, 60_000);
+
+        control.close();
+        controls.splice(controls.indexOf(control), 1);
+
+        const outcome = await waiting;
+        expect(outcome.ok).toBe(false);
+        expect((outcome as any).reason).toBe("aborted");
     });
 });
