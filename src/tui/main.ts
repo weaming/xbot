@@ -90,7 +90,8 @@ async function startChatApp(): Promise<void> {
             import("./store.js"),
             import("../services/chat-runtime.js"),
         ]);
-        await initializeTuiAgentRuntime();
+        const runtimeReady = initializeTuiAgentRuntime();
+        void runtimeReady.catch(() => undefined);
         const providerError = chatRuntime.validateChatApiSettings(chatRuntime.getChatApiSettings());
         const startupMessage = providerError
             ? `⚠️ LLM provider 配置无效：${providerError}\n请检查配置文件：${envFile}`
@@ -101,10 +102,11 @@ async function startChatApp(): Promise<void> {
         const chatStore = new ChatStore({
             costFor: (usage, atMs) => officialDeepSeekCostYuan(usage, atMs, chatRuntime.getChatApiSettings()),
         });
-        const app = new ChatApp(new LocalTuiAgent(), chatStore);
+        const app = new ChatApp(new LocalTuiAgent(runtimeReady), chatStore);
         const removeSignalHandlers = installShutdownSignalHandlers(app);
         try {
             await app.init(startupMessage);
+            await runtimeReady;
         } catch (error) {
             removeSignalHandlers();
             throw error;

@@ -533,7 +533,7 @@ export const initMcpClients = async (options: LoadMcpConfigOptions | unknown = {
 
     console.log(`🧩 MCP Services: Initializing ${serverConfigs.length} server(s)...`);
 
-    for (const config of serverConfigs) {
+    const connections = serverConfigs.map(async (config) => {
         let ctx = activeContexts.get(config.name);
         if (!ctx) {
             ctx = {
@@ -563,7 +563,9 @@ export const initMcpClients = async (options: LoadMcpConfigOptions | unknown = {
             console.warn(`⚠️ [MCP:${config.name}] Initial connection failed: ${error.message}`);
             scheduleMaintenance(ctx, 0);
         }
-    }
+    });
+
+    await Promise.all(connections);
 };
 
 /** 重新读取配置并重建所有 MCP 连接与远程工具目录。 */

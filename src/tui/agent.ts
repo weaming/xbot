@@ -122,7 +122,7 @@ export class LocalTuiAgent implements TuiAgent {
      */
     private readonly control: SessionControl;
 
-    constructor() {
+    constructor(private readonly runtimeReady: Promise<void> = Promise.resolve()) {
         const host: SessionControlHost = {
             title: (sessionId) => this.activeSessions.get(sessionId)?.session.title,
             isBusy: (sessionId) => this.isSessionBusy(sessionId),
@@ -297,6 +297,7 @@ export class LocalTuiAgent implements TuiAgent {
         };
 
         try {
+            await this.runtimeReady;
             const outcome = await runSessionTurn(this.turnHost, sessionId, spec, { alreadyReserved: true });
             if (outcome.aborted && stopReason === "stop") stopReason = "aborted";
         } catch (error: any) {
@@ -724,7 +725,7 @@ export class LocalTuiAgent implements TuiAgent {
             query: results[results.length - 1]!,
             initialRequestKind: "peer_request",
         };
-        void this.trackTurn(sessionId, runSessionTurn(this.turnHost, sessionId, spec, { alreadyReserved: true }))
+        void this.trackTurn(sessionId, this.runtimeReady.then(() => runSessionTurn(this.turnHost, sessionId, spec, { alreadyReserved: true })))
             .catch((error) => {
                 console.error("⚠️ [TUI] 会话间结果驱动失败:", error);
             });
@@ -795,10 +796,12 @@ export class LocalTuiAgent implements TuiAgent {
         };
     }
 
-    private runTurn(
+    private async runTurn(
         sessionId: string,
         spec: TurnSpec,
     ): Promise<{ aborted?: boolean; contextTrimmed?: boolean }> {
+        await this.runtimeReady;
+        if (this.isClosing) throw new Error("TUI 已关闭，无法开始回合");
         return runSessionTurn(this.turnHost, sessionId, spec);
     }
 
