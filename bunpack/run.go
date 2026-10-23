@@ -105,9 +105,13 @@ func runApp(m *Manifest, entries map[string][]byte) {
 
 // findExt 返回 payload 中匹配扩展名的条目名。
 // map 迭代顺序随机，因此按名字排序后取第一个，保证同一产物每次结果一致。
+// 需排除清单本身：-inline .json 会匹配到 bunpack.json，那只是元数据不是资源。
 func findExt(entries map[string][]byte, ext string) (string, bool) {
 	names := make([]string, 0, len(entries))
 	for name := range entries {
+		if name == manifestName {
+			continue
+		}
 		if filepath.Ext(name) == ext {
 			names = append(names, name)
 		}
