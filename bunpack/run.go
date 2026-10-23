@@ -18,23 +18,26 @@ func runApp(m *Manifest, entries map[string][]byte) {
 		die("payload 缺少入口 "+m.Entry, nil)
 	}
 
+	// 本次运行的所有临时文件放在独立子目录里：
+	// 正常情况下退出即整目录删除；即便被 SIGKILL 漏掉，
+	// 残留也只是临时目录下的一个 bunpack-* 子目录，便于整体识别与清理，
+	// 不会和系统临时文件混在一起。
+	stage, err := os.MkdirTemp("", "bunpack-*")
+	if err != nil {
+		die("创建临时目录失败", err)
+	}
+	defer os.RemoveAll(stage)
+
 	var extra []*os.File
-	var temps []string
-	defer func() {
-		for _, p := range temps {
-			os.Remove(p)
-		}
-	}()
 
 	env := os.Environ()
 
 	// 入口总是走 fd
-	handle, tmp, err := stageFd(entry)
+	handle, err := stageFd(stage, entryName, entry)
 	if err != nil {
 		die("暂存入口失败", err)
 	}
 	extra = append(extra, handle)
-	temps = append(temps, tmp)
 
 	// 按清单分配剩余 fd，并设置对应的环境变量
 	nextFD := m.EntryFD + 1
@@ -43,7 +46,7 @@ func runApp(m *Manifest, entries map[string][]byte) {
 		if !ok {
 			continue
 		}
-		handle, tmp, err := stageFd(entries[name])
+		handle, err := stageFd(stage, name, entries[name])
 		if err != nil {
 			die("暂存 "+name+" 失败", err)
 		}
@@ -53,7 +56,6 @@ func runApp(m *Manifest, entries map[string][]byte) {
 			extra = append(extra, nil)
 		}
 		extra[slot] = handle
-		temps = append(temps, tmp)
 		if envName := m.InlineEnv[ext]; envName != "" {
 			env = append(env, envName+"="+strconv.Itoa(nextFD))
 		}
@@ -117,24 +119,26 @@ func findExt(entries map[string][]byte, ext string) (string, bool) {
 	return names[0], true
 }
 
-// stageFd 把内容落到匿名临时文件，返回可传给子进程的句柄与待清理路径。
-func stageFd(data []byte) (*os.File, string, error) {
-	f, err := os.CreateTemp("", "bunpack-*")
+// stageFd 把内容写入 stage 目录下的文件，返回可传给子进程的句柄。
+//
+// 文件必须保留路径：Bun 收到 /dev/fd/N 参数时会解析回真实路径再打开，
+// 提前 unlink 会报 Module not found（实测）。因此文件随 stage 目录一起，
+// 由 runApp 的 defer 整目录清理。
+func stageFd(stage, name string, data []byte) (*os.File, error) {
+	path := filepath.Join(stage, name)
+	f, err := os.Create(path)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
-	path := f.Name()
 	if _, err := f.Write(data); err != nil {
 		f.Close()
-		os.Remove(path)
-		return nil, "", err
+		return nil, err
 	}
 	if _, err := f.Seek(0, 0); err != nil {
 		f.Close()
-		os.Remove(path)
-		return nil, "", err
+		return nil, err
 	}
-	return f, path, nil
+	return f, nil
 }
 
 // writeCached 把必须落盘的资源按内容哈希写入缓存，返回其目录。
