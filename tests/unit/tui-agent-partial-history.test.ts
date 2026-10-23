@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "b
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { getSessionContextHistory } from "../../src/utils/conversation-history.js";
 
 /**
  * 把 runChatQuery 替换为可注入 spy，同时透传 chat-runtime 的其余命名导出，
@@ -264,6 +265,7 @@ describe("LocalTuiAgent.sendMessage interrupted/failed turn materialization", ()
             { role: "user", content: "再来" },
             ...partialMessages,
         ]);
+        expect(getSessionContextHistory(replayed).map(message => message.content)).toContain("再来");
         freshAgent.close();
     });
 
@@ -291,6 +293,56 @@ describe("LocalTuiAgent.sendMessage interrupted/failed turn materialization", ()
         expect(stripMeta(session.turns[1].messages)).toEqual([
             { role: "user", content: "再来" },
         ]);
+    });
+
+    test("失败后的下一轮请求包含失败消息，重启后也能继续", async () => {
+        runChatQueryImpl = async () => { throw new Error("Connection error."); };
+        await expect(agent.sendMessage(sessionId, "保留这个问题")).rejects.toThrow("Connection error.");
+
+        await agent.close();
+        const freshAgent = new LocalTuiAgent();
+        let capturedHistory: any[] = [];
+        runChatQueryImpl = async options => {
+            capturedHistory = options.history;
+            await options.onTurnMessage?.({ role: "assistant", content: "我记得" });
+            return { content: "我记得", messages: [{ role: "assistant", content: "我记得" }] };
+        };
+        await freshAgent.sendMessage(sessionId, "接着说");
+
+        expect(capturedHistory.map(message => message.content)).toContain("保留这个问题");
+        await freshAgent.close();
+    });
+
+    test("失败后 /continue 重试原请求，不重复写用户消息", async () => {
+        runChatQueryImpl = async () => { throw new Error("Connection error."); };
+        await expect(agent.sendMessage(sessionId, "重试的问题")).rejects.toThrow("Connection error.");
+
+        let captured: any;
+        runChatQueryImpl = async options => {
+            captured = options;
+            await options.onTurnMessage?.({ role: "assistant", content: "完成" });
+            return { content: "完成", messages: [{ role: "assistant", content: "完成" }] };
+        };
+        expect((await agent.resumeSession(sessionId)).resumed).toBe(true);
+        expect(captured.skipUserQuery).toBe(true);
+        expect(captured.history.map((message: any) => message.content)).toContain("重试的问题");
+        expect(readSession().filter((event: any) => event.type === "user_message")).toHaveLength(1);
+    });
+
+    test("失败终态仍从流式检查点恢复未形成完整消息的文字", async () => {
+        runChatQueryImpl = async options => {
+            await options.onStreamDelta?.({ text: "已显示的部分" }, 1);
+            throw new Error("Connection error.");
+        };
+        await expect(agent.sendMessage(sessionId, "问题")).rejects.toThrow("Connection error.");
+
+        const events = readSession();
+        expect(events.some((event: any) => event.type === "turn_stream_delta" && event.payload.delta.text === "已显示的部分"))
+            .toBe(true);
+        const freshAgent = new LocalTuiAgent();
+        const replayed = await (freshAgent as any).requireActiveSession(sessionId);
+        expect(getSessionContextHistory(replayed).map(message => message.content)).toEqual(["问题", "已显示的部分"]);
+        await freshAgent.close();
     });
 
     test("interrupted turn survives restart via event log replay", async () => {

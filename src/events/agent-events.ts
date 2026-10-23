@@ -2,13 +2,14 @@
  * Agent 事件（持久化，事实源）：append-only 事件日志的条目。
  * Session 状态是其投影——重放事件序列可确定性重建任意时间点状态。
  *
- * 回合内容仍以 turn_message（每条完整消息一次，保留 provider 专有字段）为准，
+ * 回合内容以 turn_message（每条完整消息一次，保留 provider 专有字段）为准；
+ * turn_stream_delta 在完整消息定稿前保存已展示的流式片段，供异常退出恢复。
  * 位置由 turn_segment_start（段起始边界）给出；回合收尾用一条 turn_commit 元信息事件以
  * seq 列表指向它们，避免把同一份内容在终态事件里再存一遍。
  */
 
 import type { ChatMessage } from "../types/session.js";
-import type { UsageInfo } from "../types/chat.js";
+import type { StreamDelta, UsageInfo } from "../types/chat.js";
 import type { ImageInputRef, UserMessageInput } from "../types/image.js";
 import type { ChatModelSelection } from "../types/chat-model.js";
 
@@ -18,6 +19,7 @@ export type AgentEventType =
     | "peer_message"
     | "peer_result"
     | "turn_message"
+    | "turn_stream_delta"
     | "turn_segment_start"
     | "turn_commit"
     | "context_compacted"
@@ -83,6 +85,8 @@ export interface AgentEventPayloads {
      * 重放时直接回传，避免请求格式错误。同一 turnId 的 turn_commit 出现后即视为终态。
      */
     turn_message: { turnId: string; message: ChatMessage };
+    /** 流式片段先落盘再展示；完整 assistant 消息落盘后不再用这些片段恢复。 */
+    turn_stream_delta: { turnId: string; requestIndex: number; delta: StreamDelta };
     /**
      * 回合内的段边界（时间线分段）：每段**开始**时落一条，seq 即该段的起始时间。
      * 群消息按 seq 与段边界比较，就能在重放时插到与实时一致的段位。

@@ -107,7 +107,6 @@ export function formatCompactTokens(count: number): string {
 export function estimateTurnsTokens(turns: ConversationTurn[]): number {
     let total = 0;
     for (const turn of turns) {
-        if (turn.status === "failed") continue;
         for (const msg of turn.messages) {
             total += estimateMessageTokens(msg);
         }
@@ -215,7 +214,7 @@ export async function splitTurnsForCompaction(
     turns: ConversationTurn[],
     options: { retainedTailTokens?: number; model?: string } = {},
 ): Promise<CompactionSplit> {
-    const candidates = turns.filter(turn => turn.status !== "failed");
+    const candidates = turns;
     if (candidates.length === 0) return { turnsToCompact: [] };
 
     const tailLimit = options.retainedTailTokens ?? RETAINED_TAIL_TOKENS;

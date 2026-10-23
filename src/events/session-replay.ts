@@ -1,5 +1,6 @@
 /**
  * 会话重放：从事件日志重放重建 Session 状态（快照 + 增量）。
+ * 未闭合或失败回合可从流式检查点恢复尚未定稿的助手消息。
  * 事件是事实源，状态是其投影——重放路径与增量路径产出同一状态。
  */
 
@@ -12,6 +13,7 @@ import type { ChatMessage, Session } from "../types/session.js";
 import type { AgentEvent, AgentEventPayloads } from "./agent-events.js";
 import type { UsageInfo } from "../types/chat.js";
 import type { UserMessageInput } from "../types/image.js";
+import { StreamRecovery } from "../utils/stream-recovery.js";
 import { type EventLog } from "./event-log.js";
 import { sanitizeSessionId } from "../utils/session-id.js";
 
@@ -40,10 +42,11 @@ interface EventSnapshot {
     session: Session;
 }
 
-/** 未闭合回合的增量现场：用户消息 + 已定稿消息（流式 delta 不落盘）。 */
+/** 未闭合回合的增量现场：用户消息 + 已定稿消息。 */
 interface PendingTurn {
     userMessages: UserMessageInput[];
     messages: ChatMessage[];
+    stream: StreamRecovery;
 }
 
 export interface ReplayResult {
@@ -78,8 +81,7 @@ export class SessionReplay {
             : createEmptySession(sessionId);
 
         // turn_message 让回合进行中的完整消息即时落盘；重放时按 turnId 归组，
-        // turn_commit 出现则取该回合已落盘消息作为终态；始终未闭合的仅保留最后一个
-        // （部分消息规则：最后一轮保留，中间残留丢弃）——进程被强杀也能恢复到最后一笔。
+        // turn_commit 出现则取该回合已落盘消息作为终态；所有未闭合回合都保留。
         const pendingTurns = new Map<string, PendingTurn>();
         for (const event of targetEvents) {
             if (event.type === "user_message") {
@@ -88,20 +90,28 @@ export class SessionReplay {
                 continue;
             }
             if (event.type === "turn_message") {
-                getPendingTurn(pendingTurns, event.payload.turnId).messages.push(event.payload.message);
+                const pending = getPendingTurn(pendingTurns, event.payload.turnId);
+                pending.messages.push(event.payload.message);
+                if (event.payload.message.role === "assistant") pending.stream.clear();
+                continue;
+            }
+            if (event.type === "turn_stream_delta") {
+                const { turnId, requestIndex, delta } = event.payload;
+                getPendingTurn(pendingTurns, turnId).stream.push(requestIndex, delta);
                 continue;
             }
             if (event.type === "turn_commit") {
                 const key = event.payload.turnId;
-                // 更早的未闭合回合：用户消息是事实，物化为中断回合；partial 消息丢弃（部分消息规则）
+                // 更早的未闭合回合也完整物化，避免异常中断后的工具与文本现场丢失。
                 for (const [pendingKey, pending] of pendingTurns) {
                     if (pendingKey === key) continue;
-                    if (pending.userMessages.length > 0) {
-                        appendInterruptedTurn(session, pending.userMessages, [], "interrupted");
+                    const messages = pendingMessages(pending);
+                    if (pending.userMessages.length > 0 || messages.length > 0) {
+                        appendInterruptedTurn(session, pending.userMessages, messages, "interrupted");
                     }
                 }
                 const pending = pendingTurns.get(key);
-                const messages = pending?.messages ?? [];
+                const messages = pending ? pendingMessages(pending) : [];
                 const pendingUserMessages = pending?.userMessages;
                 pendingTurns.clear();
                 applyCommit(session, event, messages, pendingUserMessages);
@@ -109,7 +119,7 @@ export class SessionReplay {
             }
             applyEvent(session, event);
         }
-        materializeLastPendingTurn(session, pendingTurns);
+        materializePendingTurns(session, pendingTurns);
 
         const lastSeq = targetEvents.length > 0
             ? targetEvents[targetEvents.length - 1].seq
@@ -234,20 +244,25 @@ export class SessionReplay {
 function getPendingTurn(pendingTurns: Map<string, PendingTurn>, turnId: string): PendingTurn {
     let unit = pendingTurns.get(turnId);
     if (!unit) {
-        unit = { userMessages: [], messages: [] };
+        unit = { userMessages: [], messages: [], stream: new StreamRecovery() };
         pendingTurns.set(turnId, unit);
     }
     return unit;
 }
 
-/** 仅物化最后一个未闭合回合（部分消息规则），其余中间残留直接丢弃。 */
-function materializeLastPendingTurn(session: Session, pendingTurns: Map<string, PendingTurn>): void {
-    let last: PendingTurn | undefined;
-    for (const unit of pendingTurns.values()) last = unit;
-    if (!last) return;
+/** 依事件出现顺序物化所有未闭合回合。 */
+function materializePendingTurns(session: Session, pendingTurns: Map<string, PendingTurn>): void {
+    for (const unit of pendingTurns.values()) {
+        const messages = pendingMessages(unit);
+        if (unit.userMessages.length === 0 && messages.length === 0) continue;
+        appendInterruptedTurn(session, unit.userMessages, messages, "interrupted");
+    }
     pendingTurns.clear();
-    if (last.userMessages.length === 0 && last.messages.length === 0) return;
-    appendInterruptedTurn(session, last.userMessages, last.messages, "interrupted");
+}
+
+function pendingMessages(unit: PendingTurn): ChatMessage[] {
+    const partial = unit.stream.message();
+    return partial ? [...unit.messages, partial] : unit.messages;
 }
 
 /** turn_commit 投影：消息取自已落盘的 turn_message（终态不再重复内容）。 */

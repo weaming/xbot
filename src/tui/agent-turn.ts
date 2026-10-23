@@ -120,6 +120,14 @@ export async function runSessionTurn(
                 host.updateActiveSeq(sessionId, appended.seq);
                 return appended.seq;
             },
+            persistStreamDelta: async (delta, tid, requestIndex) => {
+                const appended = await host.eventLog.append(sessionId, "turn_stream_delta", {
+                    turnId: tid,
+                    requestIndex,
+                    delta,
+                });
+                host.updateActiveSeq(sessionId, appended.seq);
+            },
             persistSegmentStart: async payload => {
                 const appended = await host.eventLog.append(sessionId, "turn_segment_start", payload);
                 host.updateActiveSeq(sessionId, appended.seq);

@@ -43,6 +43,7 @@ export function normalizeResponsesResponse(response: any): any {
     content,
     response_output: output,
   };
+  if (typeof response?.reasoning_content === "string") message.reasoning_content = response.reasoning_content;
   if (toolCalls.length > 0) message.tool_calls = toolCalls;
 
   const finishReason = response?.status === "failed"

@@ -57,7 +57,7 @@ export interface TurnContext {
   appendTurnMessage(message: ChatMessage): void;
   persistMessage(message: ChatMessage): void;
   consumePendingMessages?(): Array<string | UserMessageInput> | undefined;
-  onConsumePending?(text: string, messages: Array<string | UserMessageInput>): void;
+  onConsumePending?(text: string, messages: Array<string | UserMessageInput>): void | Promise<void>;
   compactMessagesIfNeeded?(messages: ChatMessage[], lastPromptTokens?: number): Promise<ChatMessage[] | undefined>;
   getToolDefinitions?(): any[];
   getContextReminders?(): string[] | undefined;
@@ -107,6 +107,10 @@ export async function runTurnLoop(ctx: TurnContext): Promise<TurnLoopResult> {
   let lastFinishReason = "stop";
   let lastUsageInfo: UsageInfo | undefined;
   let turnReasoning = "";
+  const recordAttempt = (message: ChatMessage): void => {
+    ctx.turnMessages.push(message);
+    ctx.persistMessage(message);
+  };
 
   try {
     while (true) {
@@ -126,7 +130,7 @@ export async function runTurnLoop(ctx: TurnContext): Promise<TurnLoopResult> {
             images: pendingInputs.flatMap(input => input.images ?? []),
           };
           ctx.appendTurnMessage({ role: "user", content: toUserContent(pendingInput) });
-          ctx.onConsumePending?.(pendingInput.text, pending);
+          await ctx.onConsumePending?.(pendingInput.text, pending);
         }
       }
 
@@ -220,15 +224,27 @@ export async function runTurnLoop(ctx: TurnContext): Promise<TurnLoopResult> {
       });
 
       if (decision.kind === "fail") {
+        if (messageToStore.content || reasoning || toolCalls.length > 0) {
+          const callText = toolCalls.map(call =>
+            `[未执行的工具调用：${call.name} ${call.rawArgs}]`).join("\n");
+          ctx.appendTurnMessage(callText
+            ? { role: "assistant", content: [messageToStore.content, callText].filter(Boolean).join("\n\n"),
+                ...(reasoning ? { reasoning_content: reasoning } : {}) }
+            : messageToStore);
+        }
         throw providerError(decision.reason === "content_filter" ? "content_filter" : "error", decision.message);
       }
 
       ctx.counters = nextCounters(ctx.counters, decision);
 
-      if (decision.kind === "retry_length") continue;
+      if (decision.kind === "retry_length") {
+        if (messageToStore.content || reasoning) recordAttempt(messageToStore);
+        continue;
+      }
 
       if (decision.kind === "retry_empty") {
-        // 无工具调用且无内容：不入历史；首次重试追加提示，后续重试原样重发
+        // 原请求保持不变；已生成的思考留在完整历史，首次重试追加提示。
+        if (reasoning) recordAttempt(messageToStore);
         if (decision.appendPrompt) {
           ctx.appendTurnMessage({ role: "user", content: EMPTY_RESPONSE_RETRY_PROMPT });
         }
@@ -236,7 +252,7 @@ export async function runTurnLoop(ctx: TurnContext): Promise<TurnLoopResult> {
       }
 
       if (decision.kind === "done") {
-        if (decision.content) ctx.appendTurnMessage(messageToStore);
+        if (decision.content || reasoning) ctx.appendTurnMessage(messageToStore);
         finalContent = decision.content;
         break;
       }
@@ -265,6 +281,7 @@ export async function runTurnLoop(ctx: TurnContext): Promise<TurnLoopResult> {
 
     return { content: finalContent, toolCalls: ctx.iteration, messages: ctx.turnMessages };
   } catch (error: any) {
+    if (error?.partialMessage) ctx.appendTurnMessage(error.partialMessage);
     if (error && typeof error === "object") error.partialMessages = ctx.turnMessages;
 
     if (isAbortError(error)) {

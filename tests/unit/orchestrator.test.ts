@@ -775,6 +775,7 @@ describe("Chat Orchestrator", () => {
     const recordedRequests: any[] = [];
     let requestCount = 0;
     let pendingQueue = ["补充指令 A", "补充指令 B"];
+    let isPendingPersisted = false;
 
     const client = {
       baseURL: "http://test.invalid",
@@ -797,6 +798,8 @@ describe("Chat Orchestrator", () => {
           };
         }
 
+        expect(isPendingPersisted).toBe(true);
+
         return {
           choices: [{ message: { role: "assistant", content: "最终回答" } }],
         };
@@ -813,8 +816,10 @@ describe("Chat Orchestrator", () => {
         const items = pendingQueue.splice(0);
         return items.length > 0 ? items : undefined;
       },
-      onConsumePending: (text) => {
+      onConsumePending: async (text) => {
+        await new Promise(resolve => setTimeout(resolve, 1));
         consumedCallbacks.push(text);
+        isPendingPersisted = true;
       },
     });
 
@@ -827,7 +832,7 @@ describe("Chat Orchestrator", () => {
     expect(result.content).toBe("最终回答");
   });
 
-  test("should retry empty response with a prompt message without storing the empty turn", async () => {
+  test("should retry empty response while retaining its reasoning in history", async () => {
     const { executeWithChat } = await import('../../src/tools/chat-orchestrator.js');
     const requests: any[] = [];
     let requestCount = 0;
@@ -857,9 +862,10 @@ describe("Chat Orchestrator", () => {
 
     expect(requests).toHaveLength(2);
     expect(result.content).toBe("正常回复");
-    // 空响应不写入历史；第二轮请求末尾是重试提示消息
+    // 重试请求不带上先前思考，但完整历史保留已生成内容。
     expect(requests[1].messages.at(-1).role).toBe("user");
     expect(requests[1].messages.at(-1).content).toContain("no tool call and no content");
+    expect(result.messages.some(message => message.role === "assistant" && message.reasoning === "想了一下")).toBe(true);
   });
 
   test("图片请求携带工具并保留图片 URL", async () => {
@@ -1180,6 +1186,8 @@ describe("Chat Orchestrator finish_reason classification", () => {
     });
     expect(requestCount).toBeGreaterThanOrEqual(2);
     expect(result.content).toBe("完成");
+    expect(result.messages.filter(message => message.role === "assistant").map(message => message.content))
+      .toEqual(["被截断", "完成"]);
   });
 
   test("length 反复重试后抛 LLMOutputTruncated", async () => {

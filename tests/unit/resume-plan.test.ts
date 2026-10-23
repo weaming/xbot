@@ -77,9 +77,14 @@ describe("planResume", () => {
         expect(plan.reason).toBeTruthy();
     });
 
-    test("上一轮 failed：不进 LLM 上下文，不能续跑", () => {
+    test("上一轮 failed 且工具未完成：可以续跑", () => {
         const plan = planResume(sessionWith([assistantCall("c1")], "failed"));
-        expect(plan.canResume).toBe(false);
-        expect(plan.reason).toContain("失败");
+        expect(plan.canResume).toBe(true);
+        expect(plan.toolCalls).toHaveLength(1);
+    });
+
+    test("上一轮 failed 且只有用户消息：可以重试请求", () => {
+        const plan = planResume(sessionWith([{ role: "user", content: "再查一次" }], "failed"));
+        expect(plan).toEqual({ toolCalls: [], canResume: true });
     });
 });

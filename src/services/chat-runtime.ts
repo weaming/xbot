@@ -10,6 +10,7 @@ import { createTodoReminderProvider } from "../tools/todo-tool.js";
 import { runWithToolCwd } from "../utils/tool-cwd-context.js";
 import { toolContentToImageContent, toolResultToText } from "../tools/tool-interface.js";
 import type { ChatMessage, Session } from "../types/session.js";
+import type { StreamDelta } from "../types/chat.js";
 import { toUserContent, type UserContent, type UserMessageInput } from "../types/image.js";
 import type { ToolCall } from "../types/tool-call.js";
 import { getSessionContextHistory } from "../utils/conversation-history.js";
@@ -140,6 +141,7 @@ export function validateChatApiSettings(settings: ChatApiSettings): string | und
 
 export function formatChatProviderError(error: unknown, currentSettings = getChatApiSettings()): string {
     const message = error instanceof Error ? error.message : String(error);
+    if (message.startsWith("回合消息落盘失败") || message.startsWith("流式消息落盘失败")) return message;
     const explicitStatus = typeof error === "object" && error !== null && "status" in error
         ? Number((error as { status?: unknown }).status)
         : undefined;
@@ -219,7 +221,7 @@ export interface ChatRunOptions {
     /** 禁止本次请求继续调用工具，仅根据已有历史生成文本。 */
     disableTools?: boolean;
     consumePendingMessages?: () => Array<string | UserMessageInput> | undefined;
-    onConsumePending?: (text: string, messages: Array<string | UserMessageInput>) => void;
+    onConsumePending?: (text: string, messages: Array<string | UserMessageInput>) => void | Promise<void>;
     onToolCall?: (name: string, args: any, mode: "serial" | "parallel") => void;
     onToolResult?: (name: string, result: string) => void;
     onAssistantToolCallContent?: (content: string) => Promise<void> | void;
@@ -228,6 +230,7 @@ export interface ChatRunOptions {
     autoCompactActiveTurn?: boolean;
     /** 回合内每条完整消息定稿时的落盘回调（turn_message 事件源）。 */
     onTurnMessage?: (message: ChatMessage) => void | Promise<void>;
+    onStreamDelta?: (delta: StreamDelta, requestIndex: number) => Promise<void>;
     /** 续跑：不把 query 插入为 user 消息，保持上游请求与中断前一致。 */
     skipUserQuery?: boolean;
     /** 续跑：进入循环前先补跑这些工具调用（中断时缺结果的调用）。 */
@@ -533,6 +536,7 @@ export async function runChatQuery(options: ChatRunOptions) {
             onAssistantToolCallContent: options.onAssistantToolCallContent,
             onProgress: options.onProgress,
             onTurnMessage: options.onTurnMessage,
+            onStreamDelta: options.onStreamDelta,
             skipUserQuery: options.skipUserQuery,
             pendingToolCalls: options.pendingToolCalls,
             onEvent: event => {

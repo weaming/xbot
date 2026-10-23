@@ -116,11 +116,10 @@ export async function countMessagesTokens(
     return total;
 }
 
-/** 一组回合的精确 token 数（跳过 failed 回合，与上下文口径一致）。 */
+/** 一组回合的精确 token 数。 */
 export async function countTurnsTokens(turns: ConversationTurn[], model?: string): Promise<number> {
     let total = 0;
     for (const turn of turns) {
-        if (turn.status === "failed") continue;
         total += await countMessagesTokens(turn.messages, model);
     }
     return total;

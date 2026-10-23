@@ -24,3 +24,16 @@ export interface UsageInfo {
     /** 聚合 usage 中最后一次请求的 prompt token 数。 */
     latestPromptTokens?: number;
 }
+
+/** 一次流式响应片段；写盘成功后才展示，供异常退出时恢复最后的输出。 */
+export interface StreamDelta {
+    text?: string;
+    reasoning?: string;
+    toolCalls?: Array<{
+        index: number;
+        id?: string;
+        name?: string;
+        arguments?: string;
+        thoughtSignature?: string;
+    }>;
+}

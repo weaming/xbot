@@ -212,6 +212,17 @@ describe("splitTurnsForCompaction 保留段切分 (Retained Tail Splitting)", ()
         expect(turnsToCompact).toEqual(session.turns);
         expect(keepFromMessageId).toBeUndefined();
     });
+
+    test("失败回合参与压缩规划与估算", async () => {
+        const session = createEmptySession("sess-split-failed");
+        appendCompletedTurn(session, ["旧问题"], [{ role: "assistant", content: "旧回答" }], true);
+        appendCompletedTurn(session, ["失败的问题"], [], true);
+        session.turns[1]!.status = "failed";
+
+        const { turnsToCompact } = await splitTurnsForCompaction(session.turns, { retainedTailTokens: 0 });
+        expect(turnsToCompact.map(turn => turn.id)).toEqual(session.turns.map(turn => turn.id));
+        expect(estimateTurnsTokens(session.turns)).toBeGreaterThan(estimateTurnsTokens([session.turns[0]!]));
+    });
     test("预算够时保留完整 turn，切点落在 turn 边界", async () => {
         const session = createEmptySession("sess-split-turns");
         for (let index = 1; index <= 3; index++) {

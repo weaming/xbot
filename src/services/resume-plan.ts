@@ -2,7 +2,8 @@
  * 续跑点推断：`/continue` 从会话最后一个回合的消息尾部决定怎么接上。
  *  - 有 assistant tool_calls 缺 tool 结果 → 补跑这些工具
  *  - 尾部是完整工具结果 → 直接发下一次请求（上游看到的请求与中断前一致）
- *  - 尾部是普通 assistant 文本/空回合 → 没有可续跑点
+ *  - 失败回合尾部是用户消息或部分助手文本 → 直接重试请求
+ *  - 已完成回合尾部是普通 assistant 文本/空回合 → 没有可续跑点
  */
 
 import { fromOpenAIToolCalls, type ToolCall } from "../types/tool-call.js";
@@ -22,19 +23,18 @@ export function planResume(session: Pick<Session, "turns">): ResumePlan {
     if (!lastTurn) {
         return { toolCalls: [], canResume: false, reason: "没有可继续的上下文" };
     }
-    if (lastTurn.status === "failed") {
-        // failed 回合不进 LLM 上下文，续跑会缺 assistant(tool_calls) 前缀
-        return { toolCalls: [], canResume: false, reason: "上一轮已失败，请重新发送消息" };
-    }
-
     const messages = lastTurn.messages;
     if (messages.length === 0) {
         return { toolCalls: [], canResume: false, reason: "没有可继续的上下文" };
     }
 
     const last = messages[messages.length - 1];
-    const lastHasToolCalls = readToolCalls(last).length > 0;
-    if (!lastHasToolCalls && last.role !== "tool") {
+    const isFailed = lastTurn.status === "failed";
+    const hasToolCalls = readToolCalls(last).length > 0;
+    if (isFailed && (last.role === "user" || last.role === "assistant" && !hasToolCalls)) {
+        return { toolCalls: [], canResume: true };
+    }
+    if (!hasToolCalls && last.role !== "tool") {
         return { toolCalls: [], canResume: false, reason: "上一轮已结束，没有未完成的动作" };
     }
 

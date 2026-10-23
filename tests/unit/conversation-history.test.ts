@@ -176,7 +176,7 @@ describe('conversation history', () => {
         ]);
     });
 
-    test('keeps failed turns in daily history but excludes them from LLM context', () => {
+    test('keeps failed turns in daily history and LLM context', () => {
         const session = createSession();
         appendCompletedTurn(session, ['completed'], [{ role: 'assistant', content: 'done' }], false);
         session.turns.push({
@@ -186,7 +186,7 @@ describe('conversation history', () => {
         });
 
         expect(getSessionHistory(session).map((message) => message.content)).toEqual(['completed', 'done', 'failed request']);
-        expect(getSessionContextHistory(session).map((message) => message.content)).toEqual(['completed', 'done']);
+        expect(getSessionContextHistory(session).map((message) => message.content)).toEqual(['completed', 'done', 'failed request']);
     });
 
     test('appendInterruptedTurn materializes user message with partial tool segments into LLM context', () => {
@@ -208,13 +208,13 @@ describe('conversation history', () => {
         expect(getSessionContextHistory(session).map((message) => message.content)).toEqual(['查一下', null, 'result']);
     });
 
-    test('appendInterruptedTurn with failed status keeps user message out of LLM context', () => {
+    test('appendInterruptedTurn with failed status keeps user message in LLM context', () => {
         const session = createSession();
 
         appendInterruptedTurn(session, ['failed request'], [], 'failed');
 
         expect(getSessionHistory(session).map((message) => message.content)).toEqual(['failed request']);
-        expect(getSessionContextHistory(session)).toEqual([]);
+        expect(getSessionContextHistory(session)).toEqual([{ role: 'user', content: 'failed request' }]);
     });
 
     test('persists a complete tool turn when discovered tools are not injected', () => {

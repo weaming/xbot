@@ -91,7 +91,7 @@ function collectRetainedMessages(
     const messages: ChatMessage[] = [];
     let started = !keepFrom;
     for (const [index, turn] of turns.entries()) {
-        if (turn.status === 'failed' || index < startIndex) continue;
+        if (index < startIndex) continue;
         for (const message of turn.messages) {
             if (!started) {
                 if (message.id !== keepFrom) continue;
@@ -172,7 +172,7 @@ function pushTurn(session: Session, turnMessages: ChatMessage[], status: Convers
 
 /**
  * 追加一个被中断/失败的回合：用户消息与已产生的工具段全量保留，进 LLM 上下文，
- * 保证调用中断时已有消息不丢失（failed 除外，仅保留在完整历史）。
+ * 保证调用中断或失败时已有消息仍进入后续上下文。
  */
 export function appendInterruptedTurn(
     session: Session,

@@ -14,10 +14,11 @@ import { runChatQuery } from "./chat-runtime.js";
 import { isAbortError, type ChatExecutionResult } from "../tools/chat-orchestrator.js";
 import { appendCompletedTurn, appendInterruptedTurn } from "../utils/conversation-history.js";
 import type { LLMRequestKind } from "../utils/logger.js";
-import type { UsageInfo } from "../types/chat.js";
+import type { StreamDelta, UsageInfo } from "../types/chat.js";
 import type { ChatMessage, Session } from "../types/session.js";
 import type { ToolCall } from "../types/tool-call.js";
 import { toUserContent, type UserContent, type UserMessageInput } from "../types/image.js";
+import { StreamRecovery } from "../utils/stream-recovery.js";
 
 export interface TurnSpec {
     session: Session;
@@ -51,6 +52,7 @@ export interface TurnHooks {
     persistPendingMessage(input: UserMessageInput, turnId: string): Promise<void>;
     /** 回合内每条完整消息即时落盘，返回分配到的 seq。 */
     persistTurnMessage(message: ChatMessage, turnId: string): Promise<number>;
+    persistStreamDelta?(delta: StreamDelta, turnId: string, requestIndex: number): Promise<void>;
     /** 段边界落盘，返回分配到的 seq。 */
     persistSegmentStart(payload: AgentEventPayloads["turn_segment_start"]): Promise<number>;
     /** 终态落盘（turn_commit 事件 + 会话索引）。 */
@@ -137,6 +139,7 @@ export async function runTurnCore(spec: TurnSpec, hooks: TurnHooks): Promise<Tur
     const eventSeqs: Promise<number>[] = [];
     // 已定稿并落盘的完整消息，用于中断/失败时补落尚未定稿的 partial 消息（按引用去重）
     const persistedMessages: ChatMessage[] = [];
+    const streamRecovery = new StreamRecovery();
     const tracker = new SegmentTracker(kind => {
         eventSeqs.push(hooks.persistSegmentStart({ turnId, kind }));
     });
@@ -174,10 +177,29 @@ export async function runTurnCore(spec: TurnSpec, hooks: TurnHooks): Promise<Tur
                 }, turnId);
                 tracker.pendingUser();
             },
-            onTurnMessage: message => {
-                persistedMessages.push(message);
-                eventSeqs.push(hooks.persistTurnMessage(message, turnId));
+            onTurnMessage: async message => {
+                const seqPromise = hooks.persistTurnMessage(message, turnId);
+                eventSeqs.push(seqPromise);
+                try {
+                    await seqPromise;
+                    persistedMessages.push(message);
+                    if (message.role === "assistant") streamRecovery.clear();
+                } catch (error) {
+                    const index = eventSeqs.indexOf(seqPromise);
+                    if (index >= 0) eventSeqs.splice(index, 1);
+                    throw error;
+                }
             },
+            ...(hooks.persistStreamDelta
+                ? { onStreamDelta: async (delta: StreamDelta, requestIndex: number) => {
+                    try {
+                        await hooks.persistStreamDelta!(delta, turnId, requestIndex);
+                    } catch (error) {
+                        throw new Error("流式消息落盘失败，请检查会话存储目录", { cause: error });
+                    }
+                    streamRecovery.push(requestIndex, delta);
+                } }
+                : {}),
             onToolCall: hooks.onToolCall,
             onToolResult: hooks.onToolResult,
             onAssistantToolCallContent: hooks.onAssistantToolCallContent,
@@ -201,17 +223,24 @@ export async function runTurnCore(spec: TurnSpec, hooks: TurnHooks): Promise<Tur
         });
         return { response, usage, stopReason, aborted: false };
     } catch (error: any) {
-        const partial = (error?.partialMessages ?? []) as ChatMessage[];
+        const partial = [...(error?.partialMessages ?? [])] as ChatMessage[];
+        const recovered = streamRecovery.message();
+        if (recovered && !partial.some(message =>
+            message.role === "assistant" && message.content === recovered.content,
+        )) partial.push(recovered);
+        const aborted = isAbortError(error);
+        // 先保住内存会话：即使后续事件日志仍不可写，也不丢本进程中的失败现场。
+        appendInterruptedTurn(session, userMessages, partial, aborted ? "interrupted" : "failed");
         // 中断/失败现场同样要落 turn_message，否则重放后只剩 user 消息（已落盘的不重复写）
         for (const message of partial) {
             if (persistedMessages.includes(message)) continue;
+            const seq = await hooks.persistTurnMessage(message, turnId);
             persistedMessages.push(message);
-            eventSeqs.push(Promise.resolve(await hooks.persistTurnMessage(message, turnId)));
+            eventSeqs.push(Promise.resolve(seq));
         }
 
-        if (isAbortError(error)) {
+        if (aborted) {
             // 用户消息与已发起的工具调用/结果一起进 turns：续跑时能看到中断现场，避免重跑副作用
-            appendInterruptedTurn(session, userMessages, partial, "interrupted");
             await hooks.persistTurn({
                 turnId,
                 events: await commitEvents(),
@@ -223,7 +252,6 @@ export async function runTurnCore(spec: TurnSpec, hooks: TurnHooks): Promise<Tur
             return { usage, stopReason: "aborted", aborted: true };
         }
 
-        appendInterruptedTurn(session, userMessages, partial, "failed");
         await hooks.persistTurn({
             turnId,
             events: await commitEvents(),

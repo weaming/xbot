@@ -41,6 +41,215 @@ function fakeClient(chunks: any[], followUp?: any[]): ChatClient {
 }
 
 describe("executeWithChat 流式聚合", () => {
+    it("流式片段先落盘再展示", async () => {
+        const order: string[] = [];
+        await executeWithChat({
+            query: "问题",
+            client: fakeClient([textChunk("你好"), { ...textChunk(""), choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }]),
+            model: "test-model",
+            stream: true,
+            onStreamDelta: async delta => {
+                await Promise.resolve();
+                order.push(`persist:${delta.text}`);
+            },
+            onEvent: event => {
+                if (event.type === "text_delta") order.push(`display:${event.delta}`);
+            },
+        });
+        expect(order).toEqual(["persist:你好", "display:你好"]);
+    });
+
+    it("流式片段落盘失败时不展示未保存内容", async () => {
+        const shown: string[] = [];
+        await expect(executeWithChat({
+            query: "问题",
+            client: fakeClient([textChunk("未保存")]),
+            model: "test-model",
+            stream: true,
+            onStreamDelta: async () => { throw new Error("磁盘不可写"); },
+            onEvent: event => {
+                if (event.type === "text_delta") shown.push(event.delta);
+            },
+        })).rejects.toThrow("磁盘不可写");
+        expect(shown).toEqual([]);
+    });
+
+    it("Chat Completions 流断线后保留已收到的文字与未完成工具参数", async () => {
+        const saved: any[] = [];
+        const client: ChatClient = {
+            baseURL: "http://test.local/v1",
+            create: async () => ({
+                [Symbol.asyncIterator]: async function* () {
+                    yield textChunk("已经找到");
+                    yield toolCallChunk({ index: 0, id: "call-1", function: { name: "search", arguments: '{"q":' } });
+                    throw new Error("Connection error.");
+                },
+            }),
+        };
+
+        await expect(executeWithChat({
+            query: "查找",
+            client,
+            model: "test-model",
+            stream: true,
+            onTurnMessage: message => { saved.push(message); },
+        })).rejects.toThrow("Connection error.");
+
+        expect(saved).toHaveLength(1);
+        expect(saved[0].content).toContain("已经找到");
+        expect(saved[0].content).toContain('"q"');
+        expect(saved[0].tool_calls).toBeUndefined();
+    });
+
+    it("Responses 流断线后保留已收到的文字", async () => {
+        const saved: any[] = [];
+        const client: ChatClient = {
+            baseURL: "http://test.local/v1",
+            protocol: "responses",
+            create: async () => undefined,
+            createResponse: async () => ({
+                [Symbol.asyncIterator]: async function* () {
+                    yield { type: "response.output_text.delta", delta: "已收到" };
+                    throw new Error("Connection error.");
+                },
+            }),
+        };
+
+        await expect(executeWithChat({
+            query: "你好",
+            client,
+            model: "test-model",
+            stream: true,
+            onTurnMessage: message => { saved.push(message); },
+        })).rejects.toThrow("Connection error.");
+
+        expect(saved).toEqual([{ role: "assistant", content: "已收到" }]);
+    });
+
+    it("Responses 以 failed 事件结束时保留增量文字", async () => {
+        const saved: any[] = [];
+        const client: ChatClient = {
+            baseURL: "http://test.local/v1",
+            protocol: "responses",
+            create: async () => undefined,
+            createResponse: async () => ({
+                [Symbol.asyncIterator]: async function* () {
+                    yield { type: "response.output_text.delta", delta: "部分回复" };
+                    yield { type: "response.failed", response: { status: "failed", output: [] } };
+                },
+            }),
+        };
+
+        await expect(executeWithChat({
+            query: "你好",
+            client,
+            model: "test-model",
+            stream: true,
+            onTurnMessage: message => { saved.push(message); },
+        })).rejects.toThrow("显式标为失败");
+        expect(saved[0]?.content).toBe("部分回复");
+    });
+
+    it("Responses 失败事件保留未完成工具参数且不执行", async () => {
+        const saved: any[] = [];
+        let isToolExecuted = false;
+        const client: ChatClient = {
+            baseURL: "http://test.local/v1",
+            protocol: "responses",
+            create: async () => undefined,
+            createResponse: async () => ({
+                [Symbol.asyncIterator]: async function* () {
+                    yield { type: "response.output_item.added", output_index: 0, item: {
+                        type: "function_call", id: "item-1", call_id: "call-1", name: "search", arguments: "",
+                    } };
+                    yield { type: "response.function_call_arguments.delta", item_id: "item-1", delta: '{"q":' };
+                    yield { type: "response.failed" };
+                },
+            }),
+        };
+
+        await expect(executeWithChat({
+            query: "查询",
+            client,
+            model: "test-model",
+            stream: true,
+            executeTool: async () => { isToolExecuted = true; return "ok"; },
+            onTurnMessage: message => { saved.push(message); },
+        })).rejects.toThrow("显式标为失败");
+        expect(isToolExecuted).toBe(false);
+        expect(saved[0]?.content).toContain("search");
+        expect(saved[0]?.tool_calls).toBeUndefined();
+    });
+
+    it("provider 明确返回失败时保留已生成的文字", async () => {
+        const saved: any[] = [];
+        const client: ChatClient = {
+            baseURL: "http://test.local/v1",
+            create: async () => ({
+                choices: [{ message: { role: "assistant", content: "部分答复" }, finish_reason: "error" }],
+            }),
+        };
+
+        await expect(executeWithChat({
+            query: "问题",
+            client,
+            model: "test-model",
+            onTurnMessage: message => { saved.push(message); },
+        })).rejects.toThrow("显式标为失败");
+        expect(saved).toEqual([{ role: "assistant", content: "部分答复" }]);
+    });
+
+    it("provider 失败时未确认的工具调用只记录参数，不执行", async () => {
+        const saved: any[] = [];
+        let isToolExecuted = false;
+        const client: ChatClient = {
+            baseURL: "http://test.local/v1",
+            create: async () => ({
+                choices: [{
+                    message: {
+                        role: "assistant",
+                        content: null,
+                        tool_calls: [{ id: "call-1", type: "function", function: { name: "bash", arguments: '{"cmd":"pwd"}' } }],
+                    },
+                    finish_reason: "error",
+                }],
+            }),
+        };
+
+        await expect(executeWithChat({
+            query: "问题",
+            client,
+            model: "test-model",
+            executeTool: async () => { isToolExecuted = true; return "ok"; },
+            onTurnMessage: message => { saved.push(message); },
+        })).rejects.toThrow("显式标为失败");
+        expect(isToolExecuted).toBe(false);
+        expect(saved[0]?.content).toContain("bash");
+        expect(saved[0]?.tool_calls).toBeUndefined();
+    });
+
+    it("消息落盘回调失败会向上抛出，并保留待补写消息", async () => {
+        const client: ChatClient = {
+            baseURL: "http://test.local/v1",
+            create: async () => ({
+                choices: [{ message: { role: "assistant", content: "已生成" }, finish_reason: "stop" }],
+            }),
+        };
+        let thrown: any;
+        try {
+            await executeWithChat({
+                query: "问题",
+                client,
+                model: "test-model",
+                onTurnMessage: async () => { throw new Error("磁盘不可写"); },
+            });
+        } catch (error) {
+            thrown = error;
+        }
+        expect(thrown?.message).toContain("回合消息落盘失败");
+        expect(thrown?.partialMessages).toEqual([{ role: "assistant", content: "已生成" }]);
+    });
+
     it("text_delta 事件序列与聚合结果", async () => {
         const chunks = [
             textChunk("你"),

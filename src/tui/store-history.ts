@@ -6,12 +6,14 @@
  * turn_segment_start 记录每段的起始边界；群消息按 seq 落在「当时开放的那一段」，
  * 从而在不打断助手消息整体的前提下，插到时间线任意段位。
  *
- * 回合内容以 turn_message（每条完整消息一次）为准，turn_commit 只提供收尾事实，
+ * 回合内容以 turn_message（每条完整消息一次）为准，未定稿时从 turn_stream_delta 恢复，
+ * turn_commit 只提供收尾事实，
  * 二者通过 turnId 关联；messages 不再在终态事件里重复存储。
  */
 
 import type { AgentEvent } from "../events/agent-events.js";
 import type { ChatMessage } from "../types/session.js";
+import { StreamRecovery } from "../utils/stream-recovery.js";
 import type { AssistantTimelineItem, SessionUiState, ToolBlock, UiMessage } from "./store-types.js";
 import {
     abortMarkText,
@@ -79,11 +81,9 @@ interface SegmentEntry {
 }
 
 /**
- * 从回合消息里取最终助手正文（message.text）：error 无正文；
- * 其余取最后一条 assistant 的字符串 content（成功即最终回复，中断即已产出的部分）。
+ * 从回合消息里取最后一条助手正文，包括失败前已收到的部分输出。
  */
-function deriveContent(messages: ChatMessage[], stopReason: string): string {
-    if (stopReason === "error") return "";
+function deriveContent(messages: ChatMessage[]): string {
     for (let i = messages.length - 1; i >= 0; i--) {
         const message = messages[i]!;
         if (message.role !== "assistant") continue;
@@ -241,11 +241,30 @@ export function projectHistory(
 
     // 回合消息（turn_message）按 turnId 归组：内容只存这一份，终态事件只引用。
     const messagesByTurn = new Map<string, ChatMessage[]>();
+    const streamByTurn = new Map<string, StreamRecovery>();
+    const appendRecoveredStream = (turnId: string, stream: StreamRecovery): void => {
+        const partial = stream.message();
+        if (!partial) return;
+        const list = messagesByTurn.get(turnId) ?? [];
+        list.push(partial);
+        messagesByTurn.set(turnId, list);
+    };
     for (const event of events) {
-        if (event.type !== "turn_message") continue;
-        const list = messagesByTurn.get(event.payload.turnId) ?? [];
-        list.push(event.payload.message);
-        messagesByTurn.set(event.payload.turnId, list);
+        if (event.type === "turn_stream_delta") {
+            const { turnId, requestIndex, delta } = event.payload;
+            const stream = streamByTurn.get(turnId) ?? new StreamRecovery();
+            stream.push(requestIndex, delta);
+            streamByTurn.set(turnId, stream);
+        } else if (event.type === "turn_message") {
+            const list = messagesByTurn.get(event.payload.turnId) ?? [];
+            list.push(event.payload.message);
+            messagesByTurn.set(event.payload.turnId, list);
+            if (event.payload.message.role === "assistant") streamByTurn.get(event.payload.turnId)?.clear();
+        } else if (event.type === "turn_commit") {
+            const stream = streamByTurn.get(event.payload.turnId);
+            if (stream) appendRecoveredStream(event.payload.turnId, stream);
+            streamByTurn.delete(event.payload.turnId);
+        }
     }
 
     // 已闭合回合：同 turnId 以最后一条 turn_commit（终态）为准。
@@ -253,14 +272,8 @@ export function projectHistory(
     for (const event of events) {
         if (event.type === "turn_commit") commitsById.set(event.payload.turnId, event);
     }
-
-    // 未闭合回合（有 turn_message 无 turn_commit）：部分消息规则只保留最后一个，
-    // 其余中间残留丢弃——进程被强杀也能把最后一笔现场呈现为（中断）。
-    let lastUnclosedTurnId: string | undefined;
-    for (const event of events) {
-        if (event.type === "turn_message" && !commitsById.has(event.payload.turnId)) {
-            lastUnclosedTurnId = event.payload.turnId;
-        }
+    for (const [turnId, stream] of streamByTurn) {
+        appendRecoveredStream(turnId, stream);
     }
 
     const handledTurnIds = new Set<string>();
@@ -280,7 +293,7 @@ export function projectHistory(
                 if (event.payload.turnId) activeTurnId = event.payload.turnId;
                 continue;
             }
-            if (event.type === "turn_message") {
+            if (event.type === "turn_message" || event.type === "turn_stream_delta") {
                 activeTurnId = event.payload.turnId;
                 continue;
             }
@@ -310,7 +323,7 @@ export function projectHistory(
     const pushCommitTurn = (event: TurnCommitEvent, sortKey: number): void => {
         const { turnId, interrupted, stopReason, error } = event.payload;
         const messages = messagesByTurn.get(turnId) ?? [];
-        const content = deriveContent(messages, stopReason);
+        const content = deriveContent(messages);
         const label = interrupted ? interruptLabel(stopReason) : undefined;
         // 与实时路径逐字一致的收尾正文，拼接规则共用 composeAbortText（避免各自实现漂移）。
         const replyText = label ? composeAbortText(content, label) : content;
@@ -405,9 +418,10 @@ export function projectHistory(
                 break;
             }
             case "turn_message":
-                // 未闭合回合只保留最后一个：首次出现时补渲染为（中断）
+            case "turn_stream_delta":
+                // 每个未闭合回合在首条消息处渲染一次。
                 if (
-                    event.payload.turnId === lastUnclosedTurnId &&
+                    !commitsById.has(event.payload.turnId) &&
                     !renderedUnclosedTurnIds.has(event.payload.turnId)
                 ) {
                     renderedUnclosedTurnIds.add(event.payload.turnId);

@@ -44,7 +44,7 @@ describe("真实分词器计数", () => {
         expect(estimateTextTokens(json)).toBeLessThan(61);
     });
 
-    test("回合计数跳过 failed 回合，且按消息 id 复用结果", async () => {
+    test("回合计数包含 failed 回合，且按消息 id 复用结果", async () => {
         const session = createEmptySession("sess-tokenizer-turns");
         appendCompletedTurn(session, ["问题"], [{ role: "assistant", content: "回答" }], true);
         appendCompletedTurn(session, ["失败的问题"], [{ role: "assistant", content: "失败的回答" }], false);
@@ -54,9 +54,10 @@ describe("真实分词器计数", () => {
         // 第二次走缓存，值不变
         expect(await countTurnsTokens(session.turns)).toBe(counted);
         expect(counted).toBeGreaterThan(0);
-        // failed 回合不进上下文，也就不计数
-        expect(counted).toBe(await countTurnsTokens([session.turns[0]!]));
-        expect(await countTurnsTokens([session.turns[1]!])).toBe(0);
+        const first = await countTurnsTokens([session.turns[0]!]);
+        const failed = await countTurnsTokens([session.turns[1]!]);
+        expect(failed).toBeGreaterThan(0);
+        expect(counted).toBe(first + failed);
     });
 
     test("非 DeepSeek 模型回退启发式（各家 tokenizer 不同）", async () => {

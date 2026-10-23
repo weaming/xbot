@@ -233,6 +233,95 @@ describe("ChatStore 工具块", () => {
         expect(block?.result).toBe("结果");
     });
 
+    test("多个未闭合回合都能从时间线恢复", () => {
+        const store = new ChatStore();
+        store.setCurrentSession("session-1");
+        store.loadHistory(["T1", "T2"].flatMap((turnId, index) => [
+            {
+                seq: index * 2 + 1,
+                ts: "2026-09-08T10:00:00+08:00",
+                sessionId: "session-1",
+                type: "user_message",
+                payload: { text: turnId, turnId, trigger: "user" },
+            },
+            {
+                seq: index * 2 + 2,
+                ts: "2026-09-08T10:00:01+08:00",
+                sessionId: "session-1",
+                type: "turn_message",
+                payload: { turnId, message: { role: "assistant", content: `${turnId} 输出` } },
+            },
+        ]) as any);
+
+        const assistants = store.messages.filter(message => message.role === "assistant");
+        expect(assistants).toHaveLength(2);
+        expect(assistants[0]?.timeline?.[0]?.text).toContain("T1 输出");
+        expect(assistants[1]?.timeline?.[0]?.text).toContain("T2 输出");
+    });
+
+    test("未闭合流式片段在重放后仍显示", () => {
+        const store = new ChatStore();
+        store.setCurrentSession("session-1");
+        store.loadHistory([
+            {
+                seq: 1,
+                ts: "2026-09-08T10:00:00+08:00",
+                sessionId: "session-1",
+                type: "user_message",
+                payload: { text: "问题", turnId: "T1", trigger: "user" },
+            },
+            {
+                seq: 2,
+                ts: "2026-09-08T10:00:01+08:00",
+                sessionId: "session-1",
+                type: "turn_stream_delta",
+                payload: { turnId: "T1", requestIndex: 1, delta: { text: "已收到一半" } },
+            },
+        ] as any);
+
+        expect(store.messages[1]?.timeline?.[0]?.text).toContain("已收到一半");
+        expect(store.messages[1]?.text).toContain("中断");
+    });
+
+    test("失败终态缺完整消息时显示已落盘的流式片段", () => {
+        const store = new ChatStore();
+        store.setCurrentSession("session-1");
+        store.loadHistory([
+            {
+                seq: 1,
+                ts: "2026-09-08T10:00:00+08:00",
+                sessionId: "session-1",
+                type: "user_message",
+                payload: { text: "问题", turnId: "T1", trigger: "user" },
+            },
+            {
+                seq: 2,
+                ts: "2026-09-08T10:00:01+08:00",
+                sessionId: "session-1",
+                type: "turn_stream_delta",
+                payload: { turnId: "T1", requestIndex: 1, delta: { text: "已收到一半" } },
+            },
+            {
+                seq: 3,
+                ts: "2026-09-08T10:00:02+08:00",
+                sessionId: "session-1",
+                type: "turn_commit",
+                payload: {
+                    turnId: "T1",
+                    events: [],
+                    userMessages: ["问题"],
+                    stopReason: "error",
+                    error: "Connection error.",
+                    usage: { model: "test", promptTokens: 0, completionTokens: 0, totalTokens: 0, durationMs: 0 },
+                    interrupted: false,
+                },
+            },
+        ] as any);
+
+        expect(store.messages[1]?.text).toBe("已收到一半");
+        expect(store.messages[2]?.text).toContain("Connection error.");
+    });
+
     test("已闭合回合按 turn_message 渲染一次，不重复", () => {
         const store = new ChatStore();
         store.setCurrentSession("session-1");

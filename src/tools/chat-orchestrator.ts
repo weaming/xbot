@@ -17,8 +17,9 @@ import {
 import { getOpenAIProxyFetch } from "../utils/proxy.js";
 import { DEEPSEEK_OFFICIAL_HOST, endpointHost } from "../pricing/deepseek.js";
 import type { UIEvent } from "../events/ui-events.js";
-import type { UsageInfo } from "../types/chat.js";
+import type { StreamDelta, UsageInfo } from "../types/chat.js";
 import type { ChatMessage } from "../types/session.js";
+import { partialAssistantMessage } from "../utils/stream-recovery.js";
 import { fromOpenAIToolCalls, type ToolCall } from "../types/tool-call.js";
 import { toUserContent, type UserContent, type UserMessageInput } from "../types/image.js";
 import {
@@ -78,10 +79,10 @@ function deltaOfAccumulatedUsage(sessionId: string | undefined, accumulated: num
 
 
 export function isAbortError(error: any): boolean {
-  return error.name === "AbortError" ||
-    error.name === "APIUserAbortError" ||
-    error.message === "Request was aborted." ||
-    error.message?.includes("abort");
+  return error?.name === "AbortError" ||
+    error?.name === "APIUserAbortError" ||
+    error?.message === "Request was aborted." ||
+    error?.message?.includes("abort");
 }
 
 // Chat Completions API 客户端
@@ -171,13 +172,14 @@ export interface OrchestratorOptions {
   initialRequestKind?: Exclude<LLMRequestKind, 'tool_response'>;
   /** 消费执行期间累积的 pending 消息（组合成一条附加到后续请求） */
   consumePendingMessages?: () => Array<string | UserMessageInput> | undefined;
-  onConsumePending?: (text: string, messages: Array<string | UserMessageInput>) => void;
+  onConsumePending?: (text: string, messages: Array<string | UserMessageInput>) => void | Promise<void>;
   /** 后续工具轮次发请求前，可替换仅用于请求的上下文；完整本轮消息仍单独保留。 */
   compactMessagesIfNeeded?: (messages: ChatMessage[], lastPromptTokens?: number) => Promise<ChatMessage[] | undefined>;
   /** 每轮请求前返回仅用于本次请求的提醒消息（不落盘、不进历史），用于任务清单等状态回环。 */
   getContextReminders?: () => string[] | undefined;
-  /** 回合内每条完整消息定稿时的落盘回调（串行调用，单条失败只记日志）。 */
+  /** 回合内每条完整消息定稿时的落盘回调（串行调用）。 */
   onTurnMessage?: (message: ChatMessage) => void | Promise<void>;
+  onStreamDelta?: (delta: StreamDelta, requestIndex: number) => Promise<void>;
   /** 续跑：不把 query 作为 user 消息插入（历史尾部已是待续上下文，上游无感）。 */
   skipUserQuery?: boolean;
   /** 续跑：进入循环前先执行的工具调用（补齐中断时缺结果的调用）。 */
@@ -222,6 +224,7 @@ export async function executeWithChat(
     compactMessagesIfNeeded,
     getContextReminders,
     onTurnMessage,
+    onStreamDelta,
     skipUserQuery = false,
     pendingToolCalls,
     signal,
@@ -233,11 +236,13 @@ export async function executeWithChat(
   const messages: ChatMessage[] = [];
   const turnMessages: ChatMessage[] = [];
   let persistChain: Promise<void> = Promise.resolve();
+  let persistFailure: unknown;
   const persistMessage = (message: ChatMessage): void => {
     if (!onTurnMessage) return;
     persistChain = persistChain
       .then(() => onTurnMessage(message))
       .catch((error: any) => {
+        persistFailure ??= error;
         console.error("⚠️ [Orchestrator] turn_message 落盘失败:", error?.message ?? error);
       });
   };
@@ -316,6 +321,7 @@ export async function executeWithChat(
       stream: !!stream,
       signal,
       emit,
+      ...(onStreamDelta ? { persistDelta: (delta: StreamDelta) => onStreamDelta(delta, ctx.iteration) } : {}),
     }),
   };
 
@@ -328,6 +334,12 @@ export async function executeWithChat(
   } finally {
     // 回合结束（含中断/报错）前等增量消息落盘完成
     await persistChain;
+    if (persistFailure) {
+      const error: any = new Error("回合消息落盘失败，请检查会话存储目录", { cause: persistFailure });
+      error.partialMessages = turnMessages;
+      emit({ type: "error", message: error.message });
+      throw error;
+    }
   }
 }
 
@@ -342,15 +354,16 @@ async function sendProtocolRequest(input: {
   stream: boolean;
   signal: AbortSignal | undefined;
   emit: (event: UIEvent) => void;
+  persistDelta?: (delta: StreamDelta) => Promise<void>;
 }): Promise<any> {
-  const { client, protocol, requestBody, stream, signal, emit } = input;
+  const { client, protocol, requestBody, stream, signal, emit, persistDelta } = input;
   if (protocol === "responses") {
     return stream
-      ? collectResponsesResponse(client, requestBody, signal, emit)
+      ? collectResponsesResponse(client, requestBody, signal, emit, persistDelta)
       : client.createResponse?.(requestBody, { signal });
   }
   return stream
-    ? collectStreamResponse(client, requestBody, signal, emit)
+    ? collectStreamResponse(client, requestBody, signal, emit, persistDelta)
     : client.create(requestBody, { signal });
 }
 
@@ -362,9 +375,10 @@ async function collectStreamResponse(
   requestBody: Record<string, any>,
   signal: AbortSignal | undefined,
   emit: (event: UIEvent) => void,
+  persistDelta?: (delta: StreamDelta) => Promise<void>,
 ): Promise<any> {
   const stream = await client.create(requestBody, { signal });
-  const { assistantMsg, usage, model, finishReason } = await collectStream(stream, emit);
+  const { assistantMsg, usage, model, finishReason } = await collectStream(stream, emit, persistDelta);
   return {
     model,
     choices: [{ message: assistantMsg, finish_reason: finishReason }],
@@ -377,6 +391,7 @@ async function collectResponsesResponse(
   requestBody: Record<string, any>,
   signal: AbortSignal | undefined,
   emit: (event: UIEvent) => void,
+  persistDelta?: (delta: StreamDelta) => Promise<void>,
 ): Promise<any> {
   const stream = await client.createResponse?.(requestBody, { signal });
   if (!stream || typeof stream[Symbol.asyncIterator] !== "function") {
@@ -388,48 +403,65 @@ async function collectResponsesResponse(
   const functionCalls = new Map<string, { index: number; id: string; name: string; arguments: string }>();
   let model = "";
   let usage: any;
+  let partialText = "";
+  let partialReasoning = "";
 
-  for await (const event of stream) {
-    if (event.type === "response.output_text.delta") {
-      emit({ type: "text_delta", delta: event.delta });
-    } else if (event.type === "response.reasoning_summary_text.delta" || event.type === "response.reasoning_text.delta") {
-      emit({ type: "reasoning_delta", delta: event.delta });
-    } else if (event.type === "response.output_item.added") {
-      const item = event.item;
-      if (item?.type === "function_call") {
-        const call = {
+  try {
+    for await (const event of stream) {
+      if (event.type === "response.output_text.delta") {
+        await persistDelta?.({ text: event.delta });
+        partialText += event.delta;
+        emit({ type: "text_delta", delta: event.delta });
+      } else if (event.type === "response.reasoning_summary_text.delta" || event.type === "response.reasoning_text.delta") {
+        await persistDelta?.({ reasoning: event.delta });
+        partialReasoning += event.delta;
+        emit({ type: "reasoning_delta", delta: event.delta });
+      } else if (event.type === "response.output_item.added") {
+        const item = event.item;
+        if (item?.type === "function_call") {
+          const call = {
+            index: event.output_index ?? functionCalls.size,
+            id: item.call_id ?? item.id ?? `call_${crypto.randomUUID().slice(0, 8)}`,
+            name: item.name ?? "",
+            arguments: item.arguments ?? "",
+          };
+          await persistDelta?.({ toolCalls: [{
+            index: call.index,
+            id: call.id,
+            name: call.name,
+            arguments: call.arguments,
+          }] });
+          functionCalls.set(item.id ?? call.id, call);
+          emit({ type: "toolcall_start", index: call.index, id: call.id, name: call.name });
+        }
+      } else if (event.type === "response.function_call_arguments.delta") {
+        const key = event.item_id;
+        const call = functionCalls.get(key) ?? {
           index: event.output_index ?? functionCalls.size,
-          id: item.call_id ?? item.id ?? `call_${crypto.randomUUID().slice(0, 8)}`,
-          name: item.name ?? "",
-          arguments: item.arguments ?? "",
+          id: key,
+          name: "",
+          arguments: "",
         };
-        functionCalls.set(item.id ?? call.id, call);
-        emit({ type: "toolcall_start", index: call.index, id: call.id, name: call.name });
+        await persistDelta?.({ toolCalls: [{ index: call.index, arguments: event.delta }] });
+        call.arguments += event.delta;
+        functionCalls.set(key, call);
+        emit({ type: "toolcall_args_delta", index: call.index, delta: event.delta });
+      } else if (event.type === "response.output_item.done") {
+        if (event.item && event.output_index !== undefined) {
+          outputItems[event.output_index] = event.item;
+        }
+      } else if (event.type === "response.completed") {
+        completedResponse = event.response;
+        model = event.response?.model ?? model;
+        usage = event.response?.usage ?? usage;
+      } else if (event.type === "response.failed" || event.type === "response.incomplete") {
+        completedResponse = { ...(event.response ?? {}), status: event.type === "response.failed" ? "failed" : "incomplete" };
+        model = event.response?.model ?? model;
+        usage = event.response?.usage ?? usage;
       }
-    } else if (event.type === "response.function_call_arguments.delta") {
-      const key = event.item_id;
-      const call = functionCalls.get(key) ?? {
-        index: event.output_index ?? functionCalls.size,
-        id: key,
-        name: "",
-        arguments: "",
-      };
-      call.arguments += event.delta;
-      functionCalls.set(key, call);
-      emit({ type: "toolcall_args_delta", index: call.index, delta: event.delta });
-    } else if (event.type === "response.output_item.done") {
-      if (event.item && event.output_index !== undefined) {
-        outputItems[event.output_index] = event.item;
-      }
-    } else if (event.type === "response.completed") {
-      completedResponse = event.response;
-      model = event.response?.model ?? model;
-      usage = event.response?.usage ?? usage;
-    } else if (event.type === "response.failed" || event.type === "response.incomplete") {
-      completedResponse = event.response;
-      model = event.response?.model ?? model;
-      usage = event.response?.usage ?? usage;
     }
+  } catch (error) {
+    throw withPartialMessage(error, partialAssistantMessage(partialText, partialReasoning, [...functionCalls.values()]));
   }
 
   for (const call of functionCalls.values()) {
@@ -442,16 +474,41 @@ async function collectResponsesResponse(
     });
   }
 
+  const hasFailed = completedResponse?.status === "failed" || completedResponse?.status === "incomplete";
+  const recovered = hasFailed
+    ? partialAssistantMessage(partialText, partialReasoning, [...functionCalls.values()])
+    : undefined;
+  const fallbackText = typeof recovered?.content === "string" ? recovered.content : partialText;
+  const streamedItems = outputItems.filter(Boolean);
+  const suppliedItems = Array.isArray(completedResponse?.output) && completedResponse.output.length > 0
+    ? completedResponse.output
+    : streamedItems;
+  const hasOutputText = suppliedItems.some((item: any) => item?.type === "message"
+    && item.content?.some((part: any) => part?.type === "output_text"));
+  const output = fallbackText && !hasOutputText
+    ? [...suppliedItems, { type: "message", content: [{ type: "output_text", text: fallbackText }] }]
+    : suppliedItems;
+  if (completedResponse) completedResponse.output = output;
+  if (completedResponse && partialReasoning) completedResponse.reasoning_content = partialReasoning;
   return completedResponse ?? {
     model,
-    output: outputItems.filter(Boolean),
+    output,
+    ...(partialReasoning ? { reasoning_content: partialReasoning } : {}),
     usage,
   };
+}
+
+function withPartialMessage(error: unknown, message: ChatMessage | undefined): unknown {
+  if (!message) return error;
+  const wrapped = error && typeof error === "object" ? error : new Error(String(error));
+  (wrapped as { partialMessage?: ChatMessage }).partialMessage = message;
+  return wrapped;
 }
 
 async function collectStream(
   stream: AsyncIterable<any>,
   emit: (event: UIEvent) => void,
+  persistDelta?: (delta: StreamDelta) => Promise<void>,
 ): Promise<{ assistantMsg: any; usage: any; model: string; finishReason: string }> {
   let content = "";
   let reasoningContent = "";
@@ -467,45 +524,69 @@ async function collectStream(
   // 无 index 的 tool_call（非标准流或 mock）按出现顺序分配
   let toolCallCursor = 0;
 
-  for await (const chunk of stream) {
-    if (chunk.model) model = chunk.model;
-    // usage 与 x_usage_source 同帧下发（网关收尾帧），一起留住以便判定口径
-    if (chunk.usage) usage = chunk.usage;
-    if (chunk.x_usage_source) usage = { ...(usage ?? {}), x_usage_source: chunk.x_usage_source };
+  try {
+    for await (const chunk of stream) {
+      if (chunk.model) model = chunk.model;
+      // usage 与 x_usage_source 同帧下发（网关收尾帧），一起留住以便判定口径
+      if (chunk.usage) usage = chunk.usage;
+      if (chunk.x_usage_source) usage = { ...(usage ?? {}), x_usage_source: chunk.x_usage_source };
 
-    const choice = chunk.choices?.[0];
-    const delta = choice?.delta ?? {};
+      const choice = chunk.choices?.[0];
+      const delta = choice?.delta ?? {};
+      const toolDeltas = (delta.tool_calls ?? []).map((call: any) => ({
+        ...call,
+        index: call.index ?? toolCallCursor++,
+      }));
+      const streamDelta: StreamDelta = {
+        ...(delta.content ? { text: delta.content } : {}),
+        ...(delta.reasoning_content ? { reasoning: delta.reasoning_content } : {}),
+        ...(toolDeltas.length > 0 ? { toolCalls: toolDeltas.map((call: any) => ({
+          index: call.index,
+          ...(call.id ? { id: call.id } : {}),
+          ...(call.function?.name ? { name: call.function.name } : {}),
+          ...(call.function?.arguments ? { arguments: call.function.arguments } : {}),
+          ...((call.thought_signature ?? call.thoughtSignature)
+            ? { thoughtSignature: call.thought_signature ?? call.thoughtSignature }
+            : {}),
+        })) } : {}),
+      };
+      if (streamDelta.text || streamDelta.reasoning || streamDelta.toolCalls?.length) {
+        await persistDelta?.(streamDelta);
+      }
 
-    if (delta.content) {
-      content += delta.content;
-      emit({ type: "text_delta", delta: delta.content });
-    }
-    if (delta.reasoning_content) {
-      reasoningContent += delta.reasoning_content;
-      emit({ type: "reasoning_delta", delta: delta.reasoning_content });
-    }
-    if (delta.tool_calls) {
-      for (const tc of delta.tool_calls) {
-        const index = tc.index ?? toolCallCursor++;
-        let slot = toolCalls.get(index);
-        if (!slot) {
-          slot = { id: "", name: "", arguments: "" };
-          toolCalls.set(index, slot);
-        }
-        if (tc.id) slot.id = tc.id;
-        const thoughtSignature = tc.thought_signature ?? tc.thoughtSignature;
-        if (thoughtSignature) slot.thoughtSignature = thoughtSignature;
-        if (tc.function?.name) {
-          slot.name = tc.function.name;
-          emit({ type: "toolcall_start", index, id: slot.id, name: slot.name });
-        }
-        if (tc.function?.arguments) {
-          slot.arguments += tc.function.arguments;
-          emit({ type: "toolcall_args_delta", index, delta: tc.function.arguments });
+      if (delta.content) {
+        content += delta.content;
+        emit({ type: "text_delta", delta: delta.content });
+      }
+      if (delta.reasoning_content) {
+        reasoningContent += delta.reasoning_content;
+        emit({ type: "reasoning_delta", delta: delta.reasoning_content });
+      }
+      if (toolDeltas.length > 0) {
+        for (const tc of toolDeltas) {
+          const index = tc.index;
+          let slot = toolCalls.get(index);
+          if (!slot) {
+            slot = { id: "", name: "", arguments: "" };
+            toolCalls.set(index, slot);
+          }
+          if (tc.id) slot.id = tc.id;
+          const thoughtSignature = tc.thought_signature ?? tc.thoughtSignature;
+          if (thoughtSignature) slot.thoughtSignature = thoughtSignature;
+          if (tc.function?.name) {
+            slot.name = tc.function.name;
+            emit({ type: "toolcall_start", index, id: slot.id, name: slot.name });
+          }
+          if (tc.function?.arguments) {
+            slot.arguments += tc.function.arguments;
+            emit({ type: "toolcall_args_delta", index, delta: tc.function.arguments });
+          }
         }
       }
+      if (choice?.finish_reason) finishReason = choice.finish_reason;
     }
-    if (choice?.finish_reason) finishReason = choice.finish_reason;
+  } catch (error) {
+    throw withPartialMessage(error, partialAssistantMessage(content, reasoningContent, [...toolCalls.values()]));
   }
 
   for (const [index, slot] of toolCalls) {

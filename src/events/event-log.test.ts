@@ -180,6 +180,74 @@ describe("EventLog", () => {
         expect((await log.read(sessionId))).toHaveLength(3);
     });
 
+    it("重放保留较早未闭合回合的完整消息", async () => {
+        const log = new EventLog();
+        const sessionId = "sess-orphan-partials";
+        await log.append(sessionId, "user_message", { text: "第一个问题", turnId: "T1", trigger: "user" });
+        await log.append(sessionId, "turn_message", { turnId: "T1", message: { role: "assistant", content: "第一段输出" } });
+        await appendTurn(log, sessionId, {
+            turnId: "T2",
+            userMessages: ["第二个问题"],
+            messages: [{ role: "assistant", content: "第二段输出" }],
+        });
+
+        const { session } = await new SessionReplay(log).replayTo(sessionId);
+        expect(session.turns.map(turn => turn.status)).toEqual(["interrupted", "completed"]);
+        expect(session.turns[0]?.messages.map(message => message.content)).toEqual(["第一个问题", "第一段输出"]);
+        expect(getSessionContextHistory(session).map(message => message.content)).toEqual([
+            "第一个问题", "第一段输出", "第二个问题", "第二段输出",
+        ]);
+    });
+
+    it("重放保留所有未闭合回合", async () => {
+        const log = new EventLog();
+        const sessionId = "sess-two-orphans";
+        for (const turnId of ["T1", "T2"]) {
+            await log.append(sessionId, "user_message", { text: turnId, turnId, trigger: "user" });
+            await log.append(sessionId, "turn_message", { turnId, message: { role: "assistant", content: `${turnId} 输出` } });
+        }
+
+        const { session } = await new SessionReplay(log).replayTo(sessionId);
+        expect(session.turns.map(turn => turn.messages.map(message => message.content))).toEqual([
+            ["T1", "T1 输出"],
+            ["T2", "T2 输出"],
+        ]);
+    });
+
+    it("异常退出后从流式检查点恢复文字、思考与未完成工具参数", async () => {
+        const log = new EventLog();
+        const sessionId = "sess-stream-crash";
+        const turnId = "T1";
+        await log.append(sessionId, "user_message", { text: "查资料", turnId, trigger: "user" });
+        await log.append(sessionId, "turn_stream_delta", { turnId, requestIndex: 1, delta: { text: "已找到" } });
+        await log.append(sessionId, "turn_stream_delta", { turnId, requestIndex: 1, delta: { reasoning: "先检查" } });
+        await log.append(sessionId, "turn_stream_delta", {
+            turnId,
+            requestIndex: 1,
+            delta: { toolCalls: [{ index: 0, name: "search", arguments: '{"q":' }] },
+        });
+
+        const { session } = await new SessionReplay(log).replayTo(sessionId);
+        expect(session.turns[0]?.status).toBe("interrupted");
+        const partial = getSessionContextHistory(session)[1] as Extract<ChatMessage, { role: "assistant" }>;
+        expect(partial.content).toContain("已找到");
+        expect(partial.content).toContain('"q"');
+        expect(partial.reasoning_content).toBe("先检查");
+        expect(partial.tool_calls).toBeUndefined();
+    });
+
+    it("完整消息落盘后不重复恢复流式片段", async () => {
+        const log = new EventLog();
+        const sessionId = "sess-stream-complete";
+        const turnId = "T1";
+        await log.append(sessionId, "user_message", { text: "问题", turnId, trigger: "user" });
+        await log.append(sessionId, "turn_stream_delta", { turnId, requestIndex: 1, delta: { text: "部分" } });
+        await log.append(sessionId, "turn_message", { turnId, message: { role: "assistant", content: "完整答复" } });
+
+        const { session } = await new SessionReplay(log).replayTo(sessionId);
+        expect(getSessionContextHistory(session).map(message => message.content)).toEqual(["问题", "完整答复"]);
+    });
+
     it("快照 + 增量重放（回合闭合的第 100 个事件写快照）", async () => {
         const log = new EventLog();
         const replay = new SessionReplay(log);
