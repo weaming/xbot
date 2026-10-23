@@ -10,8 +10,15 @@ xbot 是一个基于 Bun 的终端 AI 助手，提供 TUI 界面。
 git clone https://github.com/weaming/xbot.git
 cd xbot
 bun install
-make build-cli
+make build-pack
 ```
+
+产物是单个可执行文件，运行时借用系统 bun。
+
+| 目标 | 产物 | 说明 |
+| --- | --- | --- |
+| `make build-pack` | 5.4 MB | 需要目标机有 bun |
+| `make build-cli` | 66 MB | 内嵌 bun 运行时，无需安装 |
 
 ## 配置
 

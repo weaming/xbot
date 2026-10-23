@@ -23,10 +23,10 @@ func usage(cmd string) {
 通用选项:
   -out <file>      输出文件（必填）
   -name <string>   应用名，用于提示与缓存目录，默认取入口文件名
-  -inline <exts>   经文件描述符注入内存的资源扩展名，逗号分隔
-  -native <exts>   必须落盘的资源扩展名，逗号分隔
+  -inline <exts>   随产物分发的资源扩展名，逗号分隔（相对路径即可读取）
+  -native <exts>   必须落盘到缓存目录的资源扩展名，逗号分隔
   -external <pkgs> 交给 bun 的 --external 并由本工具收集本机原生模块的包名，逗号分隔
-  -env <ext=VAR>   资源位置对应的环境变量名，可重复（见下）
+  -env <ext=VAR>   资源位置对应的环境变量名，仅 -native 需要（可重复）
   -runtime <cmd>   目标机运行时命令，默认 bun
 
 仅 build:
@@ -38,8 +38,10 @@ func usage(cmd string) {
   -entry <file>    入口 JS 文件名，默认取目录中唯一的 .js
 
 资源如何交给程序:
-  • 入口 JS 与 -inline 资源不落盘，经文件描述符传给运行时，
-    依次占用 fd 3、4、5…；-env 用来告诉程序去哪个 fd 读。
+  • payload 保留构建目录的相对结构，运行时解到临时目录，
+    退出即整目录删除；入口与资源维持原有相对位置。
+  • 因此代码里按相对路径读取即可（配合 import.meta.dir），
+    不需要环境变量或特殊 API，子目录层级同样保留。
   • -native 资源必须落盘：napi 的 dlopen 只接受真实文件路径。
     本工具按内容哈希解到缓存目录，-env 用来告知该目录。
   • -external 的包由本工具按 GOOS/GOARCH 挑出单个原生模块，
@@ -49,10 +51,10 @@ func usage(cmd string) {
   # 无资源依赖
   %[1]s build src/index.ts -out ./app
 
-  # 资源走 fd 注入，原生模块落盘
+  # 带资源；有原生模块时声明 -external
   %[1]s build src/main.ts -out ./app -name myapp \
       -inline .json -native .node -external my-addon \
-      -env .json=MYAPP_CONFIG_FD -env .node=MYAPP_NATIVE_DIR
+      -env .node=MYAPP_NATIVE_DIR
 
   # 打包已有构建产物
   %[1]s pack ./dist -out ./app -name myapp
@@ -124,12 +126,12 @@ type commonOpts struct {
 func (c *commonOpts) bind(fs *flag.FlagSet) {
 	fs.StringVar(&c.out, "out", "", "输出文件")
 	fs.StringVar(&c.name, "name", "", "应用名")
-	fs.StringVar(&c.inline, "inline", "", "走 fd 的扩展名，逗号分隔")
-	fs.StringVar(&c.native, "native", ".node", "必须落盘的扩展名，逗号分隔")
+	fs.StringVar(&c.inline, "inline", "", "随产物分发的资源扩展名，逗号分隔")
+	fs.StringVar(&c.native, "native", ".node", "必须落盘到缓存目录的扩展名，逗号分隔")
 	fs.StringVar(&c.external, "external", "", "走 --external 并自动收集本机 .node 的包，逗号分隔")
 	fs.StringVar(&c.runtime, "runtime", "", "运行时命令，默认 bun")
 	fs.StringVar(&c.workDir, "workdir", ".", "查找 node_modules 的目录")
-	fs.Var((*multiFlag)(&c.envValues), "env", "环境变量映射 ext=VAR（可重复）")
+	fs.Var((*multiFlag)(&c.envValues), "env", "位置对应的环境变量 ext=VAR，仅 -native 需要（可重复）")
 }
 
 // manifest 依据参数构造清单。

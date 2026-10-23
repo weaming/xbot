@@ -25,33 +25,35 @@ BUNPACK=1 ./app build src/index.ts -out ./other
 # 最简单：无原生依赖
 bunpack build src/index.ts -out ./app
 
-# 资源走 fd 注入，原生模块落盘
+# 带资源；有原生模块时再声明 -external
 bunpack build src/main.ts -out ./app -name myapp \
-    -inline .json -native .node -external my-addon \
-    -env .json=MYAPP_CONFIG_FD -env .node=MYAPP_NATIVE_DIR
+    -inline .json -native .node -external my-addon
 
 # 打包已有目录
 bunpack pack ./dist -out ./app -name myapp
 ```
 
-## 资源分派
+## 资源的组织方式
 
-| 类型 | 处理方式 | 是否落盘 |
-| --- | --- | --- |
-| 入口 JS | 传给子进程 fd 3 | 否 |
-| `-inline` 资源 | fd 依次递增（4、5…），环境变量告知 fd 号 | 否 |
-| `-native` 资源 | 按内容哈希解到缓存目录，环境变量告知目录 | 是 |
+payload 按**相对路径**保留构建目录的结构，运行前解到临时目录
+（`$TMPDIR/bunpack-<随机>/`），进程退出即整个目录删除。
 
-`-native` 必须落盘：napi 的 `dlopen` 只接受真实文件路径，无法从 fd 加载。
-
-JS 侧按环境变量取值：
+入口与资源保持原有的相对位置，所以代码里直接按相对路径读取即可，
+不需要任何环境变量或特殊 API：
 
 ```ts
-const fd = Number(process.env.MYAPP_CONFIG_FD);   // 从 fd 读资源
-const dir = process.env.MYAPP_NATIVE_DIR;          // 原生模块所在目录
+import path from "node:path";
+
+// bun build 把资源引用生成为相对路径，配合 import.meta.dir 定位
+const file = path.resolve(import.meta.dir, "./config.json");
+const config = JSON.parse(fs.readFileSync(file, "utf8"));
 ```
 
-两者都是可选分支：未设置时退回普通文件路径或内置回退逻辑。
+目录层级同样保留，子目录里的资源写 `"../assets/x.json"` 也能命中。
+
+`-native` 资源（`.node`）必须落盘：napi 的 `dlopen` 只接受真实文件路径。
+它们按内容哈希解到 `$XDG_CACHE_HOME/<name>/<hash>/`，路径通过
+`-env .node=MYAPP_NATIVE_DIR` 告知，同一份内容只解一次。
 
 ## 原生模块
 
@@ -76,6 +78,8 @@ GUI 启动（Finder、launchd）的 PATH 不含 `~/.bun/bin`，因此不能只�
 
 ## 限制
 
+- 运行时会把 payload 解到 `$TMPDIR/bunpack-<随机>/`，退出即删。
+  进程被 `SIGKILL` 时该目录会残留，可用 `rm -rf $TMPDIR/bunpack-*` 清理
 - 只压缩不加密：payload 是 gzip 压缩的 tar，解包即可读到源码。
   需要隐藏源码时用 `bun build --compile`
 - 目标机需有 bun（或 `-runtime` 指定的运行时）
