@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"io/fs"
 	"fmt"
 	"io"
 	"os"
@@ -25,10 +26,8 @@ func packFrom(self, dir string, mf Manifest, out string) error {
 	}
 	mf.defaults()
 
-	// 入口在 payload 内统一以 main.js 存放，清单随之固定；
-	// 只在打包时改名，不改动源目录
+	// 入口保持原相对路径：改会破坏 bun build 生成的相对引用
 	srcEntry := mf.Entry
-	mf.Entry = entryName
 	payload, err := buildPayload(mf, srcEntry, dir)
 	if err != nil {
 		return err
@@ -88,9 +87,6 @@ func resign(path string) error {
 	return cmd.Run()
 }
 
-// entryName 是产物内固定的入口文件名。
-const entryName = "main.js"
-
 // stripPayload 截掉自身已有的 payload，保证可重复打包。
 // marker 也出现在打包器代码的字符串常量里，因此必须校验其后紧跟 gzip 魔数。
 func stripPayload(data []byte) []byte {
@@ -110,7 +106,7 @@ func stripPayload(data []byte) []byte {
 
 // buildPayload 按清单收集文件并打成 tar.gz。
 func buildPayload(mf Manifest, srcEntry, dir string) ([]byte, error) {
-	entries, err := os.ReadDir(dir)
+	files, err := collectFiles(dir, mf, srcEntry)
 	if err != nil {
 		return nil, err
 	}
@@ -127,26 +123,14 @@ func buildPayload(mf Manifest, srcEntry, dir string) ([]byte, error) {
 		return nil, err
 	}
 
-	names := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if e.IsDir() || !allowed(e.Name(), mf, srcEntry) {
-			continue
-		}
-		names = append(names, e.Name())
-	}
-	sort.Strings(names)
-
-	for _, name := range names {
-		data, err := os.ReadFile(filepath.Join(dir, name))
+	// 按相对路径写入，保持目录结构：解包后入口与资源仍处于原来的相对位置，
+	// 因此 bun build 生成的 `import.meta.dir + "./xxx"` 引用无需改动即可命中。
+	for _, rel := range files {
+		data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(rel)))
 		if err != nil {
 			return nil, err
 		}
-		// 入口在产物内固定为 main.js，源文件名不必改变
-		entry := name
-		if name == srcEntry {
-			entry = entryName
-		}
-		if err := writeTarEntry(tw, entry, data); err != nil {
+		if err := writeTarEntry(tw, rel, data); err != nil {
 			return nil, err
 		}
 	}
@@ -160,11 +144,35 @@ func buildPayload(mf Manifest, srcEntry, dir string) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// allowed 判断文件是否属于声明的入口或资源类型。
-func allowed(name string, mf Manifest, srcEntry string) bool {
-	if name == srcEntry {
-		return true
+// collectFiles 递归收集需要打进 payload 的文件，返回相对构建目录的斜杠路径。
+func collectFiles(dir string, mf Manifest, srcEntry string) ([]string, error) {
+	var files []string
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if rel == srcEntry || allowed(filepath.Base(rel), mf, "") {
+			files = append(files, rel)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
+	sort.Strings(files)
+	return files, nil
+}
+
+// allowed 判断文件是否属于清单声明的资源类型（入口单独判断）。
+func allowed(name string, mf Manifest, _ string) bool {
 	ext := filepath.Ext(name)
 	for _, e := range mf.Inline {
 		if ext == e {
@@ -241,7 +249,8 @@ func readPayload(exe string, off int64) (map[string][]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		out[filepath.Base(hdr.Name)] = data
+		// 保留相对路径：入口与资源需维持原有相对位置
+		out[filepath.ToSlash(filepath.Clean(hdr.Name))] = data
 	}
 }
 

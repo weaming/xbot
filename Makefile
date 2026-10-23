@@ -10,7 +10,7 @@ build-pack:
 	mkdir -p $(dir $(BUNPACK))
 	$(GO) build -C $(BUNPACK_DIR) -trimpath -ldflags "-s -w" -o $(BUNPACK) .
 	$(BUNPACK) build src/tui/main.ts -out $(XBOT_TUI_BIN) -name xbot \
-		-inline .tokjson -env .tokjson=XBOT_TOKENIZER_FD
+		-inline .tokjson
 
 build-cli:
 	$(BUN) run build

@@ -33,7 +33,7 @@ func runApp(m *Manifest, entries map[string][]byte) {
 	env := os.Environ()
 
 	// 入口总是走 fd
-	handle, err := stageFd(stage, entryName, entry)
+	handle, err := stageFd(stage, m.Entry, entry)
 	if err != nil {
 		die("暂存入口失败", err)
 	}
@@ -129,7 +129,11 @@ func findExt(entries map[string][]byte, ext string) (string, bool) {
 // 提前 unlink 会报 Module not found（实测）。因此文件随 stage 目录一起，
 // 由 runApp 的 defer 整目录清理。
 func stageFd(stage, name string, data []byte) (*os.File, error) {
-	path := filepath.Join(stage, name)
+	path := filepath.Join(stage, filepath.FromSlash(name))
+	// rel 可能带子目录，先建好父级
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
 	f, err := os.Create(path)
 	if err != nil {
 		return nil, err

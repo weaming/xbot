@@ -65,44 +65,11 @@ function loadTokenizerOnce(): Promise<DeepSeekTokenizer | null> {
  * 单文件分发时启动器经 fd 注入，直接从内存解析；否则读随包分发的文件。
  */
 function readTokenizerJSON(): TokenizerJSON {
-    const inline = readTokenizerFromFd();
-    if (inline) return JSON.parse(inline) as TokenizerJSON;
-
     const file = resolveTokenizerFile();
     if (!fs.existsSync(file)) throw new Error(`词表文件不存在: ${file}`);
     return JSON.parse(fs.readFileSync(file, "utf8")) as TokenizerJSON;
 }
 
-/** 从启动器注入的 fd 读取词表 JSON；未注入时返回 null。 */
-function readTokenizerFromFd(): string | null {
-    const raw = process.env.XBOT_TOKENIZER_FD;
-    if (!raw) return null;
-    const fd = Number(raw);
-    if (!Number.isInteger(fd) || fd < 3) return null;
-
-    // fd 可能已关闭或指向非文件（环境变量残留时会误读），先确认是普通文件
-    try {
-        if (!fs.fstatSync(fd).isFile()) return null;
-    } catch {
-        return null;
-    }
-
-    const chunks: Buffer[] = [];
-    const buffer = Buffer.alloc(1 << 16);
-    for (;;) {
-        let read: number;
-        try {
-            read = fs.readSync(fd, buffer, 0, buffer.length, null);
-        } catch (error) {
-            if ((error as NodeJS.ErrnoException).code === "EAGAIN") continue;
-            throw error;
-        }
-        if (read === 0) break;
-        chunks.push(Buffer.from(buffer.subarray(0, read)));
-    }
-    const text = Buffer.concat(chunks).toString("utf8");
-    return text.length > 0 ? text : null;
-}
 
 /** 文本的精确 token 数；分词器不可用或模型不匹配时回退启发式估算。 */
 export async function countTextTokens(text: string, model?: string): Promise<number> {
