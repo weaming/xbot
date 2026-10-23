@@ -1,0 +1,11 @@
+{
+  "entry": [
+    "src/decision/index.ts",
+    "src/scripts/decision-cli.ts",
+    "tests/integration/helpers/peer-child.ts"
+  ],
+  "project": [
+    "**/*.{js,cjs,mjs,jsx,ts,cts,mts,tsx}!",
+    "!tmp/**"
+  ]
+}
