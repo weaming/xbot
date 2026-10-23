@@ -92,7 +92,7 @@ import {
 import type { ChatModelSelection } from "../types/chat-model.js";
 import { getReasoningEffortChoices, getReasoningProvider } from "../utils/reasoning-effort.js";
 import { readSessionTodos, type TodoItem } from "../tools/todo-tool.js";
-import { deepSeekPhaseInfo, isDeepSeekPricingEndpoint, normalizeDeepSeekModel } from "../pricing/deepseek.js";
+import { deepSeekPhaseInfo, endpointHost, normalizeDeepSeekModel, resolvePricingMode } from "../pricing/deepseek.js";
 import { getContextWindowForModel } from "../utils/token-budget.js";
 import { buildMcpStatusHelpText, setMcpNoticeHandler, type McpNotice } from "../mcp/client-manager.js";
 import {
@@ -2599,8 +2599,9 @@ export class ChatApp {
         const protocolName = modelSettings.protocol === "responses" ? "Responses" : "Chat";
         const modelName = `${modelSettings.model || "default"} (${protocolName})`;
         const sessionId = this.store.currentSessionId;
-        const isDeepSeekPriced = isDeepSeekPricingEndpoint(modelSettings)
-            && normalizeDeepSeekModel(modelSettings.model) !== undefined;
+        const pricing = resolvePricingMode(endpointHost(modelSettings.apiBase), modelSettings);
+        const isDeepSeekPriced = pricing !== undefined
+            && normalizeDeepSeekModel(modelSettings.model, pricing.looseModel) !== undefined;
 
         // 峰谷倒计时定时器按 provider 启停（副作用留在 app 层，模型只负责排版）
         if (isDeepSeekPriced) this.ensurePeakCountdownTimer();

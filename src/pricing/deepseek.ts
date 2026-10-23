@@ -28,21 +28,45 @@ export function isDeepSeekCostStatEnabled(env: NodeJS.ProcessEnv = process.env):
     return TRUTHY_ENV_VALUES.has((env[DEEPSEEK_COST_STAT_ENV] ?? "").trim().toLowerCase());
 }
 
+/**
+ * 官方模型名 → 价格档。按顺序匹配，先命中先返回。
+ * vision 系列与 flash 同价，因此统一归 flash 档。
+ */
 const MODEL_KEY_PATTERNS: Array<[DeepSeekModelKey, string]> = [
-    // 注意顺序：vision 名前缀更长，先匹配
-    ["vision", "deepseek-v4-flash-vision"],
     ["flash", "deepseek-v4-flash"],
-    // 内测 exp 模型（0910 到期），与 flash 同价；历史日志仍留有该模型名，保留映射以便复算
+    // V4.1 Flash 当前唯一在服务的正式模型名
+    ["flash", "deepseek-flash"],
+    // 历史内测名（0910 到期），保留以便复算旧日志
     ["flash", "deepseek-v4.1-flash-expires-on-0910"],
     ["pro", "deepseek-v4-pro"],
-    // V4.1 Flash 正式版的服务端模型名，与 flash 同价
-    ["flash", "deepseek-flash"],
 ];
 
-/** 官方价格表之外的 deepseek 模型名（如旧版 deepseek-chat/reasoner），文档未列价，返回 undefined 不计费。 */
-export function normalizeDeepSeekModel(model?: string): DeepSeekModelKey | undefined {
+/**
+ * 宽松匹配：任意含 flash / pro 关键词的模型名。
+ * 仅用于开启 ENABLE_DS_COST_STAT 的第三方端点（网关常给模型名加厂商前缀与地域后缀，
+ * 如 workbuddy-ai/deepseek-v4.1-flash-sg）。
+ */
+const LOOSE_MODEL_KEY_PATTERNS: Array<[DeepSeekModelKey, RegExp]> = [
+    ["flash", /flash/],
+    // 含 pro 但不是 flash 的一律按 pro 档
+    ["pro", /pro/],
+];
+
+/**
+ * 模型名 → 价格档。`loose` 为 true 时改用关键词宽松匹配（第三方网关场景）。
+ * 官方价格表之外的模型名（如已停用的 deepseek-chat/reasoner）返回 undefined，不计费。
+ */
+export function normalizeDeepSeekModel(model?: string, loose = false): DeepSeekModelKey | undefined {
     if (!model) return undefined;
     const normalized = model.trim().toLowerCase();
+
+    if (loose) {
+        for (const [key, pattern] of LOOSE_MODEL_KEY_PATTERNS) {
+            if (pattern.test(normalized)) return key;
+        }
+        return undefined;
+    }
+
     for (const [key, token] of MODEL_KEY_PATTERNS) {
         if (normalized.includes(token)) return key;
     }
@@ -151,10 +175,11 @@ type CostUsage = Pick<UsageInfo, "model" | "promptTokens" | "cacheHitTokens" | "
  * 官方 DeepSeek 单次 usage 的费用（元）。
  * 计价部分：输入（缓存命中/未命中）与输出（含 reasoning tokens，官方计入输出）；
  * 单价取调用时刻（atMs）生效的价格段，官方调价不影响历史复盘。
- * 非官方模型/接入返回 0。
+ * `looseModel` 为 true 时按关键词宽松匹配模型名（第三方网关场景）。
+ * 价格表外的模型名返回 0。
  */
-export function deepSeekCostYuan(usage: CostUsage, atMs: number = Date.now()): number {
-    const modelKey = normalizeDeepSeekModel(usage.model);
+export function deepSeekCostYuan(usage: CostUsage, atMs: number = Date.now(), looseModel = false): number {
+    const modelKey = normalizeDeepSeekModel(usage.model, looseModel);
     if (!modelKey) return 0;
 
     const band = bandOf(modelKey, atMs);
@@ -176,23 +201,30 @@ export interface ChatProviderSettings {
     enableCostStat?: boolean;
 }
 
-/** 是否按官方价格表计费：官方端点，或显式开启 ENABLE_DS_COST_STAT 的任意端点。 */
-export function isDeepSeekPricingEndpoint(settings: ChatProviderSettings): boolean {
-    return settings.enableCostStat === true || isOfficialDeepSeekEndpoint(settings.apiBase);
-}
-
 /**
- * 仅当「可计费端点 + 官方价格表模型」时按峰谷计价，否则返回 0（第三方不计）。
+ * 仅当「可计费端点 + 价格表内模型」时按峰谷计价，否则返回 0（第三方不计）。
  * 可计费端点 = 官方 api.deepseek.com，或开启 ENABLE_DS_COST_STAT 后的任意端点。
+ * 官方端点按官方模型名严格匹配；开启开关的第三方端点改用 flash/pro 关键词宽松匹配。
  * 端点优先取 usage 落盘时的 host（历史记录不受日后更换 endpoint 影响），旧记录回退当前配置。
  */
 export function officialDeepSeekCostYuan(usage: CostUsage & Pick<UsageInfo, "apiHost">, atMs: number, settings: ChatProviderSettings): number {
-    if (!settings.enableCostStat) {
-        const host = usage.apiHost ?? endpointHost(settings.apiBase);
-        if (host !== DEEPSEEK_OFFICIAL_HOST) return 0;
-    }
-    if (!normalizeDeepSeekModel(usage.model)) return 0;
-    return deepSeekCostYuan(usage, atMs);
+    const pricing = resolvePricingMode(usage.apiHost ?? endpointHost(settings.apiBase), settings);
+    if (!pricing) return 0;
+    return deepSeekCostYuan(usage, atMs, pricing.looseModel);
+}
+
+/**
+ * 判断某端点应否按官方价格表计费，以及模型名该用严格还是宽松匹配。
+ * 不计费（第三方且未开开关）返回 undefined。状态栏与计费共用此判定，避免两处漂移。
+ */
+export function resolvePricingMode(
+    host: string | undefined,
+    settings: ChatProviderSettings,
+): { looseModel: boolean } | undefined {
+    const isOfficial = host === DEEPSEEK_OFFICIAL_HOST;
+    if (!isOfficial && settings.enableCostStat !== true) return undefined;
+    // 官方端点用官方模型名；第三方端点放宽为关键词匹配
+    return { looseModel: !isOfficial };
 }
 
 /** 费用展示：≥100 四舍五入到元；<0.005 显示 <0.01；其余保留 2 位小数，千分位分组。 */

@@ -9,7 +9,11 @@
  * `bun src/scripts/update-deepseek-pricing.ts` 核对同步，勿手工修改。
  */
 
-export type DeepSeekModelKey = "flash" | "pro" | "vision";
+/**
+ * 价格档位。官方只区分 Flash 与 Pro 两档：
+ * vision 系列（deepseek-v4-flash-vision-exp）与 flash 同价，归入 flash 档。
+ */
+export type DeepSeekModelKey = "flash" | "pro";
 
 export interface DeepSeekPriceBand {
     /** 输入（缓存命中）元/百万 tokens */
@@ -27,7 +31,7 @@ export interface DeepSeekModelPrices {
     peak: DeepSeekPriceBand;
 }
 
-/** 某一生效期内三个模型的价格表 */
+/** 某一生效期内各价格档的价格表 */
 export type DeepSeekModelTable = Record<DeepSeekModelKey, DeepSeekModelPrices>;
 
 /** 一段生效期内的完整模型价格表 */
@@ -87,10 +91,6 @@ export const DEEPSEEK_PRICING: DeepSeekPricingTable = {
                     offpeak: { cacheHit: 0.15, cacheMiss: 4.5, output: 13.5 },
                     peak: { cacheHit: 0.3, cacheMiss: 9.0, output: 27.0 },
                 },
-                vision: {
-                    offpeak: { cacheHit: 0.05, cacheMiss: 1.5, output: 4.5 },
-                    peak: { cacheHit: 0.1, cacheMiss: 3.0, output: 9.0 },
-                },
             },
         },
         {
@@ -108,16 +108,12 @@ export const DEEPSEEK_PRICING: DeepSeekPricingTable = {
                     offpeak: { cacheHit: 0.15, cacheMiss: 4.5, output: 13.5 },
                     peak: { cacheHit: 0.3, cacheMiss: 9.0, output: 27.0 },
                 },
-                vision: {
-                    offpeak: { cacheHit: 0.02, cacheMiss: 1.0, output: 4.0 },
-                    peak: { cacheHit: 0.04, cacheMiss: 2.0, output: 8.0 },
-                },
             },
         },
     ],
     notes: {
         visionTokens:
-            "发送给 deepseek-v4-flash-vision-exp 的图片会按其尺寸换算成 token，与文本 token 一并计费（见官方「图像理解：Token 用量」）。",
+            "发送给 deepseek-v4-flash-vision-exp 的图片会按其尺寸换算成 token，与文本 token 一并计费（见官方「图像理解：Token 用量」）；该模型与 Flash 同价，归入 flash 档计价。",
         discountRule: "空闲时段价格为高峰时段价格的一半；高峰时段为北京时间周一至周五 9:00-12:00、14:00-18:00，其余为空闲时段。",
         proRouting:
             "2026-09-09 公告：V4.1 Flash 上线后至 V4.1 Pro 上线前，对 deepseek-v4-pro 的请求将被路由到 V4.1 Flash 并按 Flash 单价计费（临时策略，未列入价格页）。",

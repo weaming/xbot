@@ -8,10 +8,10 @@ import {
     goDurationMinutes,
     isDeepSeekCostStatEnabled,
     isDeepSeekPeakTime,
-    isDeepSeekPricingEndpoint,
     isOfficialDeepSeekEndpoint,
     normalizeDeepSeekModel,
     officialDeepSeekCostYuan,
+    resolvePricingMode,
 } from "./deepseek.js";
 
 // 北京时间 = UTC+8：北京周一 09:00 即 UTC 周一 01:00
@@ -32,23 +32,42 @@ const OLD_OFFPEAK_BJT = Date.parse("2026-09-08T14:00:00Z"); // 北京 09-08 周�
 const NEW_PEAK_BJT = Date.parse("2026-09-16T02:00:00Z"); // 北京 09-16 周三 10:00（新价段高峰）
 
 describe("normalizeDeepSeekModel", () => {
-    test("官方 V4 模型按前缀归类", () => {
+    test("官方模型名严格匹配到 flash / pro 两档", () => {
         expect(normalizeDeepSeekModel("deepseek-v4-flash")).toBe("flash");
         expect(normalizeDeepSeekModel("deepseek-v4-flash-0731")).toBe("flash");
         expect(normalizeDeepSeekModel("deepseek-v4-pro")).toBe("pro");
         expect(normalizeDeepSeekModel("deepseek-v4-pro-0813")).toBe("pro");
-        expect(normalizeDeepSeekModel("deepseek-v4-flash-vision-exp")).toBe("vision");
+        // vision 与 flash 同价，归入 flash 档
+        expect(normalizeDeepSeekModel("deepseek-v4-flash-vision-exp")).toBe("flash");
         expect(normalizeDeepSeekModel("deepseek-v4.1-flash-expires-on-0910")).toBe("flash");
         expect(normalizeDeepSeekModel("deepseek-flash")).toBe("flash");
         expect(normalizeDeepSeekModel("DEEPSEEK-V4-FLASH")).toBe("flash");
     });
 
-    test("价格表外/空模型不计费", () => {
+    test("严格模式不认第三方网关名与价格表外模型", () => {
+        expect(normalizeDeepSeekModel("workbuddy-ai/deepseek-v4.1-flash-sg")).toBeUndefined();
         expect(normalizeDeepSeekModel("deepseek-chat")).toBeUndefined();
         expect(normalizeDeepSeekModel("deepseek-reasoner")).toBeUndefined();
         expect(normalizeDeepSeekModel("")).toBeUndefined();
         expect(normalizeDeepSeekModel(undefined)).toBeUndefined();
         expect(normalizeDeepSeekModel("gpt-5.6-luna")).toBeUndefined();
+    });
+
+    test("宽松模式按 flash / pro 关键词归类（含厂商前缀与地域后缀）", () => {
+        expect(normalizeDeepSeekModel("workbuddy-ai/deepseek-v4.1-flash-sg", true)).toBe("flash");
+        expect(normalizeDeepSeekModel("deepseek-v4.1-flash", true)).toBe("flash");
+        expect(normalizeDeepSeekModel("vllm/deepseek-pro-0813", true)).toBe("pro");
+        expect(normalizeDeepSeekModel("any-flash", true)).toBe("flash");
+    });
+
+    test("宽松模式仍拒绝不含关键词的模型名", () => {
+        expect(normalizeDeepSeekModel("gpt-5.6-luna", true)).toBeUndefined();
+        expect(normalizeDeepSeekModel("deepseek-chat", true)).toBeUndefined();
+        expect(normalizeDeepSeekModel("", true)).toBeUndefined();
+    });
+
+    test("flash 优先于 pro：同时含两关键词时归 flash", () => {
+        expect(normalizeDeepSeekModel("deepseek-flash-pro", true)).toBe("flash");
     });
 });
 
@@ -87,11 +106,16 @@ describe("isDeepSeekCostStatEnabled", () => {
     });
 });
 
-describe("isDeepSeekPricingEndpoint", () => {
-    test("官方端点恒为真；局域网端点仅开关打开后为真", () => {
-        expect(isDeepSeekPricingEndpoint({ apiBase: "https://api.deepseek.com" })).toBe(true);
-        expect(isDeepSeekPricingEndpoint({ apiBase: "http://127.0.0.1:3030/v1" })).toBe(false);
-        expect(isDeepSeekPricingEndpoint({ apiBase: "http://127.0.0.1:3030/v1", enableCostStat: true })).toBe(true);
+describe("resolvePricingMode", () => {
+    test("官方端点恒计费且用严格匹配", () => {
+        expect(resolvePricingMode("api.deepseek.com", {})).toEqual({ looseModel: false });
+        expect(resolvePricingMode("api.deepseek.com", { enableCostStat: true })).toEqual({ looseModel: false });
+    });
+
+    test("第三方端点仅开关打开后计费，且用宽松匹配", () => {
+        expect(resolvePricingMode("127.0.0.1", {})).toBeUndefined();
+        expect(resolvePricingMode("gateway.example.com", { enableCostStat: false })).toBeUndefined();
+        expect(resolvePricingMode("127.0.0.1", { enableCostStat: true })).toEqual({ looseModel: true });
     });
 });
 
@@ -174,8 +198,13 @@ describe("deepSeekSnapshotAt", () => {
         expect([oldPrices.flash.offpeak.cacheHit, oldPrices.flash.offpeak.cacheMiss, oldPrices.flash.offpeak.output]).toEqual([0.05, 1.5, 4.5]);
         expect([newPrices.flash.offpeak.cacheHit, newPrices.flash.offpeak.cacheMiss, newPrices.flash.offpeak.output]).toEqual([0.02, 1.0, 4.0]);
         expect([newPrices.flash.peak.cacheHit, newPrices.flash.peak.cacheMiss, newPrices.flash.peak.output]).toEqual([0.04, 2.0, 8.0]);
-        expect(newPrices.vision).toEqual(newPrices.flash);
         expect(newPrices.pro).toEqual(oldPrices.pro);
+    });
+
+    test("价格表只有 flash / pro 两档（vision 已并入 flash）", () => {
+        for (const snapshot of [deepSeekSnapshotAt(CUT_1159_BJT), deepSeekSnapshotAt(CUT_1200_BJT)]) {
+            expect(Object.keys(snapshot.models).sort()).toEqual(["flash", "pro"]);
+        }
     });
 });
 
@@ -248,6 +277,20 @@ describe("officialDeepSeekCostYuan", () => {
         expect(officialDeepSeekCostYuan({ ...usage, apiHost: "192.168.1.10", model: "gpt-5.6-luna" }, MON_09_BJT, lanSettings)).toBe(0);
         // 开关关闭时局域网端点仍不计
         expect(officialDeepSeekCostYuan({ ...usage, apiHost: "127.0.0.1" }, MON_09_BJT, { ...lanSettings, enableCostStat: false })).toBe(0);
+    });
+
+    test("开关打开时第三方网关名（含前缀/后缀）按 flash 档计费", () => {
+        const relaySettings = { model: "workbuddy-ai/deepseek-v4.1-flash-sg", apiBase: "http://127.0.0.1:3425", enableCostStat: true };
+        const relayUsage = { ...usage, model: "workbuddy-ai/deepseek-v4.1-flash-sg", apiHost: "127.0.0.1" };
+        // 与官方同一时刻同价：高峰 0.1 + 3.0
+        expect(officialDeepSeekCostYuan(relayUsage, MON_09_BJT, relaySettings)).toBeCloseTo(3.1, 6);
+        // 开关关闭则不计
+        expect(officialDeepSeekCostYuan(relayUsage, MON_09_BJT, { ...relaySettings, enableCostStat: false })).toBe(0);
+    });
+
+    test("官方端点保持严格匹配，即使开关打开也不放宽", () => {
+        const settingsWithFlag = { model: "workbuddy-ai/deepseek-v4.1-flash-sg", apiBase: "https://api.deepseek.com", enableCostStat: true };
+        expect(officialDeepSeekCostYuan({ ...usage, model: "workbuddy-ai/deepseek-v4.1-flash-sg", apiHost: "api.deepseek.com" }, MON_09_BJT, settingsWithFlag)).toBe(0);
     });
 });
 
