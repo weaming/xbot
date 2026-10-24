@@ -64,6 +64,7 @@ import { buildSessionBar, type SessionBarStyles, type SessionBarTab } from "./se
 import { SPINNER_FRAMES, type SessionOwnerState } from "./session-marker.js";
 import { SessionPanel, type SessionPanelItem } from "./session-panel.js";
 import { QuestionPanel } from "./question-panel.js";
+import { isAskUserTool } from "./tool-block-parse.js";
 import { PanelFrame } from "./panel-frame.js";
 import { ShortcutPanel } from "./shortcut-panel.js";
 import { ModelPanel } from "./model-panel.js";
@@ -404,6 +405,9 @@ export class ChatApp {
                     break;
                 case "tool_result":
                     this.setSessionPhase(sessionId, "waiting");
+                    if (this.detailed && sessionId === this.store.currentSessionId && isAskUserTool(event.name)) {
+                        this.scheduleSyncMessages();
+                    }
                     // todo 工具写盘后强制失效缓存，避免状态栏进度滞后
                     if (event.name === "todo") this.todoCache = null;
                     break;

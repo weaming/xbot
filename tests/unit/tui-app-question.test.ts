@@ -227,4 +227,43 @@ describe("ChatApp 提问接线", () => {
         // 普通工具块在折叠态依旧不出现（只有专门的渲染器把它带进事件流）
         expect(plain).not.toContain("yfinance__quote");
     });
+
+    test("详细模式下作答后立即更新消息流，无需等待回合结束", async () => {
+        const { app, store, agent } = makeApp();
+        await app.init();
+        store.setCurrentSession(SESSION);
+        (app as any).detailed = true;
+
+        agent.onEvent(1, SESSION, { type: "turn_start", iteration: 0 });
+        agent.onEvent(1, SESSION, {
+            type: "tool_start",
+            toolId: 1,
+            callId: "call-ask",
+            name: "ask_user",
+            args: { questions: [question()] },
+            mode: "serial",
+        });
+        (app as any).syncMessages();
+
+        const visibleText = (): string => {
+            const entry = [...(app as any).messageComponents.values()].find((item: any) => item.timeline);
+            return entry.timeline.children.flatMap((child: any) => child.render(120)).join("\n")
+                .replace(/\x1b\[[0-9;]*m/g, "");
+        };
+        expect(visibleText()).toContain("提问（等待作答）");
+
+        agent.onEvent(1, SESSION, {
+            type: "tool_result",
+            toolId: 1,
+            callId: "call-ask",
+            name: "ask_user",
+            summary: "用户已回答：\n1. 这次部署走哪条路？ → 方案 A",
+            isError: false,
+            durationMs: 1,
+        });
+        await Bun.sleep(30);
+
+        expect((app as any).turnState.phase(SESSION)).toBeDefined();
+        expect(visibleText()).toContain("这次部署走哪条路？ → 方案 A");
+    });
 });
