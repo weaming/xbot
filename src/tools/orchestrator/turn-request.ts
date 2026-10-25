@@ -29,7 +29,9 @@ import {
   resolveProtocol,
   sortToolsByName,
   appendDiscoveredTools,
+  appendHostedTools,
   toResponsesToolDefinitions,
+  toHostedToolDefinitions,
 } from "./request-builder.js";
 import {
   expandToolImageMessages,
@@ -67,6 +69,8 @@ export interface PrepareRequestOptions {
     discoveredToolNames: ReadonlySet<string>;
     getToolDefinitions?: () => any[];
     getOpenAIToolDefinitionsByNames?: (names: string[]) => any[];
+    /** 托管工具类型（上游执行，本地不执行）：调用方解析 OPENAI_HOSTED_TOOLS 后传入。 */
+    hostedTools?: string[];
     getContextReminders?: () => string[] | undefined;
     normalizedTools: (tools: any[]) => any[];
     isFirstIteration: boolean;
@@ -115,7 +119,11 @@ export async function prepareRequest(options: PrepareRequestOptions): Promise<Pr
             : await materializeImageMessages(requestMessages);
 
     const normalizedTools = options.normalizedTools(currentTools);
-    const requestTools = useResponses ? toResponsesToolDefinitions(normalizedTools) : normalizedTools;
+    // 托管工具追加在尾部：两种协议都带上，能否执行由上游决定
+    const hostedTools = toHostedToolDefinitions(options.hostedTools ?? []);
+    const requestTools = useResponses
+        ? appendHostedTools(toResponsesToolDefinitions(normalizedTools), hostedTools)
+        : appendHostedTools(normalizedTools, hostedTools);
 
     const isMiniMax = model.startsWith("MiniMax-");
     const requestBody = buildRequestBody({
@@ -137,4 +145,3 @@ export async function prepareRequest(options: PrepareRequestOptions): Promise<Pr
 
     return { protocol, requestBody, isMiniMax };
 }
-

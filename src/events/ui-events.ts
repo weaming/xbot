@@ -1,4 +1,5 @@
 import type { UsageInfo } from "../types/chat.js";
+import type { Citation } from "../types/session.js";
 
 /**
  * UI 事件（流式，瞬态）：agent 运行时的实时事件流，驱动 UI 打字机渲染。
@@ -50,6 +51,8 @@ export type UIEvent =
     | { type: "toolcall_start"; index: number; id: string; name: string }
     | { type: "toolcall_args_delta"; index: number; delta: string }
     | { type: "toolcall_end"; index: number; id: string; name: string; argsJson: string }
+    /** 托管工具（web_search 等）的引用来源：消息收尾前一次性下发。 */
+    | { type: "citations"; items: Citation[] }
     // 执行阶段（对应现有回调语义）
     | { type: "assistant_text_before_tools"; content: string }
     | { type: "tool_start"; toolId: number; callId: string; name: string; args: any; mode: "serial" | "parallel" }

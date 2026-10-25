@@ -30,6 +30,8 @@ export interface ChatApiSettings {
     protocol?: ChatApiProtocol;
     reasoningEffort?: string;
     reasoningEfforts?: string[];
+    /** 托管工具类型（OPENAI_HOSTED_TOOLS）：由上游执行，本地不执行。 */
+    hostedTools: string[];
     /** ENABLE_DS_COST_STAT：开启后非官方端点（局域网网关）也按官方价格表估算费用。 */
     enableCostStat: boolean;
 }
@@ -265,8 +267,8 @@ export function getChatApiSettings(sessionSelection?: ChatModelSelection): ChatA
         protocol = "chat_completions";
     }
     const profileModel = protocol === "responses"
-        ? responsesModel || parseModelList(process.env.OPENAI_RESPONSES_MODELS)[0] || ""
-        : chatModel || parseModelList(process.env.OPENAI_CHAT_MODELS)[0] || "";
+        ? responsesModel || parseCommaList(process.env.OPENAI_RESPONSES_MODELS)[0] || ""
+        : chatModel || parseCommaList(process.env.OPENAI_CHAT_MODELS)[0] || "";
     const requestedOption = sessionSelection ?? getDefaultChatModelOption();
     const activeOption = requestedOption && getChatModelOptions().some(option =>
         option.protocol === requestedOption.protocol && option.model === requestedOption.model,
@@ -278,7 +280,7 @@ export function getChatApiSettings(sessionSelection?: ChatModelSelection): ChatA
     const activeProfileApiBase = activeProtocol === "responses"
         ? process.env.OPENAI_RESPONSES_BASE_URL
         : process.env.OPENAI_CHAT_BASE_URL;
-    const configuredEfforts = parseModelList(activeProtocol === "responses"
+    const configuredEfforts = parseCommaList(activeProtocol === "responses"
         ? process.env.OPENAI_RESPONSES_EFFORTS
         : process.env.OPENAI_CHAT_EFFORTS);
 
@@ -289,12 +291,14 @@ export function getChatApiSettings(sessionSelection?: ChatModelSelection): ChatA
         protocol: activeProtocol,
         reasoningEffort: activeOption?.reasoningEffort,
         reasoningEfforts: configuredEfforts.length > 0 ? configuredEfforts : undefined,
+        hostedTools: parseCommaList(process.env.OPENAI_HOSTED_TOOLS),
         enableCostStat: isDeepSeekCostStatEnabled(),
     };
 }
 
-function parseModelList(value?: string): string[] {
-    return [...new Set((value || "").split(",").map(model => model.trim()).filter(Boolean))];
+/** 逗号分隔配置值 → 去重后的列表（模型名、托管工具类型共用）。 */
+function parseCommaList(value?: string): string[] {
+    return [...new Set((value || "").split(",").map(item => item.trim()).filter(Boolean))];
 }
 
 function profileHasSettings(protocol: ChatApiProtocol): boolean {
@@ -320,7 +324,7 @@ export function getChatModelOptions(): ChatModelOption[] {
         const prefix = protocol === "responses" ? "OPENAI_RESPONSES" : "OPENAI_CHAT";
         const models = [
             process.env[`${prefix}_MODEL`],
-            ...parseModelList(process.env[`${prefix}_MODELS`]),
+            ...parseCommaList(process.env[`${prefix}_MODELS`]),
             ...(protocol === legacyProtocol ? [legacyModel] : []),
         ].map(model => model?.trim()).filter((model): model is string => Boolean(model));
         for (const model of new Set(models)) options.push({ protocol, model });
@@ -481,6 +485,7 @@ export async function runChatQuery(options: ChatRunOptions) {
             model: settings.model,
             reasoningEffort: settings.reasoningEffort,
             reasoningEfforts: settings.reasoningEfforts,
+            ...(settings.hostedTools.length > 0 ? { hostedTools: settings.hostedTools } : {}),
             executeTool: async (name: string, args: any) => {
                 if (options.signal?.aborted) {
                     throw new DOMException("User terminated the request", "AbortError");

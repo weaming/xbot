@@ -194,6 +194,19 @@ export function applyAgentEvent(
             deps.notifyMessages();
             break;
         }
+        case "citations": {
+            // 来源清单落在消息末尾：重试或后续轮次重复下发时覆盖最后一条，不重复堆叠
+            const assistant = requireAssistant(state, requestId, deps);
+            const timeline = assistant.timeline ??= [];
+            if (timeline[timeline.length - 1]?.type === "sources") {
+                timeline[timeline.length - 1] = { type: "sources", items: event.items };
+            } else {
+                timeline.push({ type: "sources", items: event.items });
+            }
+            touchAssistant(assistant);
+            deps.notifyMessages();
+            break;
+        }
         case "message_end": {
             const assistant = state.activeAssistant;
             if (assistant) {

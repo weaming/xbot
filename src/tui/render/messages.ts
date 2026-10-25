@@ -19,6 +19,7 @@ import { SPINNER_FRAMES } from "../session-marker.js";
 import { StreamingReasoningBlock } from "../streaming-reasoning.js";
 import { markdownTheme, theme } from "../theme.js";
 import { ToolBlockText } from "../tool-block-text.js";
+import type { Citation } from "../../types/session.js";
 import {
     isAskUserTool,
     isFileMutationTool,
@@ -75,7 +76,9 @@ export function messageRenderKey(message: UiMessage, ctx: RenderContext): string
         const tools = (message.toolBlocks ?? [])
             .map(block => `${block.id}:${block.expanded ? 1 : 0}:${block.result === undefined ? 0 : block.result.length}`)
             .join(",");
-        return `${flags}|a|${message.streaming ? 1 : 0}|${timeline.length}|${lastText}|${message.text.length}|${message.reasoning?.length ?? 0}|${tools}${waiting}`;
+        // 来源清单只随事件一次性到达，但长度变化要能触发重绘
+        const sources = timeline.reduce((count, item) => item.type === "sources" ? count + item.items.length : count, 0);
+        return `${flags}|a|${message.streaming ? 1 : 0}|${timeline.length}|${lastText}|${sources}|${message.text.length}|${message.reasoning?.length ?? 0}|${tools}${waiting}`;
     }
     return `${flags}|${message.role}|${message.text.length}|${message.peer ? 1 : 0}`;
 }
@@ -201,6 +204,11 @@ function renderTimelineItem(
         return new PeerMessageView({ text: item.text, peer: item.peer });
     }
 
+    if (item.type === "sources") {
+        const text = renderSources(item.items);
+        return text ? new ToolBlockText(text, 1) : undefined;
+    }
+
     if (item.type === "text") {
         if (!item.text) return undefined;
         const isLastText = lastTextItem === item;
@@ -222,6 +230,16 @@ function renderTimelineItem(
         ? renderExpandedToolBlock(item.block)
         : renderCollapsedToolBlock(item.block);
     return new ToolBlockText(text, 1, isFileMutation);
+}
+
+/** 托管搜索的来源清单：标题在前、URL 在后，折叠态也展示。 */
+function renderSources(items: Citation[]): string {
+    if (items.length === 0) return "";
+    const lines = [theme.dim(`🌐 来源 ${items.length}`)];
+    items.forEach((item, index) => {
+        lines.push(`${index + 1}. ${item.title ? `${item.title} — ${item.url}` : item.url}`);
+    });
+    return lines.join("\n");
 }
 
 /** 流式 reasoning：增量消费 item.text，渲染固定 UI 行视口（块高恒定，历史不跳动）。 */

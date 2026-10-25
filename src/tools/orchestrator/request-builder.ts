@@ -30,6 +30,28 @@ export function toResponsesToolDefinitions(tools: any[]): any[] {
         }));
 }
 
+/** 托管工具类型（上游执行、本地没有对应函数）：名字本身就是 Responses 的工具 type。 */
+export function toHostedToolDefinitions(types: string[]): any[] {
+    const seen = new Set<string>();
+    const definitions: any[] = [];
+    for (const raw of types) {
+        const type = raw.trim();
+        if (!type || seen.has(type)) continue;
+        seen.add(type);
+        definitions.push({ type });
+    }
+    return definitions;
+}
+
+/**
+ * 托管工具追加在 function 定义之后：不参与排序，已发出的前缀不会因新增类型而移动。
+ * 同类型已存在则跳过，避免上游收到重复工具。
+ */
+export function appendHostedTools(base: any[], hosted: any[]): any[] {
+    const existing = new Set(base.map(tool => tool?.type).filter(Boolean));
+    return [...base, ...hosted.filter(tool => !existing.has(tool.type))];
+}
+
 /**
  * 工具定义排序：按名称升序，保证注册顺序不影响请求前缀（前缀稳定才能命中缓存）。
  * 返回新数组，不修改入参。
@@ -128,4 +150,3 @@ export function resolveEffort(
         ?? env.OPENAI_REASONING_EFFORT
         ?? env.DEEPSEEK_REASONING_EFFORT;
 }
-

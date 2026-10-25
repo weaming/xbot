@@ -149,6 +149,8 @@ export interface OrchestratorOptions {
   reasoningEffort?: string;
   reasoningEfforts?: string[];
   tools?: any[];
+  /** 托管工具类型（Responses 专用）：声明给上游执行，本地没有对应实现。 */
+  hostedTools?: string[];
   // 执行工具的函数
   executeTool?: (name: string, args: any) => Promise<ToolExecutionResponse>;
   // 获取系统提示词
@@ -207,6 +209,7 @@ export async function executeWithChat(
     client,
     model,
     tools = [],
+    hostedTools,
     executeTool,
     getSystemPrompt,
     getToolDefinitions,
@@ -303,6 +306,7 @@ export async function executeWithChat(
     counters: { emptyResponse: 0, lengthRetry: 0 },
     iteration: 0,
     discoveredToolNames,
+    ...(hostedTools?.length ? { hostedTools } : {}),
     emit,
     appendTurnMessage,
     persistMessage,
@@ -405,6 +409,8 @@ async function collectResponsesResponse(
   let usage: any;
   let partialText = "";
   let partialReasoning = "";
+  // 托管搜索的进度块按 item_id 计次：同一轮可能连续搜多次
+  const searchItems = new Set<string>();
 
   try {
     for await (const event of stream) {
@@ -449,6 +455,16 @@ async function collectResponsesResponse(
       } else if (event.type === "response.output_item.done") {
         if (event.item && event.output_index !== undefined) {
           outputItems[event.output_index] = event.item;
+        }
+      } else if (event.type === "response.web_search_call.in_progress"
+        || event.type === "response.web_search_call.searching") {
+        // 搜索由上游执行，本地只转成进度提示；事件本身不带查询词
+        const key = typeof event.item_id === "string"
+          ? event.item_id
+          : `search_${event.output_index ?? searchItems.size}`;
+        if (!searchItems.has(key)) {
+          searchItems.add(key);
+          emit({ type: "progress", message: `🌐 联网搜索中（第 ${searchItems.size} 次）...` });
         }
       } else if (event.type === "response.completed") {
         completedResponse = event.response;

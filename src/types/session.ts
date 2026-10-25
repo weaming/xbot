@@ -8,10 +8,19 @@ export interface ToolResultPolicy {
 import type { UserContent } from './image.js';
 import type { ChatModelSelection } from './chat-model.js';
 
+/** 上游托管工具（如 web_search）随正文返回的引用来源。 */
+export interface Citation {
+    url: string;
+    title?: string;
+    /** Responses 字符级 citation 在合并正文中的起止偏移。 */
+    startIndex?: number;
+    endIndex?: number;
+}
+
 /** @public */
 export type ChatMessage =
     | { role: 'user'; content: UserContent }
-    | { role: 'assistant'; content: string | null; tool_calls?: any[]; [key: string]: any }
+    | { role: 'assistant'; content: string | null; tool_calls?: any[]; citations?: Citation[]; [key: string]: any }
     | {
         role: 'tool';
         tool_call_id: string;

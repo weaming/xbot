@@ -5,6 +5,7 @@
 
 import type { UsageInfo } from "../types/chat.js";
 import type { ChatModelSelection } from "../types/chat-model.js";
+import type { Citation } from "../types/session.js";
 
 export interface UiMessage {
     id: number;
@@ -35,7 +36,9 @@ export type AssistantTimelineItem =
     | { type: "user"; text: string }
     | { type: "tool"; block: ToolBlock }
     /** 回合执行期间到达的会话间消息/结果：按到达时机与文本/工具片段交错。 */
-    | { type: "peer"; text: string; peer: PeerMeta };
+    | { type: "peer"; text: string; peer: PeerMeta }
+    /** 托管工具（web_search 等）的引用来源：消息末尾的来源清单。 */
+    | { type: "sources"; items: Citation[] };
 
 /** 会话间消息元数据（UiMessage.peer 的非空形态）。 */
 export interface PeerMeta {

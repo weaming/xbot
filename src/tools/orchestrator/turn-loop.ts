@@ -22,6 +22,7 @@ import { isDeepSeekEndpoint, prepareRequest } from "./turn-request.js";
 import type { LLMRequestKind } from "../../utils/logger.js";
 import { getPromptTooLongLimit, isInvalidAssistantMessageError } from "../../utils/provider-context-limit.js";
 import { filterEmptyAssistantMessages } from "./messages.js";
+import { extractCitations } from "./citations.js";
 
 /** 每轮请求的协议与客户端形状。 */
 export interface TurnClient {
@@ -45,6 +46,8 @@ export interface TurnContext {
   initialRequestKind: Exclude<LLMRequestKind, "tool_response">;
   reasoningEffort?: string;
   reasoningEfforts?: string[];
+  /** 托管工具类型（Responses 专用，来自 OPENAI_RESPONSES_TOOLS）：上游执行，本地不执行。 */
+  hostedTools?: string[];
 
   // 消息与状态（就地修改）
   messages: ChatMessage[];
@@ -148,6 +151,7 @@ export async function runTurnLoop(ctx: TurnContext): Promise<TurnLoopResult> {
         tools: ctx.tools,
         discoveredToolNames: ctx.discoveredToolNames,
         ...(ctx.getToolDefinitions ? { getToolDefinitions: ctx.getToolDefinitions } : {}),
+        ...(ctx.hostedTools?.length ? { hostedTools: ctx.hostedTools } : {}),
         getOpenAIToolDefinitionsByNames,
         ...(ctx.getContextReminders ? { getContextReminders: ctx.getContextReminders } : {}),
         normalizedTools: (list: any[]) => (isDeepSeekEndpoint(ctx.model, ctx.client.baseURL)
@@ -231,6 +235,9 @@ export async function runTurnLoop(ctx: TurnContext): Promise<TurnLoopResult> {
       if (prepared.isMiniMax && assistantMsg.reasoning_details) {
         messageToStore.reasoning_details = assistantMsg.reasoning_details;
       }
+      // 托管工具的引用来源随消息落盘：重放与实时都按同一份数据渲染
+      const citations = extractCitations(assistantMsg);
+      if (citations.length > 0) messageToStore.citations = citations;
 
       const reasoning = typeof assistantMsg.reasoning_content === "string"
         ? assistantMsg.reasoning_content
@@ -277,11 +284,13 @@ export async function runTurnLoop(ctx: TurnContext): Promise<TurnLoopResult> {
 
       if (decision.kind === "done") {
         if (decision.content || reasoning) ctx.appendTurnMessage(messageToStore);
+        if (citations.length > 0) ctx.emit({ type: "citations", items: citations });
         finalContent = decision.content;
         break;
       }
 
       ctx.appendTurnMessage(messageToStore);
+      if (citations.length > 0) ctx.emit({ type: "citations", items: citations });
 
       const toolCallResponseContent = extractText(assistantMsg)?.trim();
       if (toolCallResponseContent) {

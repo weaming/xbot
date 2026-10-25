@@ -134,6 +134,11 @@ function buildHistoryTimeline(
                 appendTimelineTextToList(timeline, "text", message.content);
             }
 
+            // 托管工具引用：与实时投影一致，排在正文之后
+            if (Array.isArray(message.citations) && message.citations.length > 0) {
+                timeline.push({ type: "sources", items: message.citations });
+            }
+
             for (const toolCall of message.tool_calls ?? []) {
                 const id = toolCall?.id ?? toolCall?.call_id;
                 if (typeof id !== "string" || !id) continue;

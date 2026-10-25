@@ -137,8 +137,10 @@ export function expandToolImageMessages(messages: ChatMessage[]): ChatMessage[] 
 
 export function stripResponsesMetadata(messages: ChatMessage[]): ChatMessage[] {
   return messages.map(message => {
-    if (message.role !== "assistant" || !Array.isArray(message.response_output)) return message;
-    const { response_output: _responseOutput, ...chatMessage } = message;
+    if (message.role !== "assistant") return message;
+    if (!Array.isArray(message.response_output) && !message.citations) return message;
+    // response_output 与 citations 都是本地保存的渲染事实，不上行
+    const { response_output: _responseOutput, citations: _citations, ...chatMessage } = message;
     return chatMessage as ChatMessage;
   });
 }
