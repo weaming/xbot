@@ -81,14 +81,47 @@ describe("状态迁移", () => {
     });
 });
 
-describe("放弃路径", () => {
-    test("超时/丢失后条目被移除，且只能放弃一次", () => {
+describe("过期与迟到结果", () => {
+    test("超时/丢失后保留有限期 expired tombstone，且只能过期一次", () => {
         const outbox = ledger();
         addAwaiting(outbox, "m1");
 
-        expect(outbox.abandon("m1")).not.toBeNull();
-        expect(outbox.abandon("m1")).toBeNull();
+        expect(outbox.expire("m1")).not.toBeNull();
+        expect(outbox.expire("m1")).toBeNull();
         expect(outbox.awaitingCount("from")).toBe(0);
+        expect(outbox.size).toBe(1);
+    });
+
+    test("迟到结果从 expired 进入 queued 并显式标记 late", () => {
+        const outbox = ledger();
+        addAwaiting(outbox, "m1");
+        outbox.expire("m1");
+
+        const settled = outbox.settle("m1", late => late ? "迟到结果" : "正常结果");
+        expect(settled?.late).toBe(true);
+        expect(outbox.queuedCount("from")).toBe(1);
+        expect(outbox.takeQueued("from")).toEqual(["迟到结果"]);
+    });
+
+    test("迟到 tombstone 有数量上限", () => {
+        const outbox = new OutboxLedger({ maxQueuedPerSession: 3, maxStashed: 3, maxExpired: 1 });
+        addAwaiting(outbox, "m1");
+        addAwaiting(outbox, "m2");
+        outbox.expire("m1");
+        outbox.expire("m2");
+
+        expect(outbox.settle("m1", "too old")).toBeNull();
+        expect(outbox.settle("m2", late => late ? "recoverable" : "normal")?.late).toBe(true);
+        expect(outbox.takeQueued("from")).toEqual(["recoverable"]);
+    });
+
+    test("TTL 到期后迟到结果被拒绝并清理 tombstone", () => {
+        const outbox = new OutboxLedger({ maxQueuedPerSession: 3, maxStashed: 3, lateResultTtlMs: 0 });
+        addAwaiting(outbox, "m1");
+        outbox.expire("m1");
+
+        expect(outbox.settle("m1", "too late")).toBeNull();
+        expect(outbox.size).toBe(0);
     });
 
     test("已入队的消息不能再被放弃（状态不可回退）", () => {
@@ -96,7 +129,7 @@ describe("放弃路径", () => {
         addAwaiting(outbox, "m1");
         outbox.settle("m1", "文本");
 
-        expect(outbox.abandon("m1")).toBeNull();
+        expect(outbox.expire("m1")).toBeNull();
         expect(outbox.queuedCount("from")).toBe(1);
     });
 
@@ -105,8 +138,8 @@ describe("放弃路径", () => {
         const entry = addAwaiting(outbox, "m1");
         entry.waiter = () => {};
 
-        const abandoned = outbox.abandon("m1");
-        expect(abandoned?.waiter).not.toBeNull();
+        const expired = outbox.expire("m1");
+        expect(expired?.waiter).not.toBeNull();
         expect(entry.waiter).toBeNull();
     });
 });

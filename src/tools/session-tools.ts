@@ -20,13 +20,14 @@ import { getPeerResultHistory, getSessionControl, getSessionDirectory } from "..
 import { err, ok, type ExecutableTool, type ToolExecutionResult } from "./tool-interface.js";
 import { toolCatalog } from "./tool-catalog.js";
 
-const SESSION_TOOL_NAMES = ["session_spawn", "session_send", "session_status"];
+const SESSION_TOOL_NAMES = ["session_spawn", "session_send", "session_status", "session_close"];
 
 /** `wait_seconds` 的上限：别让一次工具调用把回合占死太久。 */
 const MAX_WAIT_SECONDS = 600;
 
 interface SessionSpawnArgs {
     title?: string;
+    auto_close?: boolean;
     __sessionId?: string;
 }
 
@@ -45,13 +46,20 @@ interface SessionStatusArgs {
     __sessionId?: string;
 }
 
+interface SessionCloseArgs {
+    session?: string;
+    __sessionId?: string;
+}
+
 const sessionSpawnTool: ExecutableTool = {
     name: "session_spawn",
     description: [
         "开一个子会话并与之协作：子会话立即创建、由本实例持有，并出现在用户的会话条里。",
         "返回的 sessionId 用 session_send 派活（expect_result=true 时结果会自动回传）。",
+        "auto_close=true 时，本实例内 session_send 派发的首个 expect_result=true 任务完成并回传后自动归档；历史保留。",
+        "跨进程 session_send 暂不自动关闭（结果推送尚无可靠 ACK），需用 session_close 手动归档。",
         `派生的子会话数有上限（${MAX_SPAWNED_SESSIONS} 个），到上限后要先让用户清理。`,
-        "子会话不自动回收：用完提示用户删除（⌃X）或归档（⌃A）。",
+        "默认不自动回收；用完可用 session_close 归档（保留历史），或提示用户删除（⌃X）。",
     ].join(""),
     tags: ["chat"],
     sessionScoped: true,
@@ -59,6 +67,10 @@ const sessionSpawnTool: ExecutableTool = {
         type: "object",
         properties: {
             title: { type: "string", description: "子会话标题（便于用户辨认；省略则由首条消息推导）" },
+            auto_close: {
+                type: "boolean",
+                description: "本实例内 session_send 的首个期望结果回传后自动归档（保留历史）；跨进程发送不会自动关闭；默认 false",
+            },
         },
     },
     execute: async (args: SessionSpawnArgs) => {
@@ -70,7 +82,7 @@ const sessionSpawnTool: ExecutableTool = {
         const title = (args.title ?? "").trim();
         let result;
         try {
-            result = await control.spawnSession(from, title || undefined);
+            result = await control.spawnSession(from, title || undefined, { autoClose: args.auto_close === true });
         } catch (error) {
             return err(`派生会话失败：${(error as Error)?.message ?? error}`);
         }
@@ -80,6 +92,7 @@ const sessionSpawnTool: ExecutableTool = {
             [
                 `已派生并接管会话 ${shortId(result.sessionId)}`,
                 `完整 id：${result.sessionId}`,
+                ...(args.auto_close ? ["任务完成回传后会自动归档（保留历史）。"] : []),
                 `用 session_send(session="${result.sessionId}", text=…, expect_result=true) 派活。`,
             ].join("\n"),
         );
@@ -209,6 +222,38 @@ const sessionStatusTool: ExecutableTool = {
     },
 };
 
+const sessionCloseTool: ExecutableTool = {
+    name: "session_close",
+    description: [
+        "关闭本实例用 session_spawn 派生且仍由本实例持有的空闲子会话。",
+        "关闭会归档并释放会话，不删除历史；不能关闭普通用户会话、其他实例持有的会话或正在执行的会话。",
+        "若 session_spawn 使用 auto_close=true，本实例内 session_send 的首个 expect_result=true 任务回传后会自动完成此操作；跨进程任务需手动关闭。",
+    ].join(""),
+    tags: ["chat"],
+    sessionScoped: true,
+    inputSchema: {
+        type: "object",
+        properties: {
+            session: { type: "string", description: "session_spawn 返回的完整 id 或末几位 id" },
+        },
+        required: ["session"],
+    },
+    execute: async (args: SessionCloseArgs) => {
+        const control = getSessionControl();
+        if (!control) return err("会话间通信未启用");
+        if (!args.__sessionId) return err("session_close 需要会话上下文（缺少 __sessionId）");
+
+        const target = (args.session ?? "").trim();
+        if (!target) return err("session 必填：填 session_spawn 返回的会话 id");
+        const resolved = await resolveSessionId(target);
+        if (!resolved.ok) return err(resolved.error);
+
+        const result = await control.closeSpawnedSession(resolved.sessionId);
+        if (!result.ok) return err(result.error);
+        return ok(`已归档并关闭子会话 ${shortId(resolved.sessionId)}；历史保留，可从会话面板重新打开。`);
+    },
+};
+
 /** 列出全部会话：归属 + 忙闲，附本实例的等待/待附加计数。 */
 async function describeAll(
     control: SessionControl,
@@ -282,7 +327,7 @@ async function recentResultLines(sessionId: string): Promise<string[]> {
     const peer = latest.peerTitle
         ? `${shortId(latest.peerId)}「${latest.peerTitle}」`
         : shortId(latest.peerId);
-    const status = latest.lost ? "已丢失" : latest.ok ? "ok" : "失败";
+    const status = latest.lost ? "已丢失" : latest.late ? "迟到结果" : latest.ok ? "ok" : "失败";
     return ["", `最近结果（来自 ${peer} · ${latest.createdAt} · ${status}）：`, latest.text];
 }
 
@@ -312,7 +357,7 @@ function shortId(sessionId: string): string {
     return sessionId.length > 8 ? sessionId.slice(-8) : sessionId;
 }
 
-export const SESSION_TOOLS: ExecutableTool[] = [sessionSpawnTool, sessionSendTool, sessionStatusTool];
+export const SESSION_TOOLS: ExecutableTool[] = [sessionSpawnTool, sessionSendTool, sessionStatusTool, sessionCloseTool];
 
 // 注册到工具目录供 executeMcpTool 查找；sessionScoped 保证默认不下发、不出现在 search_tools 结果里
 toolCatalog.registerLocalTools(SESSION_TOOLS);

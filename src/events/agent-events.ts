@@ -76,6 +76,8 @@ export interface AgentEventPayloads {
         ok: boolean;
         /** 结果确定丢失（对方进程退出或等待超时）。 */
         lost?: boolean;
+        /** 已报告超时/丢失后才到达的结果。 */
+        late?: boolean;
         text: string;
         stopReason?: string;
         createdAt: string;

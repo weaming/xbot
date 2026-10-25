@@ -86,6 +86,47 @@ describe("会话间消息的时间线投影", () => {
         expect(store.messages[1]?.peer?.lost).toBe(true);
     });
 
+    test("重放同一消息的 lost 通知与迟到结果时保留两条事实", () => {
+        const store = new ChatStore();
+        store.setCurrentSession("session-1");
+
+        store.loadHistory([
+            {
+                seq: 1,
+                ts: "2026-09-08T10:00:00+08:00",
+                sessionId: "session-1",
+                type: "peer_result",
+                payload: {
+                    msgId: "msg-late",
+                    peerId: "session-2",
+                    ok: false,
+                    lost: true,
+                    text: "等待结果超时",
+                    createdAt: "2026-09-08T10:00:00+08:00",
+                },
+            },
+            {
+                seq: 2,
+                ts: "2026-09-08T10:01:00+08:00",
+                sessionId: "session-1",
+                type: "peer_result",
+                payload: {
+                    msgId: "msg-late",
+                    peerId: "session-2",
+                    ok: true,
+                    late: true,
+                    text: "实际任务结果",
+                    createdAt: "2026-09-08T10:01:00+08:00",
+                },
+            },
+        ]);
+
+        expect(store.messages).toHaveLength(2);
+        expect(store.messages[0]?.peer?.lost).toBe(true);
+        expect(store.messages[1]?.peer?.late).toBe(true);
+        expect(store.messages[1]?.text).toBe("实际任务结果");
+    });
+
     test("peer 来源的 user_message 不再单独渲染气泡", () => {
         const store = new ChatStore();
         store.setCurrentSession("session-1");
@@ -220,5 +261,22 @@ describe("会话间消息的时间线投影", () => {
 
         expect(store.messages[0]?.peer?.lost).toBe(true);
         expect(store.messages[0]?.peer?.ok).toBe(false);
+    });
+
+    test("实时 peer_result 迟到时标记 late", () => {
+        const store = new ChatStore();
+        store.setCurrentSession("session-1");
+
+        store.applyEvent(1, "session-1", {
+            type: "peer_result",
+            msgId: "msg-late",
+            peerId: "session-2",
+            ok: true,
+            late: true,
+            text: "实际任务结果",
+        });
+
+        expect(store.messages[0]?.peer?.late).toBe(true);
+        expect(store.messages[0]?.peer?.ok).toBe(true);
     });
 });

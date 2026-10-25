@@ -116,6 +116,7 @@ export function applyAgentEvent(
                 isResult: true,
                 ok: event.ok,
                 ...(event.lost ? { lost: true } : {}),
+                ...(event.late ? { late: true } : {}),
             }, deps);
             break;
         case "turn_start":

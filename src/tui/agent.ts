@@ -130,17 +130,22 @@ export class LocalTuiAgent implements TuiAgent {
             createSession: (cwd) => this.createSession(cwd),
             sessionCwd: (sessionId) => this.getSessionCwd(sessionId),
             onSessionSpawned: (sessionId, title) => this.onSessionSpawned?.(sessionId, title),
+            archiveSpawnedSession: async (sessionId, automatic) => {
+                await this.closeSession(sessionId);
+                this.releaseSession(sessionId, { cause: automatic ? "auto" : "tool" });
+            },
             accept: (message) => this.acceptPeerMessage(message),
             onOutbound: (from, message) => {
                 void this.recordPeerMessage(from, message, "out").catch((error) => {
                     console.error("⚠️ [TUI] 会话间消息落盘失败:", error);
                 });
             },
-            onResult: (requester, message, result) => {
+            onResult: (requester, message, result, resultOptions) => {
                 void this.recordPeerResult(requester, {
                     msgId: message.id,
                     peerId: message.to,
                     ok: result.ok,
+                    ...(resultOptions?.late ? { late: true } : {}),
                     text: result.text,
                     stopReason: result.stopReason,
                     createdAt: getShanghaiISOString(),
@@ -348,6 +353,7 @@ export class LocalTuiAgent implements TuiAgent {
             peerId: payload.peerId,
             ok: payload.ok,
             ...(payload.lost ? { lost: true } : {}),
+            ...(payload.late ? { late: true } : {}),
             text: payload.text,
             ...(payload.stopReason ? { stopReason: payload.stopReason } : {}),
         });
@@ -443,6 +449,7 @@ export class LocalTuiAgent implements TuiAgent {
                 ...(event.payload.peerTitle ? { peerTitle: event.payload.peerTitle } : {}),
                 ok: event.payload.ok,
                 ...(event.payload.lost ? { lost: true } : {}),
+                ...(event.payload.late ? { late: true } : {}),
                 text: event.payload.text,
                 ...(event.payload.stopReason ? { stopReason: event.payload.stopReason } : {}),
                 createdAt: event.payload.createdAt,

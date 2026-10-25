@@ -48,6 +48,7 @@ function peerTags(peer: PeerMeta): string[] {
     if (!peer.isResult) return peer.expectResult ? [theme.dim("期望结果")] : [];
 
     if (peer.lost) return [theme.chatMention("结果丢失")];
+    if (peer.late) return [theme.statusWarn("迟到结果")];
     return peer.ok ? [theme.chatSelf("结果")] : [theme.chatMention("结果（未完成）")];
 }
 

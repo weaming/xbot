@@ -42,7 +42,7 @@ export interface InstanceNetworkStats {
  * 会话释放的发起方：`peer` 被其他实例协商拿走，`user` 本实例主动关闭（/close）。
  * 宿主据此区分收尾文案，但两者都要把会话从 tab 条与内存里摘掉。
  */
-export type SessionReleaseCause = "peer" | "user";
+export type SessionReleaseCause = "peer" | "user" | "tool" | "auto";
 
 export interface TuiAgent {
     onEvent?: (requestId: number, sessionId: string, event: UIEvent) => void;

@@ -48,7 +48,7 @@ function anchorOfPeerEvent(
         };
     }
 
-    const { msgId, peerId, peerTitle, ok, lost, text } = event.payload;
+    const { msgId, peerId, peerTitle, ok, lost, late, text } = event.payload;
     const peer: PeerMeta = {
         direction: "in",
         msgId,
@@ -57,8 +57,15 @@ function anchorOfPeerEvent(
         isResult: true,
         ok,
         ...(lost ? { lost: true } : {}),
+        ...(late ? { late: true } : {}),
     };
     return { seq: event.seq, text, peer };
+}
+
+function peerEventKey(event: Extract<AgentEvent, { type: "peer_message" | "peer_result" }>): string {
+    if (event.type !== "peer_result") return `${event.payload.msgId}${event.type}`;
+    const outcome = event.payload.lost ? "lost" : event.payload.late ? "late" : "result";
+    return `${event.payload.msgId}${event.type}${outcome}`;
 }
 
 type TurnCommitEvent = Extract<AgentEvent, { type: "turn_commit" }>;
@@ -315,8 +322,9 @@ export function projectHistory(
             }
             if (!activeTurnId) continue;
             if (event.type !== "peer_message" && event.type !== "peer_result") continue;
-            if (seenPeerIds.has(event.payload.msgId + event.type)) continue;
-            seenPeerIds.add(event.payload.msgId + event.type);
+            const key = peerEventKey(event);
+            if (seenPeerIds.has(key)) continue;
+            seenPeerIds.add(key);
             const list = chatsByTurn.get(activeTurnId) ?? [];
             list.push(anchorOfPeerEvent(event));
             chatsByTurn.set(activeTurnId, list);
@@ -409,7 +417,7 @@ export function projectHistory(
             case "peer_result": {
                 // 回合内的会话间消息已随助手气泡时间线渲染，这里跳过避免重复
                 if (assignedChatSeqs.has(event.seq)) break;
-                const key = event.payload.msgId + event.type;
+                const key = peerEventKey(event);
                 if (seenPeerIds.has(key)) break;
                 seenPeerIds.add(key);
                 const anchor = anchorOfPeerEvent(event);

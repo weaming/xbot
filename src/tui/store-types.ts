@@ -52,6 +52,7 @@ export interface PeerMeta {
     isResult?: boolean;
     ok?: boolean;
     lost?: boolean;
+    late?: boolean;
     /** 对方回合结束时是否会自动回传结果。 */
     expectResult?: boolean;
 }

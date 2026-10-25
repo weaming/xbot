@@ -6,8 +6,9 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "fs";
 import net from "net";
 import { PeerSendFailure, SessionControl, type SessionControlHost } from "../../src/control/channel.js";
+import { requestOnce } from "../../src/control/client.js";
 import { ensureControlDir, getSocketPath } from "../../src/control/paths.js";
-import { encodeFrame, splitFrames, type PeerFrame, type PeerMessage, type PeerResult } from "../../src/control/protocol.js";
+import { createPeerMessage, encodeFrame, splitFrames, type PeerFrame, type PeerMessage, type PeerResult } from "../../src/control/protocol.js";
 import { forgetBound, locallyBoundSessionIds } from "../../src/control/registry.js";
 import { useTmpWorkspace, type TmpWorkspace } from "./test-env.js";
 
@@ -120,11 +121,12 @@ interface RecordingHost extends SessionControlHost {
     accepted: PeerMessage[];
     inbound: PeerMessage[];
     outbound: PeerMessage[];
-    results: Array<{ requester: string; result: PeerResult }>;
+    results: Array<{ requester: string; result: PeerResult; late?: boolean }>;
     lost: Array<{ requester: string; msgIds: string[] }>;
     releasedSessions: string[];
     spawnedSessions: string[];
     createdCwds: string[];
+    archivedSessions: Array<{ sessionId: string; automatic: boolean }>;
     busy: Set<string>;
 }
 
@@ -138,6 +140,7 @@ function makeHost(): RecordingHost {
         releasedSessions: [],
         spawnedSessions: [],
         createdCwds: [],
+        archivedSessions: [],
         busy: new Set<string>(),
         title: (sessionId) => `会话 ${sessionId}`,
         isBusy: (sessionId) => host.busy.has(sessionId),
@@ -147,13 +150,20 @@ function makeHost(): RecordingHost {
         },
         sessionCwd: async (sessionId) => `/cwd/${sessionId}`,
         onSessionSpawned: (sessionId) => host.spawnedSessions.push(sessionId),
+        archiveSpawnedSession: async (sessionId, automatic) => {
+            host.archivedSessions.push({ sessionId, automatic });
+        },
         accept: (message) => {
             if (host.busy.has(message.to)) return false;
             host.accepted.push(message);
             return true;
         },
         onOutbound: (_from, message) => host.outbound.push(message),
-        onResult: (requester, _message, result) => host.results.push({ requester, result }),
+        onResult: (requester, _message, result, options) => host.results.push({
+            requester,
+            result,
+            ...(options?.late ? { late: true } : {}),
+        }),
         onLost: (requester, msgIds) => host.lost.push({ requester, msgIds }),
         onReleased: (sessionId) => host.releasedSessions.push(sessionId),
     };
@@ -326,6 +336,182 @@ describe("同进程直投", () => {
         expect(injected.length).toBe(1);
         expect(injected[0]).toContain("跑完了");
         expect(control.queuedResults("a")).toBe(0);
+    });
+
+    test("accept 在 send 返回前完成时，预登记的期望仍能接住结果", async () => {
+        let control: SessionControl;
+        const host = makeHost();
+        host.accept = message => {
+            control.completeInbound(message.to, message, {
+                msgId: message.id,
+                ok: true,
+                text: "立即完成",
+                stopReason: "stop",
+            });
+            return true;
+        };
+        control = makeControl(host);
+        await control.claim("target");
+
+        const message = await control.send("requester", "target", "快速任务", { expectResult: true });
+
+        expect(control.queuedResults("requester")).toBe(1);
+        expect(host.results[0]?.result.msgId).toBe(message.id);
+        expect(control.takeResults("requester")[0]).toContain("立即完成");
+    });
+
+    test("auto_close 不因跨进程 socket.write 成功而归档，保留 pending 查询通道", async () => {
+        const childHost = makeHost();
+        const childControl = makeControl(childHost);
+        const spawned = await childControl.spawnSession("parent", "自动关闭子会话", { autoClose: true });
+        expect(spawned.ok).toBe(true);
+        if (!spawned.ok) return;
+
+        const senderHost = makeHost();
+        const senderControl = makeControl(senderHost);
+        await senderControl.send("remote-parent", spawned.sessionId, "执行远程任务", { expectResult: true });
+        const message = senderHost.outbound[0]!;
+
+        // 远端 delivery socket 仍可写，所以服务端 pushResult() 会返回 true；但这不等于对端收到。
+        childControl.completeInbound(spawned.sessionId, message, {
+            msgId: message.id,
+            ok: true,
+            text: "已完成",
+            stopReason: "stop",
+        });
+        await waitFor(() => senderHost.results.length === 1);
+
+        expect(childHost.archivedSessions).toEqual([]);
+        expect(childControl.spawnedCount).toBe(1);
+        expect(childControl.isClaimed(spawned.sessionId)).toBe(true);
+        expect(senderHost.results[0]?.result.text).toBe("已完成");
+    });
+
+    test("半死连接未消费 push 时，auto_close 保留会话供 query_pending 补发", async () => {
+        const host = makeHost();
+        const control = makeControl(host);
+        const spawned = await control.spawnSession("parent", "断线恢复子会话", { autoClose: true });
+        expect(spawned.ok).toBe(true);
+        if (!spawned.ok) return;
+
+        const message = createPeerMessage({
+            from: "remote-parent",
+            to: spawned.sessionId,
+            text: "执行任务",
+            expectResult: true,
+        });
+        const socket = net.createConnection(getSocketPath(spawned.sessionId));
+        socket.setEncoding("utf8");
+        await new Promise<void>((resolve, reject) => {
+            socket.once("connect", resolve);
+            socket.once("error", reject);
+        });
+
+        const ackPromise = new Promise<any>((resolve, reject) => {
+            let buffer = "";
+            const onData = (chunk: string) => {
+                buffer += chunk;
+                const split = splitFrames(buffer);
+                buffer = split.rest;
+                for (const frame of split.frames) {
+                    if (frame.type !== "ack") continue;
+                    socket.off("data", onData);
+                    resolve(frame);
+                }
+            };
+            socket.on("data", onData);
+            socket.once("error", reject);
+        });
+
+        socket.write(encodeFrame({ type: "deliver", id: "deliver-half-dead", message }));
+        expect(await ackPromise).toEqual({ type: "ack", id: "deliver-half-dead", ok: true });
+        // 保持 TCP socket 可写，但暂停应用层读取：pushResult 的 socket.write 可成功，结果帧未被消费。
+        socket.pause();
+        control.completeInbound(spawned.sessionId, message, {
+            msgId: message.id,
+            ok: true,
+            text: "可恢复结果",
+            stopReason: "stop",
+        });
+        expect(host.archivedSessions).toEqual([]);
+        socket.destroy();
+
+        const pending = await requestOnce(getSocketPath(spawned.sessionId), {
+            type: "query_pending",
+            id: "query-half-dead",
+            msgIds: [message.id],
+        }, 300);
+        expect(pending.type).toBe("pending_state");
+        if (pending.type === "pending_state") {
+            expect(pending.done).toEqual([{
+                msgId: message.id,
+                ok: true,
+                text: "可恢复结果",
+                stopReason: "stop",
+            }]);
+        }
+        expect(control.spawnedCount).toBe(1);
+        expect(control.isClaimed(spawned.sessionId)).toBe(true);
+    });
+
+    test("迟到结果在超时通知后仍进入队列，并在本地接收后自动归档", async () => {
+        const host = makeHost();
+        const control = makeControl(host, { resultTimeoutMs: 10 });
+        const spawned = await control.spawnSession("parent", "延迟结果子会话", { autoClose: true });
+        expect(spawned.ok).toBe(true);
+        if (!spawned.ok) return;
+
+        const message = await control.send("parent", spawned.sessionId, "执行任务", { expectResult: true });
+        await waitFor(() => host.lost.length === 1);
+        control.completeInbound(spawned.sessionId, message, {
+            msgId: message.id,
+            ok: true,
+            text: "迟到结果",
+            stopReason: "stop",
+        });
+        await new Promise(resolve => setTimeout(resolve, 0));
+
+        expect(host.lost).toHaveLength(1);
+        expect(host.results).toEqual([{ requester: "parent", result: {
+            msgId: message.id,
+            ok: true,
+            text: "迟到结果",
+            stopReason: "stop",
+        }, late: true }]);
+        expect(control.takeResults("parent")).toEqual([
+            `[会话 ${spawned.sessionId} 的结果（迟到）]\n迟到结果\n（stopReason: stop）`,
+        ]);
+        expect(host.archivedSessions).toEqual([{ sessionId: spawned.sessionId, automatic: true }]);
+        expect(control.spawnedCount).toBe(0);
+    });
+
+    test("跨进程迟到结果进入请求方队列并标记 late，但不自动归档", async () => {
+        const childHost = makeHost();
+        const childControl = makeControl(childHost);
+        const spawned = await childControl.spawnSession("child-parent", "远端迟到结果", { autoClose: true });
+        expect(spawned.ok).toBe(true);
+        if (!spawned.ok) return;
+
+        const senderHost = makeHost();
+        const senderControl = makeControl(senderHost, { resultTimeoutMs: 10 });
+        await senderControl.send("remote-parent", spawned.sessionId, "执行远程任务", { expectResult: true });
+        const message = senderHost.outbound[0]!;
+        await waitFor(() => senderHost.lost.length === 1);
+
+        childControl.completeInbound(spawned.sessionId, message, {
+            msgId: message.id,
+            ok: true,
+            text: "远端迟到结果正文",
+            stopReason: "stop",
+        });
+        await waitFor(() => senderHost.results.length === 1);
+
+        expect(senderHost.results[0]?.late).toBe(true);
+        expect(senderControl.takeResults("remote-parent")).toEqual([
+            `[会话 ${spawned.sessionId} 的结果（迟到）]\n远端迟到结果正文\n（stopReason: stop）`,
+        ]);
+        expect(childHost.archivedSessions).toEqual([]);
+        expect(childControl.spawnedCount).toBe(1);
     });
 
     test("不期望结果时不留等待项", async () => {

@@ -21,6 +21,7 @@ const accepted: string[] = [];
 const outbound: PeerMessage[] = [];
 const busy = new Set<string>();
 const spawned: string[] = [];
+const closed: Array<{ sessionId: string; automatic: boolean }> = [];
 /** 目标会话受理后自动回传的结果文本：设了才回，模拟对方跑完一轮。 */
 const replies = new Map<string, string>();
 /** 各会话历史收到的会话间结果：模拟事件日志里的 peer_result。 */
@@ -40,6 +41,10 @@ function makeHost(): SessionControlHost {
         sessionCwd: async (sessionId) => `/tmp/cwd-${sessionId.slice(-1)}`,
         onSessionSpawned: (sessionId, title) => {
             spawned.push(title ? `${sessionId}:${title}` : sessionId);
+        },
+        archiveSpawnedSession: async (sessionId, automatic) => {
+            closed.push({ sessionId, automatic });
+            control.release(sessionId);
         },
         accept: (message) => {
             if (busy.has(message.to)) return false;
@@ -79,6 +84,7 @@ beforeEach(() => {
     outbound.length = 0;
     busy.clear();
     spawned.length = 0;
+    closed.length = 0;
     replies.clear();
     peerResults.clear();
 
@@ -109,6 +115,7 @@ describe("下发条件", () => {
             "session_spawn",
             "session_send",
             "session_status",
+            "session_close",
         ]);
     });
 
@@ -137,6 +144,89 @@ describe("session_spawn", () => {
         expect(spawned.length).toBe(1);
         expect(spawned[0]).toEndWith(":读日志");
         expect(control.spawnedCount).toBe(1);
+    });
+
+    test("auto_close=true 在首个期望结果回传后自动归档并释放", async () => {
+        const spawn = await tool("session_spawn").execute({
+            auto_close: true,
+            __sessionId: SESSIONS[0]!.sessionId,
+        });
+        const sessionId = /完整 id：(\S+)/.exec(spawn.content[0]?.text ?? "")?.[1] ?? "";
+        replies.set(sessionId, "任务完成");
+
+        const result = await tool("session_send").execute({
+            session: sessionId,
+            text: "执行任务",
+            expect_result: true,
+            wait_seconds: 1,
+            __sessionId: SESSIONS[0]!.sessionId,
+        });
+        await new Promise(resolve => setTimeout(resolve, 0));
+
+        expect(result.isError).toBeUndefined();
+        expect(closed).toEqual([{ sessionId, automatic: true }]);
+        expect(control.spawnedCount).toBe(0);
+    });
+
+    test("auto_close 不会在未请求回传结果时关闭子会话", async () => {
+        const spawn = await tool("session_spawn").execute({
+            auto_close: true,
+            __sessionId: SESSIONS[0]!.sessionId,
+        });
+        const sessionId = /完整 id：(\S+)/.exec(spawn.content[0]?.text ?? "")?.[1] ?? "";
+        replies.set(sessionId, "任务完成");
+
+        await tool("session_send").execute({
+            session: sessionId,
+            text: "执行任务",
+            __sessionId: SESSIONS[0]!.sessionId,
+        });
+        await new Promise(resolve => setTimeout(resolve, 0));
+
+        expect(closed).toEqual([]);
+        expect(control.spawnedCount).toBe(1);
+    });
+
+    test("session_close 只归档本实例派生子会话并保留历史", async () => {
+        const spawn = await tool("session_spawn").execute({ __sessionId: SESSIONS[0]!.sessionId });
+        const sessionId = /完整 id：(\S+)/.exec(spawn.content[0]?.text ?? "")?.[1] ?? "";
+
+        const result = await tool("session_close").execute({
+            session: sessionId,
+            __sessionId: SESSIONS[0]!.sessionId,
+        });
+
+        expect(result.isError).toBeUndefined();
+        expect(result.content[0]?.text).toContain("历史保留");
+        expect(closed).toEqual([{ sessionId, automatic: false }]);
+        expect(control.spawnedCount).toBe(0);
+    });
+
+    test("session_close 不允许归档普通会话", async () => {
+        await control.claim(SESSIONS[1]!.sessionId);
+        const result = await tool("session_close").execute({
+            session: SESSIONS[1]!.sessionId,
+            __sessionId: SESSIONS[0]!.sessionId,
+        });
+
+        expect(result.isError).toBe(true);
+        expect(result.content[0]?.text).toContain("只能关闭本实例派生");
+        expect(closed).toEqual([]);
+    });
+
+    test("session_close 不允许归档正在执行的子会话", async () => {
+        const spawn = await tool("session_spawn").execute({ __sessionId: SESSIONS[0]!.sessionId });
+        const sessionId = /完整 id：(\S+)/.exec(spawn.content[0]?.text ?? "")?.[1] ?? "";
+        busy.add(sessionId);
+
+        const result = await tool("session_close").execute({
+            session: sessionId,
+            __sessionId: SESSIONS[0]!.sessionId,
+        });
+
+        expect(result.isError).toBe(true);
+        expect(result.content[0]?.text).toContain("正在执行");
+        expect(closed).toEqual([]);
     });
 
     test("派生的子会话可直接派活（本进程直投）", async () => {

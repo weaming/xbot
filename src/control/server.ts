@@ -124,6 +124,11 @@ export class PeerServer {
         return true;
     }
 
+    /** 入站消息没有 expectResult 时移除投递槽，不等待无用的结果回传。 */
+    forgetDelivery(msgId: string): void {
+        this.deliveries.delete(msgId);
+    }
+
     /** 关闭监听并释放 socket 文件（带 inode 校验）。 */
     unbind(): void {
         const server = this.server;

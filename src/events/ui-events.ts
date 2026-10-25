@@ -80,4 +80,4 @@ export type UIEvent =
         createdAt: string;
     }
     /** 会话间结果：到达（lost=false）或确定丢失（lost=true）。 */
-    | { type: "peer_result"; msgId: string; peerId: string; ok: boolean; lost?: boolean; text: string; stopReason?: string };
+    | { type: "peer_result"; msgId: string; peerId: string; ok: boolean; lost?: boolean; late?: boolean; text: string; stopReason?: string };

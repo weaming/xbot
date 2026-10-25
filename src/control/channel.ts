@@ -58,6 +58,8 @@ export interface SessionControlHost {
     sessionCwd(sessionId: string): Promise<string>;
     /** 子会话已建立并认领：宿主把它加进会话列表 / 固化标题。 */
     onSessionSpawned(sessionId: string, title?: string): void;
+    /** 归档并释放本实例派生的子会话；归档保留历史，不执行删除。 */
+    archiveSpawnedSession?(sessionId: string, automatic: boolean): Promise<void>;
     /**
      * 原子受理一条入站消息：抢不到互斥则返回 false（通道据此回 busy，且不落任何事实）。
      * 实现方负责落盘与启动回合；回合结束后调用 completeInbound 回传结果。
@@ -66,7 +68,7 @@ export interface SessionControlHost {
     /** 出站消息已成功投递（落时间线用）。 */
     onOutbound(from: string, message: PeerMessage): void;
     /** 结果到达请求者会话：已进结果队列，宿主负责落时间线与提示。 */
-    onResult(requester: string, message: PeerMessage, result: PeerResult): void;
+    onResult(requester: string, message: PeerMessage, result: PeerResult, options?: { late?: boolean }): void;
     /** 结果确定丢失（目标进程不可达或等待超时）。 */
     onLost(requester: string, msgIds: string[], target: string): void;
     /** 远端协商释放成功：宿主把会话从 tabs / activeSessions 摘掉。 */
@@ -98,6 +100,8 @@ export class SessionControl {
     private readonly servers = new Map<string, PeerServer>();
     /** 本实例派生的子会话（含已被别的实例接管或已删除的会在此处随 release 移除）。 */
     private readonly spawned = new Set<string>();
+    /** 用户选择 auto_close 的子会话：首个期望结果的回合完成后归档。 */
+    private readonly autoCloseSpawned = new Set<string>();
     /** 走本进程内存投递的入站消息 id：完成后直接回给本地请求者，不走 socket。 */
     private readonly localInbound = new Set<string>();
     /** 出站消息台账：一条消息一个状态，替代原先散落的三个容器。 */
@@ -119,6 +123,7 @@ export class SessionControl {
         this.outbox = new OutboxLedger({
             maxQueuedPerSession: this.maxResultsPerSession,
             maxStashed: MAX_RESULT_STASH,
+            maxExpired: MAX_RESULT_STASH,
         });
         this.pool = new PeerClientPool({
             onResult: (target, result) => this.handleRemoteResult(target, result),
@@ -150,6 +155,7 @@ export class SessionControl {
                     if (this.host.isBusy(sessionId)) return false;
                     this.servers.delete(sessionId);
                     this.spawned.delete(sessionId);
+                    this.autoCloseSpawned.delete(sessionId);
                     this.host.onReleased(sessionId);
                     return true;
                 },
@@ -187,6 +193,7 @@ export class SessionControl {
     /** 本实例主动放弃会话：关监听、释放 socket 文件、允许其他实例认领。 */
     release(sessionId: string): void {
         this.spawned.delete(sessionId);
+        this.autoCloseSpawned.delete(sessionId);
         const server = this.servers.get(sessionId);
         if (!server) return;
 
@@ -205,7 +212,11 @@ export class SessionControl {
      * 派生一个子会话并立即认领：只负责建会话，派活由调用方随后 send。
      * 子会话继承父会话的工作目录；数量受 MAX_SPAWNED_SESSIONS 限制。
      */
-    async spawnSession(parentSessionId: string, title?: string): Promise<SpawnResult> {
+    async spawnSession(
+        parentSessionId: string,
+        title?: string,
+        options: { autoClose?: boolean } = {},
+    ): Promise<SpawnResult> {
         if (this.spawned.size >= MAX_SPAWNED_SESSIONS) {
             return {
                 ok: false,
@@ -224,8 +235,34 @@ export class SessionControl {
         }
 
         this.spawned.add(sessionId);
+        if (options.autoClose) this.autoCloseSpawned.add(sessionId);
         this.host.onSessionSpawned(sessionId, title);
         return { ok: true, sessionId };
+    }
+
+    /** 归档本实例派生且当前空闲的子会话；不允许工具关闭任意用户会话。 */
+    async closeSpawnedSession(
+        sessionId: string,
+        options: { automatic?: boolean } = {},
+    ): Promise<{ ok: true } | { ok: false; error: string }> {
+        if (!this.spawned.has(sessionId)) {
+            return { ok: false, error: "只能关闭本实例派生且仍由本实例持有的子会话" };
+        }
+        if (this.host.isBusy(sessionId)) {
+            return { ok: false, error: `子会话 ${sessionId} 正在执行，完成后再关闭` };
+        }
+        if (!this.host.archiveSpawnedSession) {
+            return { ok: false, error: "当前宿主未提供子会话归档能力" };
+        }
+
+        try {
+            await this.host.archiveSpawnedSession(sessionId, options.automatic === true);
+            this.spawned.delete(sessionId);
+            this.autoCloseSpawned.delete(sessionId);
+            return { ok: true };
+        } catch (error) {
+            return { ok: false, error: `归档子会话失败：${(error as Error)?.message ?? error}` };
+        }
     }
 
     probe(sessionId: string): Promise<PeerOwnership> {
@@ -258,24 +295,34 @@ export class SessionControl {
             ...(options.expectResult ? { expectResult: true } : {}),
         });
 
-        if (this.servers.has(to)) {
-            // 同进程直投：不经过 socket，省一次序列化与连接
-            this.localInbound.add(message.id);
-            let accepted = false;
-            try {
-                accepted = await this.host.accept(message);
-            } catch {
-                accepted = false;
-            }
-            if (!accepted) {
-                this.localInbound.delete(message.id);
-                throw new PeerSendFailure("busy", `会话 ${to} 正在执行中，请稍后重试`);
-            }
-        } else {
-            await this.deliverRemote(to, message);
+        if (message.expectResult) {
+            // 先登记再投递：目标可能在 accept/deliver 返回前就完成回合。
+            this.outbox.addAwaiting({ msgId: message.id, requester: from, target: to, message });
         }
 
-        if (message.expectResult) this.trackExpectation(from, message, to);
+        try {
+            if (this.servers.has(to)) {
+                // 同进程直投：不经过 socket，省一次序列化与连接
+                this.localInbound.add(message.id);
+                let accepted = false;
+                try {
+                    accepted = await this.host.accept(message);
+                } catch {
+                    accepted = false;
+                }
+                if (!accepted) {
+                    this.localInbound.delete(message.id);
+                    throw new PeerSendFailure("busy", `会话 ${to} 正在执行中，请稍后重试`);
+                }
+            } else {
+                await this.deliverRemote(to, message);
+            }
+        } catch (error) {
+            if (message.expectResult) this.outbox.removeAwaiting(message.id);
+            throw error;
+        }
+
+        if (message.expectResult) this.startExpectationTimeout(from, message, to);
         this.host.onOutbound(from, message);
         return message;
     }
@@ -288,11 +335,20 @@ export class SessionControl {
      */
     completeInbound(sessionId: string, message: PeerMessage, result: PeerResult): void {
         if (this.localInbound.delete(message.id)) {
-            this.handleRemoteResult(sessionId, result);
+            if (!message.expectResult) return;
+            const delivered = this.handleRemoteResult(sessionId, result);
+            if (delivered) this.autoCloseAfterResult(sessionId, message);
+            return;
+        }
+
+        if (!message.expectResult) {
+            this.servers.get(sessionId)?.forgetDelivery(message.id);
             return;
         }
 
         this.outbox.stashResult(result);
+        // socket.write 返回成功不代表对端已收到；保留子会话监听器，让 query_pending 可补发。
+        // 当前协议没有结果 ACK，因此跨进程结果不能触发 auto_close。
         this.servers.get(sessionId)?.pushResult(result);
     }
 
@@ -367,6 +423,7 @@ export class SessionControl {
         for (const server of this.servers.values()) server.unbind();
         this.servers.clear();
         this.spawned.clear();
+        this.autoCloseSpawned.clear();
         // 未兑现的等待一律以 aborted 结束，避免悬挂 Promise
         for (const entry of this.outbox.awaitingEntries()) {
             const waiter = entry.waiter;
@@ -422,14 +479,14 @@ export class SessionControl {
         return { ok: false, reason: "busy" };
     }
 
-    private trackExpectation(requester: string, message: PeerMessage, target: string): void {
-        this.outbox.addAwaiting({ msgId: message.id, requester, target, message });
+    private startExpectationTimeout(requester: string, message: PeerMessage, target: string): void {
+        if (this.outbox.get(message.id)?.state !== "awaiting") return;
 
         const timer = setTimeout(() => {
             // 超时是状态迁移，只能经台账做一次：重复触发不会二次上报
-            const abandoned = this.outbox.abandon(message.id);
-            if (!abandoned) return;
-            abandoned.waiter?.({ ok: false, reason: "timeout" });
+            const expired = this.outbox.expire(message.id);
+            if (!expired) return;
+            expired.waiter?.({ ok: false, reason: "timeout" });
             this.host.onLost(requester, [message.id], target);
         }, this.resultTimeoutMs);
         timer.unref?.();
@@ -437,35 +494,50 @@ export class SessionControl {
     }
 
     /** 结果到达：有前台等待者就直给，否则进请求者队列等下一次请求附加。 */
-    private handleRemoteResult(sourceSessionId: string, result: PeerResult): void {
+    private handleRemoteResult(sourceSessionId: string, result: PeerResult): boolean {
         // 先完成状态迁移再回调宿主：宿主抛错也不会让条目留在半成品状态
-        const settled = this.outbox.settle(result.msgId, formatResultText(
-            this.outbox.get(result.msgId)?.target ?? sourceSessionId,
-            result,
-        ));
-        if (!settled) return;
+        const target = this.outbox.get(result.msgId)?.target ?? sourceSessionId;
+        const settled = this.outbox.settle(
+            result.msgId,
+            late => formatResultText(target, result, { late }),
+        );
+        if (!settled) {
+            console.warn(`[SessionControl] Dropping untracked or expired result ${result.msgId} from ${sourceSessionId}`);
+            return false;
+        }
 
         if (settled.waiter) {
             settled.waiter({ ok: true, result });
-            return;
+            return true;
         }
-        this.host.onResult(settled.entry.requester, settled.entry.message, result);
+        this.host.onResult(settled.entry.requester, settled.entry.message, result, { late: settled.late });
+        return true;
+    }
+
+    /** 仅对本进程内存投递的期望结果自动归档；跨进程推送没有 ACK，不可据 write 成功关闭。 */
+    private autoCloseAfterResult(sessionId: string, message: PeerMessage): void {
+        if (!message.expectResult || !this.autoCloseSpawned.has(sessionId)) return;
+        void this.closeSpawnedSession(sessionId, { automatic: true }).then(result => {
+            if (!result.ok) console.warn(`⚠️ [SessionControl] 自动归档子会话失败: ${result.error}`);
+        });
     }
 
     private handleRemoteLost(target: string, msgIds: string[]): void {
         for (const msgId of msgIds) {
-            const abandoned = this.outbox.abandon(msgId);
-            if (!abandoned) continue;
-            abandoned.waiter?.({ ok: false, reason: "lost" });
-            this.host.onLost(abandoned.entry.requester, [msgId], target);
+            const expired = this.outbox.expire(msgId);
+            if (!expired) continue;
+            expired.waiter?.({ ok: false, reason: "lost" });
+            this.host.onLost(expired.entry.requester, [msgId], target);
         }
     }
 
 }
 
 /** 结果进入模型上下文时的文本形态：与时间线展示同源，避免两处措辞漂移。 */
-export function formatResultText(target: string, result: PeerResult): string {
-    const header = `[会话 ${target} 的结果${result.ok ? "" : "（未正常完成）"}]`;
+export function formatResultText(target: string, result: PeerResult, options: { late?: boolean } = {}): string {
+    const status = result.ok ? "" : "（未正常完成）";
+    const late = options.late ? "（迟到）" : "";
+    const header = `[会话 ${target} 的结果${status}${late}]`;
     const body = result.text.trim() || "（无文本输出）";
     return [header, body, `（stopReason: ${result.stopReason}）`].join("\n");
 }

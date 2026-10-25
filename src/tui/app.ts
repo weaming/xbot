@@ -1669,6 +1669,16 @@ export class ChatApp {
         this.pending.clear(sessionId);
         this.closeQuestionPanel(sessionId);
         this.store.removeSessionView(sessionId);
+        if (cause === "tool" || cause === "auto") {
+            const summary = this.store.sessions.find(session => session.sessionId === sessionId);
+            if (summary) {
+                summary.archived = true;
+                this.store.setSessions(this.store.sessions);
+            } else {
+                // 子会话可能在 spawned 通知落入会话列表前就完成并自动归档
+                void this.refreshSessions();
+            }
+        }
         void this.refreshOwnership(true);
         if (this.store.currentSessionId !== sessionId) {
             this.renderTabBar();
@@ -1681,7 +1691,11 @@ export class ChatApp {
         this.clearMessages();
         this.editor.disableSubmit = false;
         this.renderTabBar();
-        if (cause === "user") {
+        if (cause === "auto") {
+            this.tui.flash("子会话已自动归档（历史保留）");
+        } else if (cause === "tool") {
+            this.tui.flash("子会话已归档（历史保留）");
+        } else if (cause === "user") {
             this.tui.flash("已关闭会话（⌘P 可重新打开）");
         } else {
             this.tui.flash("会话已被其他实例接管");

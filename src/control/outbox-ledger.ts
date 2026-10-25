@@ -9,14 +9,14 @@
  *
  *   awaiting ──结果到达──▶ queued ──宿主取走──▶ (移除)
  *      │
- *      ├──超时──────────▶ lost
- *      ├──对端丢失──────▶ lost
+ *      ├──超时──────────▶ expired ──迟到结果──▶ queued
+ *      ├──对端丢失──────▶ expired ──迟到结果──▶ queued
  *      └──close()───────▶ lost
  */
 
 import type { PeerMessage, PeerResult } from "./protocol.js";
 
-export type OutboundState = "awaiting" | "queued";
+export type OutboundState = "awaiting" | "expired" | "queued";
 
 export interface OutboundEntry {
     msgId: string;
@@ -28,6 +28,8 @@ export interface OutboundEntry {
     state: OutboundState;
     /** 仅 awaiting：超时定时器。 */
     timer: ReturnType<typeof setTimeout> | null;
+    /** 仅 expired：保留短期 tombstone 以接收迟到结果。 */
+    expiredAt?: number;
     /** 仅 awaiting：前台等待者（命中时直接兑现，不入队）。 */
     waiter: ((outcome: WaitOutcome) => void) | null;
     /** 仅 queued：待附加给模型的文本。 */
@@ -43,7 +45,14 @@ export interface OutboxOptions {
     maxQueuedPerSession: number;
     /** 暂存上限：对端一直不来取时避免内存无限增长。 */
     maxStashed: number;
+    /** 超时/丢失后保留多少条有限期 tombstone。 */
+    maxExpired?: number;
+    /** 迟到结果可接收的时间窗口；默认 24 小时。 */
+    lateResultTtlMs?: number;
 }
+
+const DEFAULT_MAX_EXPIRED = 200;
+const DEFAULT_LATE_RESULT_TTL_MS = 24 * 60 * 60 * 1000;
 
 /**
  * 台账本体。**不含定时器管理**：超时由调用方在 startAwaiting 时挂上，
@@ -60,6 +69,7 @@ export class OutboxLedger {
 
     /** 登记一条等待结果的消息；已存在则返回既有条目（幂等）。 */
     addAwaiting(input: { msgId: string; requester: string; target: string; message: PeerMessage }): OutboundEntry {
+        this.pruneExpired();
         const existing = this.entries.get(input.msgId);
         if (existing) return existing;
 
@@ -80,6 +90,15 @@ export class OutboxLedger {
         return this.entries.get(msgId);
     }
 
+    /** 投递被拒绝或失败时回滚尚未兑现的 expectation。 */
+    removeAwaiting(msgId: string): boolean {
+        const entry = this.entries.get(msgId);
+        if (!entry || entry.state !== "awaiting") return false;
+        if (entry.timer) clearTimeout(entry.timer);
+        this.entries.delete(msgId);
+        return true;
+    }
+
     /** 挂上超时定时器；同一条消息重复挂载时覆盖旧定时器。 */
     setTimer(msgId: string, timer: ReturnType<typeof setTimeout>): void {
         const entry = this.entries.get(msgId);
@@ -92,32 +111,40 @@ export class OutboxLedger {
      * 结果到达：awaiting → queued。
      * 返回 null 表示这条消息已不在台账里（重复回传、或从未登记）。
      */
-    settle(msgId: string, text: string): { entry: OutboundEntry; waiter: OutboundEntry["waiter"] } | null {
+    settle(
+        msgId: string,
+        text: string | ((late: boolean) => string),
+    ): { entry: OutboundEntry; waiter: OutboundEntry["waiter"]; late: boolean } | null {
+        this.pruneExpired();
         const entry = this.entries.get(msgId);
-        if (!entry || entry.state !== "awaiting") return null;
+        if (!entry || (entry.state !== "awaiting" && entry.state !== "expired")) return null;
+
+        const late = entry.state === "expired";
 
         if (entry.timer) clearTimeout(entry.timer);
         const waiter = entry.waiter;
         entry.waiter = null;
         entry.timer = null;
+        delete entry.expiredAt;
 
         // 有人在前台等：直接兑现，不入队、不通知宿主
         if (waiter) {
             this.entries.delete(msgId);
-            return { entry, waiter };
+            return { entry, waiter, late };
         }
 
         entry.state = "queued";
-        entry.text = text;
+        entry.text = typeof text === "function" ? text(late) : text;
         this.evictQueued(entry.requester);
-        return { entry, waiter: null };
+        return { entry, waiter: null, late };
     }
 
     /**
-     * 超时或丢失：awaiting → lost（从台账移除）。
+     * 超时或丢失：awaiting → expired；等待者收到丢失通知，但 tombstone 暂时保留供迟到结果结算。
      * 返回被影响的条目；已不在 awaiting 时返回 null。
      */
-    abandon(msgId: string): { entry: OutboundEntry; waiter: OutboundEntry["waiter"] } | null {
+    expire(msgId: string): { entry: OutboundEntry; waiter: OutboundEntry["waiter"] } | null {
+        this.pruneExpired();
         const entry = this.entries.get(msgId);
         if (!entry || entry.state !== "awaiting") return null;
 
@@ -125,12 +152,15 @@ export class OutboxLedger {
         const waiter = entry.waiter;
         entry.waiter = null;
         entry.timer = null;
-        this.entries.delete(msgId);
+        entry.state = "expired";
+        entry.expiredAt = Date.now();
+        this.pruneExpired();
         return { entry, waiter };
     }
 
     /** 取走某会话已就绪的结果文本（下一次请求用），取后即清。 */
     takeQueued(sessionId: string): string[] {
+        this.pruneExpired();
         const texts: string[] = [];
         for (const [msgId, entry] of this.entries) {
             if (entry.state === "queued" && entry.requester === sessionId && entry.text !== undefined) {
@@ -168,6 +198,7 @@ export class OutboxLedger {
 
     /** 台账里的条目总数（诊断用）。 */
     get size(): number {
+        this.pruneExpired();
         return this.entries.size;
     }
 
@@ -203,6 +234,27 @@ export class OutboxLedger {
         }
         this.entries.clear();
         this.stash.clear();
+    }
+
+    /** TTL 与容量共同限制迟到结果 tombstone 的生命周期和内存占用。 */
+    private pruneExpired(now = Date.now()): void {
+        const ttlMs = this.options.lateResultTtlMs ?? DEFAULT_LATE_RESULT_TTL_MS;
+        const maxExpired = Math.max(0, this.options.maxExpired ?? DEFAULT_MAX_EXPIRED);
+        const expired: OutboundEntry[] = [];
+
+        for (const entry of this.entries.values()) {
+            if (entry.state !== "expired") continue;
+            if (now - (entry.expiredAt ?? now) >= ttlMs) {
+                this.entries.delete(entry.msgId);
+                continue;
+            }
+            expired.push(entry);
+        }
+
+        const overflow = expired.length - maxExpired;
+        for (const entry of expired.slice(0, Math.max(0, overflow))) {
+            this.entries.delete(entry.msgId);
+        }
     }
 
     /** 队列按会话限幅：只清该会话超出的最老条目。 */

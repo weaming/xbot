@@ -44,6 +44,7 @@ export interface PeerResultRecord {
     peerTitle?: string;
     ok: boolean;
     lost?: boolean;
+    late?: boolean;
     text: string;
     stopReason?: string;
     createdAt: string;
