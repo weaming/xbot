@@ -2,6 +2,17 @@
 
 TUI 从 `~/.xbot/mcp-servers.yaml` 读取 MCP 服务配置。没有该文件时不会连接 MCP 服务。示例配置见仓库根目录的 [mcp-servers.example.yaml](../mcp-servers.example.yaml)。
 
+可用命令管理服务：
+
+```sh
+xbot mcp list
+xbot mcp add local-files --env HOME_DIR=$HOME/src -- npx -y @modelcontextprotocol/server-filesystem
+xbot mcp add remote-tools --url https://example.com/mcp --header Authorization='Bearer token'
+xbot mcp remove local-files
+```
+
+`list` 支持 `--json`。`add` 会写入同一份配置文件；stdio 服务可用 `--env KEY=VALUE` 和 `--cwd`，HTTP 服务可用 `--header KEY=VALUE`。配置文件路径可通过 `XBOT_MCP_SERVERS_FILE` 指定。
+
 将示例文件复制到配置目录后，按需编辑服务地址、命令和环境变量：
 
 ```fish

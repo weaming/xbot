@@ -122,6 +122,18 @@ async function startChatApp(): Promise<void> {
 
 async function main(): Promise<void> {
     installGlobalErrorGuards();
+    const cliArgs = process.argv.slice(2);
+    if (cliArgs[0] === "mcp") {
+        try {
+            const { runMcpCli } = await import("../mcp/cli.js");
+            await runMcpCli(cliArgs.slice(1));
+        } catch (error: any) {
+            process.stderr.write(`❌ ${error?.message ?? error}\n`);
+            process.exitCode = 1;
+        }
+        return;
+    }
+
     // 启动失败（如 mcp-hub 偶发抖动）做一次重试，避免用户手动重启 TUI。
     try {
         await startChatApp();
