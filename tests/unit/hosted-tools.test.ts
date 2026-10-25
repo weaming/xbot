@@ -6,6 +6,7 @@ import {
     toHostedToolDefinitions,
     toResponsesToolDefinitions,
 } from "../../src/tools/orchestrator/request-builder.js";
+import { prepareRequest } from "../../src/tools/orchestrator/turn-request.js";
 
 /** OPENAI_HOSTED_TOOLS 的托管工具声明：只声明，不执行，且不挤动 function 前缀。 */
 
@@ -70,6 +71,16 @@ describe("Responses 请求体", () => {
         expect(body.tools).toEqual([{ type: "web_search" }]);
         expect(body.tool_choice).toBe("auto");
     });
+
+    test("仅启用 tool_search 时把 defer=true 的 MCP function 标记 defer_loading", () => {
+        const deferredMcpTool = {
+            type: "function",
+            deferLoading: true,
+            function: { name: "remote__lookup", description: "Lookup", parameters: { type: "object" } },
+        };
+        expect(toResponsesToolDefinitions([deferredMcpTool], false)[0]).not.toHaveProperty("defer_loading");
+        expect(toResponsesToolDefinitions([deferredMcpTool], true)[0]).toHaveProperty("defer_loading", true);
+    });
 });
 
 describe("Chat Completions 请求体", () => {
@@ -88,4 +99,42 @@ describe("Chat Completions 请求体", () => {
         expect(body.tools.map((tool: any) => tool.type)).toEqual(["function", "function", "web_search"]);
         expect(body.stream_options).toEqual({ include_usage: true });
     });
+});
+
+test("prepareRequest 仅在启用 tool_search 时发出 defer_loading MCP 定义", async () => {
+    const deferredMcpTool = {
+        type: "function",
+        deferLoading: true,
+        function: { name: "remote__lookup", description: "Lookup", parameters: { type: "object" } },
+    };
+    const prepare = (hostedTools: string[]) => prepareRequest({
+        client: {
+            baseURL: "http://127.0.0.1:3060/v1",
+            protocol: "responses",
+            createResponse: async () => {},
+        },
+        model: "gpt-5.6-luna",
+        messages: [{ role: "user", content: "find" }] as any,
+        tools: [deferredMcpTool],
+        getToolDefinitions: () => [deferredMcpTool],
+        discoveredToolNames: new Set<string>(),
+        normalizedTools: tools => tools,
+        isFirstIteration: true,
+        stream: false,
+        hostedTools,
+    });
+
+    const enabled = await prepare(["tool_search"]);
+    const disabled = await prepare(["web_search"]);
+    expect(enabled.requestBody.tools).toContainEqual({
+        type: "function",
+        name: "remote__lookup",
+        description: "Lookup",
+        parameters: { type: "object" },
+        defer_loading: true,
+    });
+    expect(enabled.requestBody.tools).toContainEqual({ type: "tool_search" });
+    expect(disabled.requestBody.tools.find((tool: any) => tool.name === "remote__lookup"))
+        .not.toHaveProperty("defer_loading");
+    expect(disabled.requestBody.tools).toContainEqual({ type: "web_search" });
 });

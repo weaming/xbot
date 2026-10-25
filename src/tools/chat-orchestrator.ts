@@ -457,14 +457,17 @@ async function collectResponsesResponse(
           outputItems[event.output_index] = event.item;
         }
       } else if (event.type === "response.web_search_call.in_progress"
-        || event.type === "response.web_search_call.searching") {
-        // 搜索由上游执行，本地只转成进度提示；事件本身不带查询词
+        || event.type === "response.web_search_call.searching"
+        || event.type === "response.tool_search_call.in_progress"
+        || event.type === "response.tool_search_call.searching") {
+        // 托管搜索由上游执行，本地只转成进度提示；事件本身不带查询词
         const key = typeof event.item_id === "string"
           ? event.item_id
           : `search_${event.output_index ?? searchItems.size}`;
         if (!searchItems.has(key)) {
           searchItems.add(key);
-          emit({ type: "progress", message: `🌐 联网搜索中（第 ${searchItems.size} 次）...` });
+          const label = event.type.startsWith("response.tool_search_call.") ? "查找可用工具" : "联网搜索";
+          emit({ type: "progress", message: `🌐 ${label}中（第 ${searchItems.size} 次）...` });
         }
       } else if (event.type === "response.completed") {
         completedResponse = event.response;

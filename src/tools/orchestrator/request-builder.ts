@@ -18,7 +18,7 @@ export function resolveProtocol(client: { protocol?: ChatProtocol; createRespons
 }
 
 /** Chat Completions 的 function 定义 → Responses 的扁平工具定义。 */
-export function toResponsesToolDefinitions(tools: any[]): any[] {
+export function toResponsesToolDefinitions(tools: any[], enableDeferredLoading = false): any[] {
     return tools
         .filter(tool => tool?.type === "function" && tool.function?.name)
         .map(tool => ({
@@ -27,6 +27,7 @@ export function toResponsesToolDefinitions(tools: any[]): any[] {
             ...(tool.function.description ? { description: tool.function.description } : {}),
             ...(tool.function.parameters ? { parameters: tool.function.parameters } : {}),
             ...(tool.function.strict !== undefined ? { strict: tool.function.strict } : {}),
+            ...(enableDeferredLoading && tool.deferLoading === true ? { defer_loading: true } : {}),
         }));
 }
 

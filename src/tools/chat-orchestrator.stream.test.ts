@@ -126,6 +126,36 @@ describe("executeWithChat 流式聚合", () => {
         expect(saved).toEqual([{ role: "assistant", content: "已收到" }]);
     });
 
+    it("Responses 托管 tool_search 事件显示工具发现进度", async () => {
+        const progress: string[] = [];
+        const client: ChatClient = {
+            baseURL: "http://test.local/v1",
+            protocol: "responses",
+            create: async () => undefined,
+            createResponse: async () => ({
+                [Symbol.asyncIterator]: async function* () {
+                    yield { type: "response.tool_search_call.in_progress", item_id: "ts-1" };
+                    yield { type: "response.tool_search_call.searching", item_id: "ts-1" };
+                    yield { type: "response.output_text.delta", delta: "找到工具并完成。" };
+                    yield { type: "response.completed", response: { status: "completed", output: [] } };
+                },
+            }),
+        };
+
+        await executeWithChat({
+            query: "使用 MCP 工具",
+            client,
+            model: "test-model",
+            hostedTools: ["tool_search"],
+            stream: true,
+            onEvent: event => {
+                if (event.type === "progress") progress.push(event.message);
+            },
+        });
+
+        expect(progress).toEqual(["🌐 查找可用工具中（第 1 次）..."]);
+    });
+
     it("Responses 以 failed 事件结束时保留增量文字", async () => {
         const saved: any[] = [];
         const client: ChatClient = {

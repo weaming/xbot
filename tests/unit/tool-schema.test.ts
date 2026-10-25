@@ -109,6 +109,17 @@ describe("tool schema", () => {
         });
     });
 
+    test("保留 MCP deferLoading 内部标记供 Responses 构造器使用", () => {
+        const definition = formatToolDef({
+            name: "remote__lookup",
+            inputSchema: { type: "object" },
+            deferLoading: true,
+            execute: async () => ({ content: [] }),
+        });
+
+        expect(definition.deferLoading).toBe(true);
+    });
+
     test("仅为 DeepSeek 转换 NUL 正则且不修改原工具定义", () => {
         const tool = {
             type: "function",

@@ -51,6 +51,7 @@ export function createProxyTool(options: {
     tags: string[];
     source?: string;
     fromServer?: string;
+    deferLoading?: boolean;
     executeRemote: (args: any, signal?: AbortSignal) => Promise<RemoteToolCallResult>;
 }): ExecutableTool {
     const proxyTool: ExecutableTool = {
@@ -59,6 +60,7 @@ export function createProxyTool(options: {
         tags: options.tags,
         source: options.source,
         fromServer: options.fromServer,
+        ...(options.deferLoading ? { deferLoading: true } : {}),
         inputSchema: options.toolDef.inputSchema,
         execute: async (args: any, signal?: AbortSignal) => {
             try {
@@ -92,6 +94,7 @@ export function createProxyTool(options: {
 export function buildProxyToolFromRemoteDefinition(options: {
     toolDef: RemoteToolDefinition;
     serverName: string;
+    deferLoading?: boolean;
     executeRemote: (args: any, signal?: AbortSignal) => Promise<RemoteToolCallResult>;
 }): ExecutableTool {
     const metadata = parseToolMetadataFromDescription(options.toolDef.description);
@@ -103,6 +106,7 @@ export function buildProxyToolFromRemoteDefinition(options: {
         tags: metadata.tags,
         source: metadata.source || undefined,
         fromServer: options.serverName,
+        deferLoading: options.deferLoading,
         executeRemote: options.executeRemote,
     });
 }

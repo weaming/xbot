@@ -49,6 +49,8 @@ export interface McpServerConfig extends ToolFilterConfig {
     cwd?: string;
     tags?: string[];
     source?: string;
+    /** 启用 Responses tool_search 时，将该 MCP server 的工具声明为延迟加载。 */
+    defer?: boolean;
     requiredEnv?: string[];
     disabled?: boolean;
 }

@@ -216,6 +216,7 @@ async function syncServerToolsInternal(ctx: McpClientContext): Promise<void> {
         buildProxyToolFromRemoteDefinition({
             toolDef,
             serverName,
+            deferLoading: serverConfig.defer === true,
             executeRemote: async (args: any, signal?: AbortSignal) => {
                 if (!ctx.client) {
                     return {

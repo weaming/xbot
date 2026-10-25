@@ -121,9 +121,10 @@ export async function prepareRequest(options: PrepareRequestOptions): Promise<Pr
     const normalizedTools = options.normalizedTools(currentTools);
     // 托管工具追加在尾部：两种协议都带上，能否执行由上游决定
     const hostedTools = toHostedToolDefinitions(options.hostedTools ?? []);
+    const enableDeferredLoading = options.hostedTools?.includes("tool_search") ?? false;
     const requestTools = useResponses
-        ? appendHostedTools(toResponsesToolDefinitions(normalizedTools), hostedTools)
-        : appendHostedTools(normalizedTools, hostedTools);
+        ? appendHostedTools(toResponsesToolDefinitions(normalizedTools, enableDeferredLoading), hostedTools)
+        : appendHostedTools(normalizedTools.map(({ deferLoading: _deferLoading, ...tool }) => tool), hostedTools);
 
     const isMiniMax = model.startsWith("MiniMax-");
     const requestBody = buildRequestBody({

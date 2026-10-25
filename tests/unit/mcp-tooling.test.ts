@@ -72,6 +72,17 @@ describe("mcp tooling", () => {
         expect(tool.contextPolicy).toBeUndefined();
     });
 
+    test("deferLoading is retained on MCP proxy tools", () => {
+        const tool = buildProxyToolFromRemoteDefinition({
+            toolDef: { name: "remote_lookup", inputSchema: { type: "object" } },
+            serverName: "remote",
+            deferLoading: true,
+            executeRemote: async () => ({ content: [] }),
+        });
+
+        expect(tool.deferLoading).toBe(true);
+    });
+
     test("codegraph 系列工具声明 contextPolicy full（代码探索需完整输出）", () => {
         const tool = createProxyTool({
             toolDef: {

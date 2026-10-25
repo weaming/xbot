@@ -40,6 +40,8 @@ export interface ExecutableTool {
     execute: (args: any, signal?: AbortSignal) => Promise<ToolExecutionResult>;
     /** 来源 MCP server 名（同步时用于按 server 清理过期工具） */
     fromServer?: string;
+    /** 内部标记：MCP 配置 defer=true；仅 Responses tool_search 请求会投影为 defer_loading。 */
+    deferLoading?: boolean;
     /** 工具级默认策略：结果要求完整保留时声明（如读文件、补丁、代码探索），执行结果可覆盖。 */
     contextPolicy?: ToolResultPolicy;
     /**

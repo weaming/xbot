@@ -20,6 +20,7 @@ export function getCachedCleanedSchema(schema: any): any {
 export function formatToolDef(tool: ExecutableTool) {
     return {
         type: "function",
+        ...(tool.deferLoading ? { deferLoading: true } : {}),
         function: {
             name: tool.name,
             description: tool.description || "",
