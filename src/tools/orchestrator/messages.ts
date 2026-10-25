@@ -70,7 +70,6 @@ export async function materializeResponsesInput(messages: ChatMessage[]): Promis
       for (const toolCall of message.tool_calls ?? []) {
         result.push({
           type: "function_call",
-          id: toolCall.id,
           call_id: toolCall.id,
           name: toolCall.function?.name,
           arguments: toolCall.function?.arguments ?? "{}",

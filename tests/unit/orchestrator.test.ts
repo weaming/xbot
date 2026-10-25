@@ -332,6 +332,40 @@ describe("Chat Orchestrator", () => {
     expect(result.content).toBe("图片内容");
   });
 
+  test("GPT Responses 历史工具调用仅传 call_id，不传 Chat Completions 的 call ID 作为 item id", async () => {
+    const { executeWithChat } = await import('../../src/tools/chat-orchestrator.js');
+    let request: any;
+    const client = {
+      baseURL: "https://api.openai.com/v1",
+      protocol: "responses" as const,
+      create: async () => { throw new Error("不应调用 Chat Completions"); },
+      createResponse: async (body: any) => {
+        request = body;
+        return { output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "完成" }] }] };
+      },
+    };
+
+    await executeWithChat({
+      query: "继续",
+      client,
+      model: "gpt-5.6-luna",
+      history: [
+        { role: "assistant", tool_calls: [{ id: "call_00_u5h6LBjP3G1biuashXC12188", type: "function", function: { name: "get_time", arguments: "{}" } }] },
+        { role: "tool", tool_call_id: "call_00_u5h6LBjP3G1biuashXC12188", content: "10:00" },
+      ],
+    });
+
+    expect(request.input[0]).toEqual({
+      type: "function_call",
+      call_id: "call_00_u5h6LBjP3G1biuashXC12188",
+      name: "get_time",
+      arguments: "{}",
+      status: "completed",
+    });
+    expect(request.input[0]).not.toHaveProperty("id");
+    expect(request.input[1].call_id).toBe(request.input[0].call_id);
+  });
+
   test("GPT Responses 流式响应归一化文本和工具调用事件", async () => {
     const { executeWithChat } = await import('../../src/tools/chat-orchestrator.js');
     const events: any[] = [];
