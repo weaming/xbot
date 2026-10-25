@@ -374,6 +374,106 @@ describe("executeWithChat 流式聚合", () => {
         expect(assistant?.reasoning_content).toBe("think");
     });
 
+    it("空助手消息被 HTTP 400 拒绝后修复请求历史并重试一次", async () => {
+        const requests: any[] = [];
+        let requestCount = 0;
+        let repairCount = 0;
+        const history: any[] = [
+            { role: "user", content: "之前的问题" },
+            { role: "assistant", content: null, reasoning_content: "用户" },
+        ];
+        const client: ChatClient = {
+            baseURL: "https://api.deepseek.com",
+            create: async (request: any) => {
+                requests.push(structuredClone(request));
+                requestCount++;
+                if (requestCount === 1) {
+                    throw Object.assign(new Error("400 Invalid assistant message: content or tool_calls must be set"), { status: 400 });
+                }
+                return {
+                    [Symbol.asyncIterator]: async function* () {
+                        yield textChunk("答案");
+                        yield { ...textChunk(""), choices: [{ index: 0, delta: {}, finish_reason: "stop" }] };
+                    },
+                };
+            },
+        };
+
+        const result = await executeWithChat({
+            query: "问题",
+            client,
+            model: "deepseek-flash",
+            stream: true,
+            history,
+            onInvalidAssistantHistory: () => { repairCount++; },
+        });
+
+        expect(result.content).toBe("答案");
+        expect(requests).toHaveLength(2);
+        expect(requests[0].messages.some((message: any) => message.role === "assistant" && !message.content)).toBe(true);
+        expect(requests[1].messages.some((message: any) => message.role === "assistant" && !message.content && !message.tool_calls?.length)).toBe(false);
+        expect(history).toHaveLength(2);
+        expect(repairCount).toBe(1);
+    });
+
+    it("其他 HTTP 400 不修改历史也不重试", async () => {
+        let requestCount = 0;
+        const history: any[] = [{ role: "assistant", content: null, reasoning_content: "思考" }];
+        const client: ChatClient = {
+            baseURL: "https://api.deepseek.com",
+            create: async () => {
+                requestCount++;
+                throw Object.assign(new Error("400 Invalid model"), { status: 400 });
+            },
+        };
+
+        await expect(executeWithChat({
+            query: "问题",
+            client,
+            model: "deepseek-flash",
+            history,
+        })).rejects.toThrow("Invalid model");
+        expect(requestCount).toBe(1);
+        expect(history).toHaveLength(1);
+    });
+
+    it("修复历史后仍把后续工具调用和结果加入请求", async () => {
+        const requests: any[] = [];
+        const client: ChatClient = {
+            baseURL: "https://api.deepseek.com",
+            create: async (request: any) => {
+                requests.push(structuredClone(request));
+                if (requests.length === 1) {
+                    throw Object.assign(new Error("400 Invalid assistant message: content or tool_calls must be set"), { status: 400 });
+                }
+                return {
+                    [Symbol.asyncIterator]: async function* () {
+                        if (requests.length === 2) {
+                            yield toolCallChunk({ index: 0, id: "call-read", function: { name: "read", arguments: "{}" } }, "tool_calls");
+                            return;
+                        }
+                        yield textChunk("完成");
+                        yield { ...textChunk(""), choices: [{ index: 0, delta: {}, finish_reason: "stop" }] };
+                    },
+                };
+            },
+        };
+
+        const result = await executeWithChat({
+            query: "问题",
+            client,
+            model: "deepseek-flash",
+            stream: true,
+            history: [{ role: "assistant", content: null, reasoning_content: "思考" }],
+            executeTool: async () => "工具结果",
+        });
+
+        expect(result.content).toBe("完成");
+        expect(requests).toHaveLength(3);
+        expect(requests[2].messages.some((message: any) => message.role === "assistant" && message.tool_calls?.[0]?.id === "call-read")).toBe(true);
+        expect(requests[2].messages.some((message: any) => message.role === "tool" && message.content === "工具结果")).toBe(true);
+    });
+
     it("超大工具结果在请求中被投影，完整历史仍保留原文", async () => {
         const chunks = [
             toolCallChunk({ index: 0, id: "call-big", function: { name: "big_tool", arguments: "{}" } }, "tool_calls"),

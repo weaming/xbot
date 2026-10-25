@@ -21,6 +21,7 @@ import type { UsageInfo } from "../types/chat.js";
 import type { Session } from "../types/session.js";
 import type { ActiveSession, TurnSpec } from "./agent-types.js";
 import { toUserContent, type UserMessageInput } from "../types/image.js";
+import { repairEmptyAssistantHistory } from "../utils/conversation-history.js";
 
 /** turn 执行所需的宿主能力。 */
 export interface TurnHost {
@@ -167,6 +168,12 @@ export async function runSessionTurn(
         });
 
         turnUsage = outcome.usage;
+        if (outcome.hasInvalidAssistantHistory) {
+            const event = await host.eventLog.append(sessionId, "assistant_history_repaired", {});
+            host.updateActiveSeq(sessionId, event.seq);
+            repairEmptyAssistantHistory(activeSession);
+            await host.replay.writeSnapshotIfDue(sessionId, activeSession);
+        }
         if (outcome.aborted) return { aborted: true };
         if (outcome.error) {
             throw outcome.error instanceof Error ? outcome.error : new Error(String(outcome.error));

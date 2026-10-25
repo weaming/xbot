@@ -20,7 +20,8 @@ import { decideNext, nextCounters, EMPTY_RESPONSE_RETRY_PROMPT } from "./decide.
 import { buildUsageStats, toUsageInfo } from "./usage.js";
 import { isDeepSeekEndpoint, prepareRequest } from "./turn-request.js";
 import type { LLMRequestKind } from "../../utils/logger.js";
-import { getPromptTooLongLimit } from "../../utils/provider-context-limit.js";
+import { getPromptTooLongLimit, isInvalidAssistantMessageError } from "../../utils/provider-context-limit.js";
+import { filterEmptyAssistantMessages } from "./messages.js";
 
 /** 每轮请求的协议与客户端形状。 */
 export interface TurnClient {
@@ -62,6 +63,7 @@ export interface TurnContext {
   getToolDefinitions?(): any[];
   getContextReminders?(): string[] | undefined;
   onAssistantToolCallContent?(content: string): Promise<void> | void;
+  onInvalidAssistantHistory?(): void;
   /** 执行一批工具调用（含并行调度），由调用方实现。 */
   runToolCalls(calls: ToolCall[]): Promise<void>;
   /** 单轮请求：发请求并归一化。 */
@@ -161,6 +163,7 @@ export async function runTurnLoop(ctx: TurnContext): Promise<TurnLoopResult> {
       let requestStartedAt = Date.now();
       let response: any;
       let hasCompactedAfterOverflow = false;
+      let hasRetriedInvalidAssistant = false;
       while (true) {
         recordLLMExchange("REQUEST", prepared.requestBody, { sessionId: ctx.sessionId });
         requestStartedAt = Date.now();
@@ -168,6 +171,18 @@ export async function runTurnLoop(ctx: TurnContext): Promise<TurnLoopResult> {
           response = await ctx.sendRequest(prepared.requestBody);
           break;
         } catch (error) {
+          if (prepared.protocol === "chat_completions" && !hasRetriedInvalidAssistant
+            && isInvalidAssistantMessageError(error)) {
+            const repairedMessages = filterEmptyAssistantMessages(ctx.messages);
+            if (repairedMessages.length < ctx.messages.length) {
+              if (ctx.signal?.aborted) throw new DOMException("User terminated the request", "AbortError");
+              hasRetriedInvalidAssistant = true;
+              ctx.messages = repairedMessages;
+              ctx.onInvalidAssistantHistory?.();
+              prepared = await prepareCurrentRequest();
+              continue;
+            }
+          }
           const providerMaxTokens = getPromptTooLongLimit(error);
           if (!providerMaxTokens || hasCompactedAfterOverflow || !ctx.compactMessagesIfNeeded) throw error;
           hasCompactedAfterOverflow = true;

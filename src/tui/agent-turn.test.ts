@@ -54,6 +54,7 @@ function makeHost(overrides: Partial<TurnHost> = {}): HostHarness {
         } as any,
         replay: {
             appendAgentEvent: async () => {},
+            writeSnapshotIfDue: async () => {},
         } as any,
         activeSessions: active,
         allocateRequestId: () => 7,
@@ -119,6 +120,25 @@ describe("runSessionTurn 生命周期", () => {
         expect(ops).toEqual(["begin", "end"]);
         expect(usageRecords).toHaveLength(1);
         expect(persisted).toEqual([SESSION_ID]);
+    });
+
+    test("空助手消息修复在回合结束后落事件并更新会话历史", async () => {
+        runTurnCoreImpl = async spec => {
+            spec.session.turns.push({
+                id: "turn-1",
+                status: "completed",
+                messages: [
+                    { role: "assistant", content: null, reasoning_content: "思考", id: "message-1", createdAt: "2026-01-01" },
+                ],
+            });
+            return outcomeOf({ hasInvalidAssistantHistory: true });
+        };
+        const { host, appended, session } = makeHost();
+
+        await runSessionTurn(host, SESSION_ID, SPEC);
+
+        expect(appended.map(item => item.type)).toEqual(["assistant_history_repaired"]);
+        expect(session.turns[0]?.messages).toHaveLength(0);
     });
 
     test("中断路径返回 aborted，仍走完收尾", async () => {

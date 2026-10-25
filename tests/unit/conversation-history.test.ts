@@ -5,6 +5,7 @@ import {
     flattenTurns,
     getSessionContextHistory,
     getSessionHistory,
+    repairEmptyAssistantHistory,
     replaceWithCompactedContext,
 } from '../../src/utils/conversation-history.js';
 import type { ChatMessage, ConversationTurn, Session, StoredChatMessage } from '../../src/types/session.js';
@@ -43,6 +44,22 @@ function expectNextRequestToReusePrefix(completedTranscript: ChatMessage[], next
 }
 
 describe('conversation history', () => {
+    test('repairEmptyAssistantHistory moves a compacted boundary past removed messages', () => {
+        const session = createSession([
+            { role: 'user', content: '旧问题' },
+            { role: 'assistant', content: null, reasoning_content: '思考' },
+            { role: 'user', content: '新问题' },
+            { role: 'assistant', content: '答案' },
+        ]);
+        session.compactedContext = '摘要';
+        session.compactedKeepFromMessageId = 'msg-1';
+
+        expect(repairEmptyAssistantHistory(session)).toBe(1);
+        expect(session.compactedKeepFromMessageId).toBe('msg-2');
+        expect(getSessionContextHistory(session).at(-2)?.content).toBe('新问题');
+        expect(repairEmptyAssistantHistory(session)).toBe(0);
+    });
+
     test('flattenTurns strips local metadata and preserves production tool-call fields', () => {
         const productionMessages: ChatMessage[] = [
             { role: 'user', content: '查询持仓和行情' },

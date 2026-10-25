@@ -46,6 +46,34 @@ export function getSessionHistory(session: Pick<Session, 'turns'>): ChatMessage[
     return flattenTurns(session.turns);
 }
 
+/** 移除会让 Chat Completions 拒绝请求的空助手消息，修正可能指向它的压缩边界。 */
+export function repairEmptyAssistantHistory(session: Session): number {
+    let removed = 0;
+    let nextKeepFromId: string | undefined;
+    let hasRemovedKeepFrom = false;
+
+    for (const turn of session.turns) {
+        turn.messages = turn.messages.filter(message => {
+            const isEmptyAssistant = message.role === 'assistant'
+                && !message.content
+                && !message.tool_calls?.length;
+            if (isEmptyAssistant) {
+                removed += 1;
+                if (message.id === session.compactedKeepFromMessageId) hasRemovedKeepFrom = true;
+                return false;
+            }
+            if (hasRemovedKeepFrom && !nextKeepFromId) nextKeepFromId = message.id;
+            return true;
+        });
+    }
+
+    if (hasRemovedKeepFrom) {
+        session.compactedKeepFromMessageId = nextKeepFromId;
+        if (!nextKeepFromId) session.compactedThroughTurnId = session.turns.at(-1)?.id;
+    }
+    return removed;
+}
+
 /** 获取当前上下文窗口：系统消息与总结消息分开，总结消息使用 user 消息作为代际前缀注入。 */
 export function getSessionContextHistory(
     session: Pick<Session, 'turns' | 'compactedContext' | 'compactedThroughTurnId'> & Partial<Pick<Session, 'compactedKeepFromMessageId' | 'contextEpochId'>>,

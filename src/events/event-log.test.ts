@@ -76,6 +76,26 @@ async function appendTurn(
 }
 
 describe("EventLog", () => {
+    it("重放历史修复事件后移除空助手消息并保留有效工具调用", async () => {
+        const log = new EventLog();
+        const sessionId = "repair-empty-assistant";
+        await appendTurn(log, sessionId, {
+            userMessages: ["问题"],
+            messages: [
+                { role: "assistant", content: null, reasoning_content: "思考" },
+                { role: "assistant", content: null, tool_calls: [{ id: "call-1", type: "function", function: { name: "read", arguments: "{}" } }] },
+                { role: "tool", tool_call_id: "call-1", content: "结果" },
+            ],
+        });
+        await log.append(sessionId, "assistant_history_repaired", {});
+
+        const { session } = await new SessionReplay(log).replayTo(sessionId);
+        const assistants = session.turns[0]?.messages.filter(message => message.role === "assistant") ?? [];
+        expect(assistants).toHaveLength(1);
+        expect(assistants[0]?.tool_calls).toHaveLength(1);
+        expect(getSessionContextHistory(session).some(message => message.role === "assistant" && !message.content && !message.tool_calls?.length)).toBe(false);
+    });
+
     it("重放压缩边界时按持久化位置恢复保留消息", async () => {
         const log = new EventLog();
         const sessionId = "sess-compact-position";

@@ -74,6 +74,7 @@ export interface TurnOutcome {
     aborted: boolean;
     /** 非中断错误（provider/网络等），由调用方决定如何展示。 */
     error?: unknown;
+    hasInvalidAssistantHistory?: boolean;
 }
 
 type SegmentKind = AgentEventPayloads["turn_segment_start"]["kind"];
@@ -135,6 +136,7 @@ export async function runTurnCore(spec: TurnSpec, hooks: TurnHooks): Promise<Tur
     const { session, turnId, userMessages } = spec;
     let usage = emptyUsage();
     let stopReason = "stop";
+    let hasInvalidAssistantHistory = false;
 
     // 本回合底层事件 seq（turn_message / turn_segment_start），按落盘顺序；收尾写进 turn_commit.events
     const eventSeqs: Promise<number>[] = [];
@@ -205,6 +207,7 @@ export async function runTurnCore(spec: TurnSpec, hooks: TurnHooks): Promise<Tur
             onToolCall: hooks.onToolCall,
             onToolResult: hooks.onToolResult,
             onAssistantToolCallContent: hooks.onAssistantToolCallContent,
+            onInvalidAssistantHistory: () => { hasInvalidAssistantHistory = true; },
             onEvent: event => {
                 tracker.on(event);
                 if (event.type === "usage") usage = mergeUsage(usage, event.usage);
@@ -223,7 +226,7 @@ export async function runTurnCore(spec: TurnSpec, hooks: TurnHooks): Promise<Tur
             usage,
             interrupted: false,
         });
-        return { response, usage, stopReason, aborted: false };
+        return { response, usage, stopReason, aborted: false, hasInvalidAssistantHistory };
     } catch (error: any) {
         const partial = [...(error?.partialMessages ?? [])] as ChatMessage[];
         const recovered = streamRecovery.message();
@@ -251,7 +254,7 @@ export async function runTurnCore(spec: TurnSpec, hooks: TurnHooks): Promise<Tur
                 usage,
                 interrupted: true,
             });
-            return { usage, stopReason: "aborted", aborted: true };
+            return { usage, stopReason: "aborted", aborted: true, hasInvalidAssistantHistory };
         }
 
         await hooks.persistTurn({
@@ -263,6 +266,6 @@ export async function runTurnCore(spec: TurnSpec, hooks: TurnHooks): Promise<Tur
             usage,
             interrupted: false,
         });
-        return { usage, stopReason: "error", aborted: false, error };
+        return { usage, stopReason: "error", aborted: false, error, hasInvalidAssistantHistory };
     }
 }

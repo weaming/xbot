@@ -8,7 +8,7 @@ import fs from "fs";
 import path from "path";
 import { getSessionsDir, getToolCwd } from "../utils/runtime-paths.js";
 import { createUlid } from "../utils/ulid.js";
-import { appendCompletedTurn, appendInterruptedTurn, appendStandaloneTurn, replaceWithCompactedContext } from "../utils/conversation-history.js";
+import { appendCompletedTurn, appendInterruptedTurn, appendStandaloneTurn, repairEmptyAssistantHistory, replaceWithCompactedContext } from "../utils/conversation-history.js";
 import type { ChatMessage, Session } from "../types/session.js";
 import type { AgentEvent, AgentEventPayloads } from "./agent-events.js";
 import type { UsageInfo } from "../types/chat.js";
@@ -27,6 +27,7 @@ const SNAPSHOT_INTERVAL = 100;
 const SNAPSHOT_SAFE_EVENT_TYPES = new Set<AgentEvent["type"]>([
     "session_created",
     "turn_commit",
+    "assistant_history_repaired",
     "standalone_turn",
     // 会话间消息不参与 Session 投影，落在快照边界上也不会丢上下文。
     "peer_message",
@@ -319,6 +320,9 @@ function applyEvent(session: Session, event: AgentEvent): void {
             break;
         case "standalone_turn":
             appendStandaloneTurn(session, event.payload.messages);
+            break;
+        case "assistant_history_repaired":
+            repairEmptyAssistantHistory(session);
             break;
         case "usage_recorded":
             rememberPromptTokens(session, event.payload.usage);

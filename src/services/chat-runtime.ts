@@ -225,6 +225,7 @@ export interface ChatRunOptions {
     onToolCall?: (name: string, args: any, mode: "serial" | "parallel") => void;
     onToolResult?: (name: string, result: string) => void;
     onAssistantToolCallContent?: (content: string) => Promise<void> | void;
+    onInvalidAssistantHistory?: () => void;
     onProgress?: (text: string) => void;
     onEvent?: (event: UIEvent) => void | Promise<void>;
     autoCompactActiveTurn?: boolean;
@@ -541,6 +542,7 @@ export async function runChatQuery(options: ChatRunOptions) {
             onToolCall: options.onToolCall,
             onToolResult: options.onToolResult,
             onAssistantToolCallContent: options.onAssistantToolCallContent,
+            onInvalidAssistantHistory: options.onInvalidAssistantHistory,
             onProgress: options.onProgress,
             onTurnMessage: options.onTurnMessage,
             onStreamDelta: options.onStreamDelta,

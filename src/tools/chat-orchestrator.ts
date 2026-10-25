@@ -160,6 +160,7 @@ export interface OrchestratorOptions {
   onToolCall?: (name: string, args: any, mode: 'serial' | 'parallel') => void;
   onToolResult?: (name: string, result: string) => void;
   onAssistantToolCallContent?: (content: string) => Promise<void> | void;
+  onInvalidAssistantHistory?: () => void;
   onProgress?: (text: string) => void;
   // 统一渲染事件流（流式增量 + 执行阶段 + 收尾），与 onToolCall 等回调并存
   onEvent?: (event: UIEvent) => void | Promise<void>;
@@ -246,7 +247,7 @@ export async function executeWithChat(
       });
   };
   const appendTurnMessage = (message: ChatMessage): void => {
-    messages.push(message);
+    ctx.messages.push(message);
     turnMessages.push(message);
     persistMessage(message);
   };
@@ -311,6 +312,7 @@ export async function executeWithChat(
     ...(getToolDefinitions ? { getToolDefinitions } : {}),
     ...(getContextReminders ? { getContextReminders } : {}),
     ...(onAssistantToolCallContent ? { onAssistantToolCallContent } : {}),
+    ...(options.onInvalidAssistantHistory ? { onInvalidAssistantHistory: options.onInvalidAssistantHistory } : {}),
     runToolCalls,
     sendRequest: (requestBody: Record<string, any>) => sendProtocolRequest({
       client,

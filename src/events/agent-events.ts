@@ -23,6 +23,7 @@ export type AgentEventType =
     | "turn_segment_start"
     | "turn_commit"
     | "context_compacted"
+    | "assistant_history_repaired"
     | "standalone_turn"
     | "usage_recorded"
     | "session_archived"
@@ -115,6 +116,8 @@ export interface AgentEventPayloads {
         keepFromPosition?: { turnIndex: number; messageIndex: number };
         usage?: UsageInfo;
     };
+    /** 上游拒绝空助手消息后，移除历史中无正文且无工具调用的助手消息。 */
+    assistant_history_repaired: {};
     /**
      * 不经编排器的独立回合投影源。
      * injected：自动注入的上下文（群聊状态更新）标记 —— 不是用户活动，会话排序时不计入更新时间。
