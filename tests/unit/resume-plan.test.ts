@@ -62,11 +62,11 @@ describe("planResume", () => {
         expect(plan.toolCalls).toEqual([]);
     });
 
-    test("尾部是普通 assistant 文本：没有可续跑点", () => {
+    test("已完成回合尾部是普通 assistant 文本：没有可续跑点", () => {
         const plan = planResume(sessionWith([
             { role: "user", content: "问" },
             { role: "assistant", content: "答" },
-        ]));
+        ], "completed"));
         expect(plan.canResume).toBe(false);
         expect(plan.reason).toBeTruthy();
     });
@@ -85,6 +85,11 @@ describe("planResume", () => {
 
     test("上一轮 failed 且只有用户消息：可以重试请求", () => {
         const plan = planResume(sessionWith([{ role: "user", content: "再查一次" }], "failed"));
+        expect(plan).toEqual({ toolCalls: [], canResume: true });
+    });
+
+    test("压缩中取消且仅有用户消息时可以续跑", () => {
+        const plan = planResume(sessionWith([{ role: "user", content: "继续任务" }]));
         expect(plan).toEqual({ toolCalls: [], canResume: true });
     });
 });

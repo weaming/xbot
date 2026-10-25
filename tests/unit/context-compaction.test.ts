@@ -4,7 +4,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "b
  * 上下文压缩回归用例（对应真实事故：状态栏 69.1k/500k，请求却被 provider 判 1096619 tokens 超窗）：
  * 1. 请求级压缩只改本轮请求，不改 session.turns，因此 lastPromptTokens 变小不能当成「历史变小」，
  *    否则下一回合按未压缩历史重建请求直接 400；
- * 2. 历史已经超窗时压缩请求本身也会超窗，必须分段折叠摘要。
+ * 2. 压缩请求只执行一次；取消或失败时不会写入部分摘要。
  */
 
 type RunChatQueryImpl = (options: any) => Promise<any>;
@@ -22,26 +22,26 @@ mock.module("../../src/services/chat-runtime.js", () => {
     };
 });
 
-const { autoCompactIfNeeded } = await import("../../src/services/auto-compact.js");
+const { autoCompactIfNeeded, compactActiveTurnMessagesIfNeeded } = await import("../../src/services/auto-compact.js");
 const { runTurnCore } = await import("../../src/services/run-turn.js");
 const { createEmptySession } = await import("../../src/events/session-replay.js");
 const { appendCompletedTurn, getSessionContextHistory, replaceWithCompactedContext } = await import(
     "../../src/utils/conversation-history.js"
 );
-const { shouldAutoCompact, getAutoCompactThreshold, splitTurnsIntoChunks, COMPACT_CHUNK_MIN_TOKENS } = await import(
+const { shouldAutoCompact, getAutoCompactThreshold } = await import(
     "../../src/utils/token-budget.js"
 );
 const { emptyUsage } = await import("../../src/events/ui-events.js");
 
 const originalContextWindow = process.env.CONTEXT_WINDOW_TOKENS;
 
-/** 造一段估算 token 超过 chunk 预算的长文本。 */
+/** 造一段超过测试窗口的长文本。 */
 function longText(tokens: number): string {
     return "a".repeat(tokens * 3.5);
 }
 
 beforeEach(() => {
-    // 收紧窗口，让 chunk 预算只由分段下限决定，用例不必造百万 token 的假历史
+    // 收紧窗口，用例不必造百万 token 的假历史。
     process.env.CONTEXT_WINDOW_TOKENS = "40000";
 });
 
@@ -82,31 +82,76 @@ describe("shouldAutoCompact 与 lastPromptTokens 的关系", () => {
     });
 });
 
-describe("splitTurnsIntoChunks 分段摘要", () => {
-    test("按预算切段且保留顺序，单个超大 turn 独占一段", async () => {
-        const session = createEmptySession("sess-chunk-split");
-        appendCompletedTurn(session, [`u1 ${longText(3_000)}`], [{ role: "assistant", content: "a1" }], true);
-        appendCompletedTurn(session, [`u2 ${longText(30_000)}`], [{ role: "assistant", content: "a2" }], true);
-        appendCompletedTurn(session, [`u3 ${longText(3_000)}`], [{ role: "assistant", content: "a3" }], true);
+describe("provider 超窗后的本轮原子压缩", () => {
+    test("主请求超窗后先尝试一次不带工具的完整摘要", async () => {
+        const histories: string[] = [];
+        runChatQueryImpl = async options => {
+            expect(options.disableTools).toBe(true);
+            histories.push(JSON.stringify(options.history));
+            return { content: `摘要 ${histories.length}`, toolCalls: 0, messages: [] };
+        };
 
-        const budget = COMPACT_CHUNK_MIN_TOKENS;
-        const chunks = await splitTurnsIntoChunks(session.turns, budget);
+        const result = await compactActiveTurnMessagesIfNeeded([
+            { role: "system", content: "系统提示" },
+            { role: "user", content: "继续任务" },
+            { role: "tool", content: "结果".repeat(4_000) },
+        ], {
+            model: "deepseek-chat",
+            systemPrompt: "系统提示",
+            userId: 1,
+            providerMaxTokens: 20_000,
+        });
 
-        expect(chunks.length).toBeGreaterThan(1);
-        expect(chunks.flat()).toEqual(session.turns);
-        // 超大 turn 自己成段，不与邻居合并
-        const huge = chunks.find(chunk => chunk.length === 1 && chunk[0].id === session.turns[1].id);
-        expect(huge).toBeDefined();
+        expect(histories).toHaveLength(1);
+        expect(histories[0]).toContain("结果");
+        expect(result?.[0]).toEqual({ role: "system", content: "系统提示" });
+        expect(result?.[1]?.content).toContain("摘要 1");
     });
 
-    test("空输入返回空段列表", async () => {
-        expect(await splitTurnsIntoChunks([], 1000)).toEqual([]);
+    test("摘要请求自身超窗时不重试且不返回部分摘要", async () => {
+        process.env.CONTEXT_WINDOW_TOKENS = "8000";
+        let requests = 0;
+        runChatQueryImpl = async options => {
+            requests++;
+            expect(options.disableTools).toBe(true);
+            throw new Error("LLM provider 请求失败（HTTP 400）：400 WorkBuddy AI: prompt is too long: 10001 tokens > 10000 maximum");
+        };
+
+        await expect(compactActiveTurnMessagesIfNeeded([
+            { role: "system", content: "系统提示" },
+            { role: "user", content: "a".repeat(40_000) },
+        ], {
+            model: "deepseek-chat",
+            systemPrompt: "系统提示",
+            userId: 1,
+        })).rejects.toThrow("本轮上下文压缩失败");
+
+        expect(requests).toBe(1);
+    });
+
+    test("摘要响应到达时已取消，不交付临时摘要", async () => {
+        const controller = new AbortController();
+        runChatQueryImpl = async () => {
+            controller.abort();
+            return { content: "未提交的摘要", toolCalls: 0, messages: [] };
+        };
+
+        await expect(compactActiveTurnMessagesIfNeeded([
+            { role: "system", content: "系统提示" },
+            { role: "user", content: "继续任务" },
+        ], {
+            model: "deepseek-chat",
+            systemPrompt: "系统提示",
+            userId: 1,
+            providerMaxTokens: 20_000,
+            signal: controller.signal,
+        })).rejects.toHaveProperty("name", "AbortError");
     });
 });
 
-describe("autoCompactIfNeeded 分段折叠摘要", () => {
+describe("autoCompactIfNeeded 单次原子压缩", () => {
     test("正常阈值触发的压缩只发一次请求（前缀缓存可命中）", async () => {
-        // 收紧窗口使阈值/预算都变小数：阈值 9446、单次预算约 10036
+        // 收紧窗口使阈值变小，用例无需构造百万 token 历史。
         process.env.CONTEXT_WINDOW_TOKENS = "20000";
         const session = createEmptySession("sess-single-request-compact");
         appendCompletedTurn(session, ["开头问题"], [{ role: "assistant", content: longText(4_800) }], true);
@@ -214,8 +259,8 @@ describe("autoCompactIfNeeded 分段折叠摘要", () => {
         expect(session.compactedKeepFromMessageId).toBe(session.turns[3]!.messages[0]!.id);
     });
 
-    test("历史超窗时按段折叠，摘要前缀逐段传递", async () => {
-        const session = createEmptySession("sess-chunked-compact");
+    test("历史超窗时仍只发一次完整摘要请求", async () => {
+        const session = createEmptySession("sess-single-compact");
         for (let index = 1; index <= 3; index++) {
             appendCompletedTurn(
                 session,
@@ -226,36 +271,69 @@ describe("autoCompactIfNeeded 分段折叠摘要", () => {
         }
 
         const histories: any[][] = [];
-        let round = 0;
         runChatQueryImpl = async options => {
-            round += 1;
             histories.push(options.history);
             options.onEvent?.({
                 type: "usage",
                 usage: { ...emptyUsage(), model: "test", promptTokens: 100, totalTokens: 100, requestCount: 1 },
             });
-            return { content: `SUMMARY_${round}`, toolCalls: 0, messages: [] };
+            return { content: "SUMMARY", toolCalls: 0, messages: [] };
         };
 
         const result = await autoCompactIfNeeded(session, { model: "deepseek-chat" });
 
         expect(result.wasCompacted).toBe(true);
-        expect(histories.length).toBeGreaterThan(1);
-        // 首段没有旧摘要；后续每段都把上一段摘要作为前缀带上（折叠）
+        expect(histories).toHaveLength(1);
         expect(JSON.stringify(histories[0])).not.toContain("conversation_summary");
-        expect(JSON.stringify(histories[1])).toContain("SUMMARY_1");
-        expect(JSON.stringify(histories[1])).toContain("conversation_summary");
-        // 终态写入最后一段摘要；尾部大 turn 自身超过保留预算，在它内部细切
-        expect(session.compactedContext).toBe(`SUMMARY_${round}`);
+        expect(JSON.stringify(histories[0])).toContain("问题 1");
+        expect(session.compactedContext).toBe("SUMMARY");
         expect(session.compactedKeepFromMessageId).toBe(session.turns[2]!.messages[1]!.id);
         expect(session.compactedThroughTurnId).toBe(session.turns[1]!.id);
         const contextAfter = getSessionContextHistory(session);
-        expect(JSON.stringify(contextAfter)).toContain(`SUMMARY_${round}`);
+        expect(JSON.stringify(contextAfter)).toContain("SUMMARY");
         expect(contextAfter).toHaveLength(3);
         expect(session.compactCount).toBe(1);
-        // 每段 usage 都计入本次压缩
-        expect(result.usage?.requestCount).toBe(round);
+        expect(result.usage?.requestCount).toBe(1);
         expect(result.postTokens).toBeLessThan(result.preTokens ?? 0);
+    });
+
+    test("取消后不落压缩事件，不修改会话", async () => {
+        const session = createEmptySession("sess-aborted-compact");
+        appendCompletedTurn(session, ["问题"], [{ role: "assistant", content: longText(60_000) }], true);
+        const originalContextEpochId = session.contextEpochId;
+        const controller = new AbortController();
+        let persisted = false;
+        runChatQueryImpl = async () => {
+            controller.abort();
+            return { content: "未提交的摘要", toolCalls: 0, messages: [] };
+        };
+
+        await expect(autoCompactIfNeeded(session, {
+            model: "deepseek-chat",
+            signal: controller.signal,
+            persistCompactedEvent: async () => { persisted = true; },
+        })).rejects.toHaveProperty("name", "AbortError");
+
+        expect(persisted).toBe(false);
+        expect(session.compactedContext).toBeUndefined();
+        expect(session.compactCount).toBe(0);
+        expect(session.contextEpochId).toBe(originalContextEpochId);
+    });
+
+    test("压缩事件写入失败时不修改会话", async () => {
+        const session = createEmptySession("sess-persist-failed-compact");
+        appendCompletedTurn(session, ["问题"], [{ role: "assistant", content: longText(60_000) }], true);
+        const originalContextEpochId = session.contextEpochId;
+        runChatQueryImpl = async () => ({ content: "未提交的摘要", toolCalls: 0, messages: [] });
+
+        await expect(autoCompactIfNeeded(session, {
+            model: "deepseek-chat",
+            persistCompactedEvent: async () => { throw new Error("写入失败"); },
+        })).rejects.toThrow("写入失败");
+
+        expect(session.compactedContext).toBeUndefined();
+        expect(session.compactCount).toBe(0);
+        expect(session.contextEpochId).toBe(originalContextEpochId);
     });
 
 });

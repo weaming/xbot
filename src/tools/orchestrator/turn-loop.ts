@@ -20,6 +20,7 @@ import { decideNext, nextCounters, EMPTY_RESPONSE_RETRY_PROMPT } from "./decide.
 import { buildUsageStats, toUsageInfo } from "./usage.js";
 import { isDeepSeekEndpoint, prepareRequest } from "./turn-request.js";
 import type { LLMRequestKind } from "../../utils/logger.js";
+import { getPromptTooLongLimit } from "../../utils/provider-context-limit.js";
 
 /** 每轮请求的协议与客户端形状。 */
 export interface TurnClient {
@@ -57,7 +58,7 @@ export interface TurnContext {
   persistMessage(message: ChatMessage): void;
   consumePendingMessages?(): Array<string | UserMessageInput> | undefined;
   onConsumePending?(text: string, messages: Array<string | UserMessageInput>): void | Promise<void>;
-  compactMessagesIfNeeded?(messages: ChatMessage[], lastPromptTokens?: number): Promise<ChatMessage[] | undefined>;
+  compactMessagesIfNeeded?(messages: ChatMessage[], lastPromptTokens?: number, providerMaxTokens?: number): Promise<ChatMessage[] | undefined>;
   getToolDefinitions?(): any[];
   getContextReminders?(): string[] | undefined;
   onAssistantToolCallContent?(content: string): Promise<void> | void;
@@ -138,7 +139,7 @@ export async function runTurnLoop(ctx: TurnContext): Promise<TurnLoopResult> {
         if (compacted) ctx.messages = compacted;
       }
 
-      const prepared = await prepareRequest({
+      const prepareCurrentRequest = () => prepareRequest({
         client: ctx.client,
         model: ctx.model,
         messages: ctx.messages,
@@ -155,11 +156,28 @@ export async function runTurnLoop(ctx: TurnContext): Promise<TurnLoopResult> {
         ...(ctx.reasoningEffort ? { reasoningEffort: ctx.reasoningEffort } : {}),
         ...(ctx.reasoningEfforts ? { reasoningEfforts: ctx.reasoningEfforts } : {}),
       });
+      let prepared = await prepareCurrentRequest();
 
-      recordLLMExchange("REQUEST", prepared.requestBody, { sessionId: ctx.sessionId });
-
-      const requestStartedAt = Date.now();
-      const response = await ctx.sendRequest(prepared.requestBody);
+      let requestStartedAt = Date.now();
+      let response: any;
+      let hasCompactedAfterOverflow = false;
+      while (true) {
+        recordLLMExchange("REQUEST", prepared.requestBody, { sessionId: ctx.sessionId });
+        requestStartedAt = Date.now();
+        try {
+          response = await ctx.sendRequest(prepared.requestBody);
+          break;
+        } catch (error) {
+          const providerMaxTokens = getPromptTooLongLimit(error);
+          if (!providerMaxTokens || hasCompactedAfterOverflow || !ctx.compactMessagesIfNeeded) throw error;
+          hasCompactedAfterOverflow = true;
+          const compacted = await ctx.compactMessagesIfNeeded(ctx.messages, lastUsageInfo?.promptTokens, providerMaxTokens);
+          if (!compacted) throw error;
+          if (ctx.signal?.aborted) throw new DOMException("User terminated the request", "AbortError");
+          ctx.messages = compacted;
+          prepared = await prepareCurrentRequest();
+        }
+      }
       const normalized = prepared.protocol === "responses" ? normalizeResponsesResponse(response) : response;
       const assistantMsg = normalized.choices?.[0]?.message;
       lastFinishReason = normalizeFinishReason(normalized.choices?.[0]?.finish_reason);

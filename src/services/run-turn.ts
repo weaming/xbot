@@ -43,6 +43,7 @@ export interface TurnSpec {
     consumePendingMessages?: () => Array<string | UserMessageInput> | undefined;
     /** 工具循环中的请求级压缩（续跑时关闭，避免把待补的 tool_calls 前缀摘要掉）。 */
     autoCompactActiveTurn?: boolean;
+    compactOnProviderOverflow?: boolean;
 }
 
 export interface TurnHooks {
@@ -165,6 +166,7 @@ export async function runTurnCore(spec: TurnSpec, hooks: TurnHooks): Promise<Tur
             contextEpochId: session.contextEpochId,
             initialRequestKind: spec.initialRequestKind ?? "user_request",
             autoCompactActiveTurn: spec.autoCompactActiveTurn,
+            compactOnProviderOverflow: spec.compactOnProviderOverflow,
             stream: true,
             signal: spec.signal,
             skipUserQuery: spec.skipUserQuery,

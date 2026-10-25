@@ -29,9 +29,9 @@ export function planResume(session: Pick<Session, "turns">): ResumePlan {
     }
 
     const last = messages[messages.length - 1];
-    const isFailed = lastTurn.status === "failed";
+    const canRetryRequest = lastTurn.status === "failed" || lastTurn.status === "interrupted";
     const hasToolCalls = readToolCalls(last).length > 0;
-    if (isFailed && (last.role === "user" || last.role === "assistant" && !hasToolCalls)) {
+    if (canRetryRequest && (last.role === "user" || last.role === "assistant" && !hasToolCalls)) {
         return { toolCalls: [], canResume: true };
     }
     if (!hasToolCalls && last.role !== "tool") {

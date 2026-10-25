@@ -88,6 +88,7 @@ export async function runSessionTurn(
             initialRequestKind: spec.initialRequestKind,
             consumePendingMessages: spec.consumePendingMessages,
             autoCompactActiveTurn: !spec.skipUserQuery,
+            compactOnProviderOverflow: Boolean(spec.skipUserQuery),
         }, {
             persistUserMessages: async (texts, tid) => {
                 if ((await host.eventLog.lastSeq(sessionId)) === 0) {
@@ -147,13 +148,13 @@ export async function runSessionTurn(
                     onProgress: message => host.notify(requestId, sessionId, { type: "progress", message }),
                     onUsage: usage => host.notify(requestId, sessionId, { type: "usage", usage }),
                     persistCompactedEvent: async ({ compactedContext, keepFromMessageId, keepFromPosition, usage }) => {
-                        await host.replay.appendAgentEvent(activeSession, "context_compacted", {
+                        const event = await host.eventLog.append(sessionId, "context_compacted", {
                             compactedContext,
                             ...(keepFromMessageId ? { keepFromMessageId } : {}),
                             ...(keepFromPosition ? { keepFromPosition } : {}),
                             usage,
                         });
-                        host.updateActiveSeq(sessionId, await host.eventLog.lastSeq(sessionId, { forceRefresh: true }));
+                        host.updateActiveSeq(sessionId, event.seq);
                     },
                 });
                 return result.wasCompacted ? undefined : result.usage;
@@ -238,18 +239,19 @@ export async function compactSessionContext(
                 host.notify(requestId, sessionId, event);
             },
         });
+        if (abortController.signal.aborted) throw new DOMException("User terminated the request", "AbortError");
         const compactedContext = response.content.trim();
         if (!compactedContext) throw new Error("压缩结果为空");
         const keepFromPosition = findCompactionKeepFromPosition(session, keepFromMessageId);
-        applyCompaction(session, compactedContext, { instruction, keepFromMessageId });
-        await host.replay.appendAgentEvent(session, "context_compacted", {
+        const event = await host.eventLog.append(sessionId, "context_compacted", {
             compactedContext,
             instruction,
             ...(keepFromMessageId ? { keepFromMessageId } : {}),
             ...(keepFromPosition ? { keepFromPosition } : {}),
             usage: usage.requestCount ? usage : undefined,
         });
-        host.updateActiveSeq(sessionId, await host.eventLog.lastSeq(sessionId, { forceRefresh: true }));
+        applyCompaction(session, compactedContext, { instruction, keepFromMessageId });
+        host.updateActiveSeq(sessionId, event.seq);
     } catch (error) {
         if (session && usage.requestCount) {
             try {

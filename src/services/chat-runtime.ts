@@ -228,6 +228,8 @@ export interface ChatRunOptions {
     onProgress?: (text: string) => void;
     onEvent?: (event: UIEvent) => void | Promise<void>;
     autoCompactActiveTurn?: boolean;
+    /** 续跑仅在 provider 明确报输入超窗时压缩，不做请求前预压缩。 */
+    compactOnProviderOverflow?: boolean;
     /** 回合内每条完整消息定稿时的落盘回调（turn_message 事件源）。 */
     onTurnMessage?: (message: ChatMessage) => void | Promise<void>;
     onStreamDelta?: (delta: StreamDelta, requestIndex: number) => Promise<void>;
@@ -511,8 +513,9 @@ export async function runChatQuery(options: ChatRunOptions) {
             stream: options.stream,
             consumePendingMessages: options.consumePendingMessages,
             onConsumePending: options.onConsumePending,
-            compactMessagesIfNeeded: options.autoCompactActiveTurn
-                ? async (messages, lastPromptTokens) => {
+            compactMessagesIfNeeded: options.autoCompactActiveTurn || options.compactOnProviderOverflow
+                ? async (messages, lastPromptTokens, providerMaxTokens) => {
+                    if (!options.autoCompactActiveTurn && providerMaxTokens === undefined) return undefined;
                     if (activeTurnCompactionFailed) return undefined;
                     const { compactActiveTurnMessagesIfNeeded } = await import("./auto-compact.js");
                     return compactActiveTurnMessagesIfNeeded(messages, {
@@ -524,8 +527,12 @@ export async function runChatQuery(options: ChatRunOptions) {
                         modelSelection: options.modelSelection,
                         contextEpochId: options.contextEpochId,
                         lastPromptTokens,
+                        providerMaxTokens,
                         onUsage: usage => options.onEvent?.({ type: "usage", usage }),
-                        onProgress: options.onProgress,
+                        onProgress: message => {
+                            options.onProgress?.(message);
+                            options.onEvent?.({ type: "progress", message });
+                        },
                         onFailure: () => { activeTurnCompactionFailed = true; },
                     });
                 }

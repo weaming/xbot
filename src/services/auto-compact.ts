@@ -1,14 +1,10 @@
-import type { ChatMessage } from "../types/session.js";
-import type { ConversationTurn, Session } from "../types/session.js";
+import type { ChatMessage, ConversationTurn, Session } from "../types/session.js";
 import { getSessionContextHistory, replaceWithCompactedContext } from "../utils/conversation-history.js";
 import {
-    COMPACT_CHUNK_MIN_TOKENS,
     countSessionContextTokens,
     getAutoCompactThreshold,
-    getEffectiveContextWindowSize,
     shouldAutoCompact,
     splitTurnsForCompaction,
-    splitTurnsIntoChunks,
 } from "../utils/token-budget.js";
 import { countMessagesTokens, countTextTokens } from "../utils/tokenizer.js";
 import { buildCompactPrompt } from "../utils/compaction-prompt.js";
@@ -18,14 +14,6 @@ import type { UsageInfo } from "../types/chat.js";
 import type { ChatModelSelection } from "../types/chat-model.js";
 import { getOrCreateSessionSystemPrompt, runChatQuery } from "./chat-runtime.js";
 import { DEFAULT_MEMORY_USER_ID, normalizeMemoryUserId } from "../utils/runtime-paths.js";
-
-/**
- * 单次摘要请求可用的输入预算占有效窗口的比例。
- * 0.85 留出系统提示、压缩提示与本地估算偏差（实测约 ±15%）的余量：
- * 正常阈值触发的压缩（阈值 0.8×窗口）因此始终只发一次请求，前缀与上一条请求一致，
- * 仍能命中 Prompt Cache；只有历史本身已经超过窗口（被请求级压缩藏住增长的极端情况）才分段。
- */
-const COMPACT_INPUT_RATIO = 0.85;
 
 export interface AutoCompactOptions {
     model?: string;
@@ -61,6 +49,7 @@ interface ActiveTurnCompactOptions {
     modelSelection?: ChatModelSelection;
     contextEpochId?: string;
     lastPromptTokens?: number;
+    providerMaxTokens?: number;
     onUsage?: (usage: UsageInfo) => void;
     onFailure?: () => void;
 }
@@ -70,11 +59,13 @@ export async function compactActiveTurnMessagesIfNeeded(
     messages: any[],
     options: ActiveTurnCompactOptions,
 ): Promise<any[] | undefined> {
-    // 真实分词计数：工具结果这类内容启发式会低估两成以上，漏判就直接撞窗口
-    const currentTokens = await countMessagesTokens(messages, options.model);
-    const threshold = getAutoCompactThreshold(options.model);
-    const checkTokens = Math.max(options.lastPromptTokens ?? 0, currentTokens);
-    if (checkTokens < threshold) return undefined;
+    if (options.providerMaxTokens === undefined) {
+        // 工具结果这类内容启发式会低估，正常路径需用真实分词计数预判。
+        const currentTokens = await countMessagesTokens(messages, options.model);
+        const threshold = getAutoCompactThreshold(options.model);
+        const checkTokens = Math.max(options.lastPromptTokens ?? 0, currentTokens);
+        if (checkTokens < threshold) return undefined;
+    }
 
     options.onProgress?.("🗜️ 当前任务上下文达到上限，正在压缩本轮进展...");
 
@@ -89,6 +80,7 @@ export async function compactActiveTurnMessagesIfNeeded(
             modelSelection: options.modelSelection,
             contextEpochId: options.contextEpochId,
             initialRequestKind: "context_compaction",
+            disableTools: true,
             stream: true,
             signal: options.signal,
             onProgress: options.onProgress,
@@ -96,6 +88,7 @@ export async function compactActiveTurnMessagesIfNeeded(
                 if (event.type === "usage") options.onUsage?.(event.usage);
             },
         });
+        if (options.signal?.aborted) throw new DOMException("User terminated the request", "AbortError");
         const compactedContext = response.content.trim();
         if (!compactedContext) throw new Error("本轮自动压缩结果为空");
 
@@ -121,12 +114,6 @@ export async function compactActiveTurnMessagesIfNeeded(
         console.error("❌ [ActiveTurnCompact] Failed:", reason);
         throw new Error(`本轮上下文压缩失败，已停止请求以避免继续发送超长上下文：${reason}`);
     }
-}
-
-/** 单次摘要请求的输入预算（估算 token）：有效窗口打个安全折扣，再扣除系统提示占用。 */
-function getCompactChunkBudget(model: string | undefined, systemPromptTokens: number): number {
-    const budget = Math.floor(getEffectiveContextWindowSize(model) * COMPACT_INPUT_RATIO) - systemPromptTokens;
-    return Math.max(COMPACT_CHUNK_MIN_TOKENS, budget);
 }
 
 /**
@@ -235,53 +222,34 @@ export async function autoCompactIfNeeded(
 
     let usage = emptyUsage();
     try {
-        // 待压缩历史可能已经超过模型窗口（回合内请求级压缩藏住了增长），一次性总结会被 provider 400，
-        // 因此按预算分段折叠：每段输入 = 上一段的摘要前缀 + 该段 turns，逐段收敛成最终摘要。
-        const budget = getCompactChunkBudget(options.model, systemPromptTokens);
-        const chunks = await splitTurnsIntoChunks(turnsToCompact, budget, options.model);
-        // turnsToCompact 非空 => chunks 至少一段，结束后必定是一段摘要正文
-        let compactedContext = session.compactedContext ?? "";
+        const response = await runChatQuery({
+            query: buildCompactPrompt(),
+            systemPrompt,
+            history: buildCompactionHistory(session, turnsToCompact),
+            userId,
+            sessionId: session.sessionId,
+            modelSelection: session.modelSelection,
+            contextEpochId: session.contextEpochId,
+            initialRequestKind: "context_compaction",
+            disableTools: true,
+            stream: true,
+            signal: options.signal,
+            onEvent: event => {
+                if (event.type !== "usage") return;
+                usage = mergeUsage(usage, event.usage);
+                options.onUsage?.(event.usage);
+            },
+        });
 
-        for (const [index, chunk] of chunks.entries()) {
-            if (index > 0) {
-                options.onProgress?.(`🗜️ 历史超出窗口，正在分段压缩（${index + 1}/${chunks.length}）...`);
-            }
-            // 构建用于总结的历史：已有摘要（或上一段摘要）+ 本段 turns
-            const tempSession: Session = {
-                ...session,
-                turns: chunk,
-                compactedContext,
-                compactedThroughTurnId: undefined,
-                compactedKeepFromMessageId: undefined,
-            };
-            const response = await runChatQuery({
-                query: buildCompactPrompt(),
-                systemPrompt,
-                history: getSessionContextHistory(tempSession),
-                userId,
-                sessionId: session.sessionId,
-                modelSelection: session.modelSelection,
-                contextEpochId: session.contextEpochId,
-                initialRequestKind: "context_compaction",
-                stream: true,
-                signal: options.signal,
-                onEvent: event => {
-                    if (event.type !== "usage") return;
-                    usage = mergeUsage(usage, event.usage);
-                    options.onUsage?.(event.usage);
-                },
-            });
+        if (options.signal?.aborted) throw new DOMException("User terminated the request", "AbortError");
+        const compactedContext = response.content.trim();
+        if (!compactedContext) throw new Error("自动压缩结果为空");
 
-            const summary = response.content.trim();
-            if (!summary) {
-                throw new Error("自动压缩结果为空");
-            }
-            compactedContext = summary;
-        }
-
-        // 保留段起点之前（含上次保留段所在 turn 的头部）都折叠进摘要，保留段留在窗口里
         const keepFromPosition = findCompactionKeepFromPosition(session, keepFromMessageId);
-        applyCompaction(session, compactedContext, { keepFromMessageId });
+        const compactedSession = { ...session };
+        applyCompaction(compactedSession, compactedContext, { keepFromMessageId });
+        const postTokens = await countSessionContextTokens(compactedSession, { model: options.model });
+        if (options.signal?.aborted) throw new DOMException("User terminated the request", "AbortError");
 
         if (options.persistCompactedEvent) {
             await options.persistCompactedEvent({
@@ -291,8 +259,7 @@ export async function autoCompactIfNeeded(
                 ...(usage.requestCount ? { usage } : {}),
             });
         }
-
-        const postTokens = await countSessionContextTokens(session, { model: options.model });
+        Object.assign(session, compactedSession);
 
         return {
             wasCompacted: true,
@@ -302,6 +269,7 @@ export async function autoCompactIfNeeded(
             usage: usage.requestCount ? usage : undefined,
         };
     } catch (error: any) {
+        if (isAbortError(error)) throw error;
         const reason = error instanceof Error ? error.message : String(error);
         console.error("❌ [AutoCompact] Failed:", reason);
         throw new Error(`会话上下文压缩失败，已停止请求以避免继续发送超长上下文：${reason}`);

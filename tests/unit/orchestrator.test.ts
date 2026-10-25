@@ -592,6 +592,85 @@ describe("Chat Orchestrator", () => {
     expect(compactedUsage.latestPromptTokens).toBe(10);
   });
 
+  test("provider 明确返回输入超窗 400 时强制压缩并仅重试一次", async () => {
+    const { executeWithChat } = await import('../../src/tools/chat-orchestrator.js');
+    const requests: any[] = [];
+    const compactLimits: number[] = [];
+    const client = {
+      baseURL: "http://test.invalid",
+      create: async (request: any) => {
+        requests.push(request);
+        if (requests.length === 1) {
+          throw Object.assign(new Error("400 WorkBuddy AI: prompt is too long: 1048783 tokens > 1048576 maximum"), { status: 400 });
+        }
+        return {
+          choices: [{ message: { role: "assistant", content: "done" } }],
+          usage: { prompt_tokens: 100, completion_tokens: 2, total_tokens: 102 },
+        };
+      },
+    };
+
+    const result = await executeWithChat({
+      query: "继续",
+      client,
+      model: "test-model",
+      compactMessagesIfNeeded: async (_messages, _lastPromptTokens, providerMaxTokens) => {
+        compactLimits.push(providerMaxTokens!);
+        return [{ role: "user", content: "压缩后的上下文" }];
+      },
+    });
+
+    expect(result.content).toBe("done");
+    expect(compactLimits).toEqual([1_048_576]);
+    expect(requests).toHaveLength(2);
+    expect(requests[1].messages).toEqual([{ role: "user", content: "压缩后的上下文" }]);
+  });
+
+  test("压缩后再次超窗时保留第二次 provider 错误", async () => {
+    const { executeWithChat } = await import('../../src/tools/chat-orchestrator.js');
+    const error = Object.assign(new Error("400 WorkBuddy AI: prompt is too long: 1048783 tokens > 1048576 maximum"), { status: 400 });
+    let requests = 0;
+    let compactions = 0;
+
+    await expect(executeWithChat({
+      query: "继续",
+      client: { baseURL: "http://test.invalid", create: async () => { requests++; throw error; } },
+      model: "test-model",
+      compactMessagesIfNeeded: async () => {
+        compactions++;
+        return [{ role: "user", content: "摘要" }];
+      },
+    })).rejects.toThrow("prompt is too long");
+
+    expect(requests).toBe(2);
+    expect(compactions).toBe(1);
+  });
+
+  test("其他 400 错误不触发压缩重试", async () => {
+    const { executeWithChat } = await import('../../src/tools/chat-orchestrator.js');
+    let requests = 0;
+    let compactions = 0;
+
+    await expect(executeWithChat({
+      query: "继续",
+      client: {
+        baseURL: "http://test.invalid",
+        create: async () => {
+          requests++;
+          throw Object.assign(new Error("400 invalid_request_error"), { status: 400 });
+        },
+      },
+      model: "test-model",
+      compactMessagesIfNeeded: async () => {
+        compactions++;
+        return [{ role: "user", content: "摘要" }];
+      },
+    })).rejects.toThrow("invalid_request_error");
+
+    expect(requests).toBe(1);
+    expect(compactions).toBe(0);
+  });
+
   test("should return discovered names for tools unavailable in the local catalog", async () => {
     const { executeWithChat } = await import('../../src/tools/chat-orchestrator.js');
     const requests: any[] = [];

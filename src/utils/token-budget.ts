@@ -285,35 +285,3 @@ function cleanBoundary(messages: StoredChatMessage[], cut: number): number {
     while (index > 0 && messages[index]!.role === "tool") index -= 1;
     return index;
 }
-
-/**
- * 分段摘要的单段下限（估算 Token）：低于此值不再细分，避免把短历史切碎。
- */
-export const COMPACT_CHUNK_MIN_TOKENS = 8_000;
-
-/**
- * 按估算 Token 把待压缩 turns 切成若干段：单段不超过预算，单个超大 turn 独占一段。
- * 用于「历史已超模型窗口」时分段折叠摘要，避免一次性总结被 provider 400。
- */
-export async function splitTurnsIntoChunks(
-    turns: ConversationTurn[],
-    budgetTokens: number,
-    model?: string,
-): Promise<ConversationTurn[][]> {
-    const chunks: ConversationTurn[][] = [];
-    let current: ConversationTurn[] = [];
-    let currentTokens = 0;
-
-    for (const turn of turns) {
-        const turnTokens = await countTurnsTokens([turn], model);
-        if (current.length > 0 && currentTokens + turnTokens > budgetTokens) {
-            chunks.push(current);
-            current = [];
-            currentTokens = 0;
-        }
-        current.push(turn);
-        currentTokens += turnTokens;
-    }
-    if (current.length > 0) chunks.push(current);
-    return chunks;
-}
