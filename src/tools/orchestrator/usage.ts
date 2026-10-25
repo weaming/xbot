@@ -4,7 +4,7 @@
  * 三种来源必须区分，绝不用本地估算冒充 provider 数据：
  *   - provider：常规上游，字段即本请求量
  *   - accumulated_delta：网关给会话累计值，需差分成本请求新增
- *   - unavailable：上游没给 usage，只能给本地估算并显式标注
+ *   - unavailable：上游没给 usage，输入 token 保持未知
  */
 
 import { createHash } from "node:crypto";
@@ -54,8 +54,6 @@ export interface UsageInput {
     /** 本次回复的正文与思考文本：上游不区分输入/输出时用它们估算生成量。 */
     outputText?: string;
     reasoningText?: string;
-    /** 本次请求输入的本地估算：上游不给输入侧 token 时供展示兜底。 */
-    estimatedPromptTokens?: number;
 }
 
 /** provider usage → 内部 UsageInfo（日志、UI、计费共用同一份口径）。 */
@@ -85,7 +83,6 @@ export function toUsageInfo(input: UsageInput): UsageInfo {
                 outputTokens: estimateTextTokens(input.outputText ?? "") + estimateTextTokens(input.reasoningText ?? ""),
             }
             : {}),
-        ...(input.estimatedPromptTokens ? { estimatedPromptTokens: input.estimatedPromptTokens } : {}),
     };
 }
 

@@ -16,12 +16,10 @@ export interface UsageInfo {
      * 这类上游的 completionTokens 是差分出的「本请求新增（含输入）」，用它算速率会偏高。
      */
     outputTokens?: number;
-    /** 输入侧 token 的本地估算：仅当上游不给输入 token 时提供，用于状态栏上下文占用兜底。 */
-    estimatedPromptTokens?: number;
     durationMs: number;
     /** 聚合多个 provider 请求时使用；单次请求可省略。 */
     requestCount?: number;
-    /** 聚合 usage 中最后一次请求的 prompt token 数。 */
+    /** 聚合 usage 中最后一次请求由 provider 返回的 prompt token 数。 */
     latestPromptTokens?: number;
 }
 

@@ -23,8 +23,6 @@ export function mergeUsage(total: UsageInfo, usage: UsageInfo): UsageInfo {
     const latestPromptTokens = usage.latestPromptTokens ?? usage.promptTokens;
     // 输出估算只在累计型上游出现，普通上游缺省为 undefined，不参与合并
     const outputTokens = (total.outputTokens ?? 0) + (usage.outputTokens ?? 0);
-    // 输入估算取最新一次请求（上下文随轮次增长，旧值偏小没有意义）
-    const estimatedPromptTokens = usage.estimatedPromptTokens ?? total.estimatedPromptTokens;
     return {
         model: usage.model || total.model,
         apiHost: usage.apiHost ?? total.apiHost,
@@ -35,12 +33,9 @@ export function mergeUsage(total: UsageInfo, usage: UsageInfo): UsageInfo {
         reasoningTokens: (total.reasoningTokens ?? 0) + (usage.reasoningTokens ?? 0),
         totalTokens: total.totalTokens + usage.totalTokens,
         ...(outputTokens > 0 ? { outputTokens } : {}),
-        ...(estimatedPromptTokens ? { estimatedPromptTokens } : {}),
         durationMs: total.durationMs + usage.durationMs,
         requestCount: (total.requestCount ?? 0) + (usage.requestCount ?? 1),
-        latestPromptTokens: latestPromptTokens > 0
-            ? latestPromptTokens
-            : (total.latestPromptTokens ?? 0),
+        latestPromptTokens,
     };
 }
 

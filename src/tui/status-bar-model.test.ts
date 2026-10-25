@@ -36,7 +36,7 @@ describe("buildStatusBarModel token 统计", () => {
         expect(model.line2.left).toContain("100=>50");
     });
 
-    test("估算的 latestPromptTokens 参与上下文占用展示", () => {
+    test("最后一次响应的输入 token 参与上下文占用展示", () => {
         const model = buildStatusBarModel(inputOf({ latestPromptTokens: 131_072, contextWindow: 1_310_720 }));
 
         expect(model.line2.left).toContain("131.1k/1.31M(10.0%)");

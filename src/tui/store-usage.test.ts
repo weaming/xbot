@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { emptyUsage, mergeUsage } from "../events/ui-events.js";
 import type { UsageInfo } from "../types/chat.js";
 import { addTokenUsage, computeSessionRate, resetTokenUsage } from "./store-usage.js";
 import { createSessionUiState, type SessionUiState } from "./store-types.js";
@@ -43,12 +44,20 @@ describe("addTokenUsage", () => {
         expect(state.costYuan).toBeCloseTo(1.5, 10);
     });
 
-    test("上游不给输入 token 时用估算兜底 latestPromptTokens", () => {
+    test("上游不给输入 token 时清空上次请求值，不使用本地估算", () => {
         const state = createSessionUiState();
-        addTokenUsage(state, usageOf({ promptTokens: 0, cacheMissTokens: 0, estimatedPromptTokens: 3200 }), 0);
+        addTokenUsage(state, usageOf({ latestPromptTokens: 80 }), 0);
+        addTokenUsage(state, usageOf({ promptTokens: 0, cacheMissTokens: 0 }), 0);
 
-        expect(state.latestPromptTokens).toBe(3200);
+        expect(state.latestPromptTokens).toBe(0);
     });
+});
+
+test("聚合用量保留最后一次响应的零输入 token", () => {
+    const first = mergeUsage(emptyUsage(), usageOf({ latestPromptTokens: 80 }));
+    const second = mergeUsage(first, usageOf({ promptTokens: 0, latestPromptTokens: 0 }));
+
+    expect(second.latestPromptTokens).toBe(0);
 });
 
 describe("computeSessionRate", () => {

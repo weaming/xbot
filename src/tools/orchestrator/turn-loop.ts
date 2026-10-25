@@ -18,7 +18,7 @@ import { toUserContent, type UserMessageInput } from "../../types/image.js";
 import { normalizeResponsesResponse } from "./responses-shape.js";
 import { decideNext, nextCounters, EMPTY_RESPONSE_RETRY_PROMPT } from "./decide.js";
 import { buildUsageStats, toUsageInfo } from "./usage.js";
-import { estimateForAccumulatedUsage, isDeepSeekEndpoint, prepareRequest } from "./turn-request.js";
+import { isDeepSeekEndpoint, prepareRequest } from "./turn-request.js";
 import type { LLMRequestKind } from "../../utils/logger.js";
 
 /** 每轮请求的协议与客户端形状。 */
@@ -49,7 +49,6 @@ export interface TurnContext {
   turnMessages: ChatMessage[];
   counters: { emptyResponse: number; lengthRetry: number };
   iteration: number;
-  peakPromptTokens: number;
   discoveredToolNames: Set<string>;
 
   // 回调
@@ -173,17 +172,9 @@ export async function runTurnLoop(ctx: TurnContext): Promise<TurnLoopResult> {
         sessionId: ctx.sessionId,
         outputText: typeof assistantMsg?.content === "string" ? assistantMsg.content : "",
         reasoningText: typeof assistantMsg?.reasoning_content === "string" ? assistantMsg.reasoning_content : "",
-        estimatedPromptTokens: await estimateForAccumulatedUsage(
-          normalized.usage,
-          prepared.materializedMessages,
-          prepared.requestTools,
-          ctx.model,
-        ),
       });
 
-      // 上报本回合峰值：请求级压缩后的请求量偏小，不能代表持久上下文规模
-      ctx.peakPromptTokens = Math.max(ctx.peakPromptTokens, lastUsageInfo.promptTokens);
-      lastUsageInfo.latestPromptTokens = ctx.peakPromptTokens;
+      lastUsageInfo.latestPromptTokens = lastUsageInfo.promptTokens;
 
       const usageEntry = buildUsageStats({
         model: ctx.model,

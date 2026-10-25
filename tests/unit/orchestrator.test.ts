@@ -548,7 +548,7 @@ describe("Chat Orchestrator", () => {
     ]);
   });
 
-  test("请求级压缩后用量仍上报回合峰值（provider 真实输入）", async () => {
+  test("请求级压缩后用量上报最后一次响应的输入 token", async () => {
     const { executeWithChat } = await import('../../src/tools/chat-orchestrator.js');
     const usages: any[] = [];
     const longHistoryText = "a".repeat(4000);
@@ -558,7 +558,6 @@ describe("Chat Orchestrator", () => {
       create: async (_request: any) => {
         requestCount++;
         if (requestCount === 1) {
-          // 首轮发的是未压缩的完整上下文：这个规模才代表持久上下文
           return {
             choices: [{
               message: {
@@ -569,7 +568,6 @@ describe("Chat Orchestrator", () => {
             usage: { prompt_tokens: 5000, completion_tokens: 1, total_tokens: 5001 },
           };
         }
-        // 压缩后的请求很小，但持久上下文并没变小
         return {
           choices: [{ message: { role: "assistant", content: "done" } }],
           usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 },
@@ -591,8 +589,7 @@ describe("Chat Orchestrator", () => {
 
     const compactedUsage = usages.at(-1);
     expect(compactedUsage.promptTokens).toBe(10);
-    // 字段隔离：latestPromptTokens 只承载 provider 真值，且取本回合峰值，不被压缩后的请求量覆盖
-    expect(compactedUsage.latestPromptTokens).toBe(5000);
+    expect(compactedUsage.latestPromptTokens).toBe(10);
   });
 
   test("should return discovered names for tools unavailable in the local catalog", async () => {
@@ -1326,7 +1323,7 @@ describe("累计型上游的 usage 归一化", () => {
     return usage;
   }
 
-  test("按会话差分出本请求新增，生成量与输入量走本地估算", async () => {
+  test("按会话差分出本请求新增，输入量未知时不上报", async () => {
     const sessionId = `accum-${Math.random()}`;
     const client = accumulatedClient([1000, 1060], ["第一轮", "第二轮"]);
 
@@ -1337,9 +1334,9 @@ describe("累计型上游的 usage 归一化", () => {
     expect(first.completionTokens).toBe(1000);
     expect(second.completionTokens).toBe(60);
     expect(second.totalTokens).toBe(60);
-    // 上游不区分输入/输出：生成量按正文估算（"第二轮" 3 个汉字 → 4），输入量按请求估算
+    // 上游不区分输入/输出：生成量按正文估算（"第二轮" 3 个汉字 → 4）
     expect(second.outputTokens).toBe(4);
-    expect(second.estimatedPromptTokens).toBeGreaterThan(0);
+    expect(second.latestPromptTokens).toBe(0);
   });
 
   test("普通上游保持原值，不做差分", async () => {
@@ -1373,6 +1370,5 @@ describe("累计型上游的 usage 归一化", () => {
 
     expect(usages.map(item => item.completionTokens)).toEqual([7, 7]);
     expect(usages[0].outputTokens).toBeUndefined();
-    expect(usages[0].estimatedPromptTokens).toBeUndefined();
   });
 });

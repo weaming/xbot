@@ -45,13 +45,7 @@ export function addTokenUsage(
             state.costYuan += cost;
         }
     }
-    const latestPromptTokens = usage.latestPromptTokens ?? usage.promptTokens;
-    if (latestPromptTokens > 0) {
-        state.latestPromptTokens = latestPromptTokens;
-    } else if (usage.estimatedPromptTokens) {
-        // 上游不给输入侧 token（如 llm-deepseek-web）时用本地估算兜底，避免上下文占用整栏消失
-        state.latestPromptTokens = usage.estimatedPromptTokens;
-    }
+    state.latestPromptTokens = usage.latestPromptTokens ?? usage.promptTokens;
     const rate = computeSessionRate(state, usage, atMs);
     if (rate) state.lastRate = rate;
 }

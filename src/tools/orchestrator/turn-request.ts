@@ -12,7 +12,6 @@ import {
   materializeDeepSeekImageMessages,
   materializeImageMessages,
 } from "../../utils/image-assets.js";
-import { countMessagesTokens, countTextTokens } from "../../utils/tokenizer.js";
 import type { UIEvent } from "../../events/ui-events.js";
 /** 只声明本模块用到的最小客户端形状，避免与主模块形成循环依赖。 */
 export interface RequestClient {
@@ -37,14 +36,6 @@ import {
   materializeResponsesInput,
   stripResponsesMetadata,
 } from "./messages.js";
-import { isAccumulatedUsage } from "./usage.js";
-
-/** 本地统计一次请求的输入 token（消息 + 工具 schema），仅作展示兜底。 */
-async function estimateInputTokens(messages: any[], tools: any[], model?: string): Promise<number> {
-    const total = await countMessagesTokens(messages, model);
-    if (tools.length === 0) return total;
-    return total + (await countTextTokens(JSON.stringify(tools), model));
-}
 
 /** 把工具结果中的图片上传成 DeepSeek Files，返回 file id。 */
 async function uploadImageForDeepSeek(client: ChatClient, image: any): Promise<string> {
@@ -87,9 +78,6 @@ export interface PrepareRequestOptions {
 export interface PreparedRequest {
     protocol: "responses" | "chat_completions";
     requestBody: Record<string, any>;
-    /** 物化后的请求消息，供累计型上游的输入估算使用。 */
-    materializedMessages: any[];
-    requestTools: any[];
     isMiniMax: boolean;
 }
 
@@ -147,17 +135,6 @@ export async function prepareRequest(options: PrepareRequestOptions): Promise<Pr
         },
     });
 
-    return { protocol, requestBody, materializedMessages, requestTools, isMiniMax };
-}
-
-/** 估算输入 token：仅当上游给的是累计型 usage 时才需要。 */
-export async function estimateForAccumulatedUsage(
-    usage: any,
-    materializedMessages: any[],
-    requestTools: any[],
-    model: string,
-): Promise<number | undefined> {
-    if (!isAccumulatedUsage(usage)) return undefined;
-    return estimateInputTokens(materializedMessages, requestTools, model);
+    return { protocol, requestBody, isMiniMax };
 }
 

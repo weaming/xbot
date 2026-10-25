@@ -40,7 +40,6 @@ import {
   toUsageInfo,
 } from "./orchestrator/usage.js";
 import {
-  estimateForAccumulatedUsage,
   isDeepSeekEndpoint,
   prepareRequest,
 } from "./orchestrator/turn-request.js";
@@ -302,7 +301,6 @@ export async function executeWithChat(
     turnMessages,
     counters: { emptyResponse: 0, lengthRetry: 0 },
     iteration: 0,
-    peakPromptTokens: 0,
     discoveredToolNames,
     emit,
     appendTurnMessage,
