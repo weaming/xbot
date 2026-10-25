@@ -206,7 +206,7 @@ function renderTimelineItem(
 
     if (item.type === "sources") {
         const text = renderSources(item.items);
-        return text ? new ToolBlockText(text, 1) : undefined;
+        return text ? new Markdown(text, 1, 0, markdownTheme) : undefined;
     }
 
     if (item.type === "text") {
@@ -232,12 +232,14 @@ function renderTimelineItem(
     return new ToolBlockText(text, 1, isFileMutation);
 }
 
-/** 托管搜索的来源清单：标题在前、URL 在后，折叠态也展示。 */
+/** 托管搜索的来源清单使用 Markdown 链接，折叠态也展示。 */
 function renderSources(items: Citation[]): string {
     if (items.length === 0) return "";
-    const lines = [theme.dim(`🌐 来源 ${items.length}`)];
+    const lines = [`🌐 来源 ${items.length}`];
     items.forEach((item, index) => {
-        lines.push(`${index + 1}. ${item.title ? `${item.title} — ${item.url}` : item.url}`);
+        const label = (item.title || item.url).replaceAll("[", "\\[").replaceAll("]", "\\]");
+        const url = item.url.replaceAll("(", "%28").replaceAll(")", "%29");
+        lines.push(`${index + 1}. [${label}](<${url}>)`);
     });
     return lines.join("\n");
 }
