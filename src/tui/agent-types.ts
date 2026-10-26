@@ -80,7 +80,10 @@ export interface TuiAgent {
         },
     ): Promise<{ aborted?: boolean; contextTrimmed?: boolean }>;
     /** 续跑：按续跑点补跑缺失工具或直接发请求；无可续跑点时返回原因。 */
-    resumeSession(sessionId: string): Promise<{ resumed: boolean; reason?: string; aborted?: boolean }>;
+    resumeSession(
+        sessionId: string,
+        options?: { consumePendingMessages?: () => Array<string | UserMessageInput> | undefined },
+    ): Promise<{ resumed: boolean; reason?: string; aborted?: boolean }>;
     abortSession(sessionId: string): Promise<boolean>;
     compactSession(sessionId: string, instruction?: string): Promise<void>;
     /** 本实例内发起过网络请求的会话用量统计（退出时展示用）。 */

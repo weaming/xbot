@@ -1118,6 +1118,26 @@ describe("ChatApp /continue 与 ⌥+Enter", () => {
         expect(calls).toEqual(["sess-continue"]);
     });
 
+    test("续跑中的新用户输入通过 consumePendingMessages 注入当前恢复回合", async () => {
+        const { agent } = makeResumeAgent();
+        const store = new ChatStore();
+        const app = new ChatApp(agent as any, store);
+        const sessionId = "sess-continue-pending";
+        store.currentSessionId = sessionId;
+        const consumed: Array<string | { text: string; images?: any[] }> = [];
+        agent.takePeerResults = () => [];
+        (agent as any).resumeSession = async (_sessionId: string, options: any) => {
+            app.enqueueOrSend("resume 中输入的补充指令");
+            consumed.push(...(options.consumePendingMessages() ?? []));
+            return { resumed: true };
+        };
+
+        await (app as any).continueCurrent();
+
+        expect(consumed).toEqual(["resume 中输入的补充指令"]);
+        expect(app.pendingMessages).toEqual([]);
+    });
+
     test("⌥+Enter 等同触发 /continue", async () => {
         const { agent, calls } = makeResumeAgent();
         const store = new ChatStore();

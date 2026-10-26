@@ -689,7 +689,10 @@ export class LocalTuiAgent implements TuiAgent {
      * 续跑：按续跑点补跑缺失的工具调用或直接发下一次请求。不插入任何用户消息，
      * 上游请求与中断前保持一致；没有可续跑点时直接返回原因。
      */
-    async resumeSession(sessionId: string): Promise<{ resumed: boolean; reason?: string; aborted?: boolean }> {
+    async resumeSession(
+        sessionId: string,
+        options?: { consumePendingMessages?: () => Array<string | UserMessageInput> | undefined },
+    ): Promise<{ resumed: boolean; reason?: string; aborted?: boolean }> {
         const session = await this.requireActiveSession(sessionId);
         const plan = planResume(session);
         if (!plan.canResume) return { resumed: false, reason: plan.reason };
@@ -702,6 +705,7 @@ export class LocalTuiAgent implements TuiAgent {
             pendingToolCalls: plan.toolCalls,
             skipToolCallIds: new Set(plan.toolCalls.map(call => call.id)),
             initialRequestKind: "turn_resume",
+            consumePendingMessages: options?.consumePendingMessages,
         }));
         return { resumed: true, aborted: result.aborted };
     }

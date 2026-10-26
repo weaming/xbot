@@ -942,6 +942,46 @@ describe("Chat Orchestrator", () => {
     expect(result.content).toBe("最终回答");
   });
 
+  test("turn_resume consumes queued input before its first request and before accepting a final answer", async () => {
+    const { executeWithChat } = await import('../../src/tools/chat-orchestrator.js');
+    const recordedRequests: any[] = [];
+    const pendingQueue = ["续跑开始前的输入"];
+    const consumed: string[] = [];
+    let requestCount = 0;
+
+    const client = {
+      baseURL: "http://test.invalid",
+      create: async (body: any) => {
+        recordedRequests.push(structuredClone(body));
+        requestCount += 1;
+        if (requestCount === 1) {
+          // 用户在首个续跑请求执行期间提交新消息。
+          pendingQueue.push("续跑期间的新输入");
+          return { choices: [{ message: { role: "assistant", content: "旧任务的阶段性答复" } }] };
+        }
+        return { choices: [{ message: { role: "assistant", content: "收到补充后的答复" } }] };
+      },
+    };
+
+    const result = await executeWithChat({
+      query: "",
+      client,
+      model: "test-model",
+      skipUserQuery: true,
+      initialRequestKind: "turn_resume",
+      consumePendingMessages: () => pendingQueue.splice(0),
+      onConsumePending: text => { consumed.push(text); },
+    });
+
+    expect(requestCount).toBe(2);
+    expect(consumed).toEqual(["续跑开始前的输入", "续跑期间的新输入"]);
+    expect(recordedRequests[0].messages.some((message: any) =>
+      message.role === "user" && message.content === "续跑开始前的输入" )).toBe(true);
+    expect(recordedRequests[1].messages.some((message: any) =>
+      message.role === "user" && message.content === "续跑期间的新输入" )).toBe(true);
+    expect(result.content).toBe("收到补充后的答复");
+  });
+
   test("should retry empty response while retaining its reasoning in history", async () => {
     const { executeWithChat } = await import('../../src/tools/chat-orchestrator.js');
     const requests: any[] = [];

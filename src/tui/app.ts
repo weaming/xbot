@@ -104,7 +104,7 @@ import {
     type MessageComponents,
     type RenderContext,
 } from "./render/messages.js";
-import type { ImageAssetRef, TuiDraft } from "../types/image.js";
+import type { ImageAssetRef, TuiDraft, UserMessageInput } from "../types/image.js";
 import { backgroundTaskManager, type BackgroundTaskSummary } from "../tools/background-tasks.js";
 
 /**
@@ -1529,29 +1529,7 @@ export class ChatApp {
             const result = await this.agent.sendMessage(sessionId, text, {
                 images,
                 ...(displayText ? { displayText } : {}),
-                consumePendingMessages: () => {
-                    // 回合执行中到达的会话间结果：本轮后续请求直接带上（下一次 HTTP 请求时附加）
-                    const peerResults = this.agent.takePeerResults(sessionId);
-                    const backgroundResults = this.pendingBackgroundResults.get(sessionId) ?? [];
-                    this.pendingBackgroundResults.delete(sessionId);
-                    if (this.pending.isEmpty(sessionId) && peerResults.length === 0 && backgroundResults.length === 0) return undefined;
-                    const consumed = this.pending.drain(sessionId);
-                    if (this.store.currentSessionId === sessionId) {
-                        this.renderPending();
-                    }
-                    for (const msg of consumed) {
-                        this.store.addPendingUserMessage(this.formatPendingInput(msg), sessionId);
-                    }
-                    if (this.store.currentSessionId === sessionId && !this.detailed) {
-                        this.scrollView.scrollToEnd();
-                    }
-                    const pendingInputs = consumed.map(message => this.toPendingMessage(message));
-                    return [
-                        ...peerResults,
-                        ...backgroundResults,
-                        ...pendingInputs.map(message => message.images.length > 0 ? message : message.text),
-                    ];
-                },
+                consumePendingMessages: () => this.consumePendingMessages(sessionId),
             });
             success = result.aborted !== true;
         } catch (error: any) {
@@ -1620,6 +1598,29 @@ export class ChatApp {
 
             this.sendNextPending(sessionId);
         }
+    }
+
+    private consumePendingMessages(sessionId: string): Array<string | UserMessageInput> | undefined {
+        const peerResults = this.agent.takePeerResults(sessionId);
+        const backgroundResults = this.pendingBackgroundResults.get(sessionId) ?? [];
+        this.pendingBackgroundResults.delete(sessionId);
+        if (this.pending.isEmpty(sessionId) && peerResults.length === 0 && backgroundResults.length === 0) return undefined;
+
+        const consumed = this.pending.drain(sessionId);
+        if (this.store.currentSessionId === sessionId) this.renderPending();
+        for (const message of consumed) {
+            this.store.addPendingUserMessage(this.formatPendingInput(message), sessionId);
+        }
+        if (consumed.length > 0 && this.store.currentSessionId === sessionId && !this.detailed) {
+            this.scrollView.scrollToEnd();
+        }
+
+        const pendingInputs = consumed.map(message => this.toPendingMessage(message));
+        return [
+            ...peerResults,
+            ...backgroundResults,
+            ...pendingInputs.map(message => message.images.length > 0 ? message : message.text),
+        ];
     }
 
     private async refreshSessions(): Promise<void> {
@@ -2535,7 +2536,9 @@ export class ChatApp {
         }
         herdrReporter.report("working");
         try {
-            const result = await this.agent.resumeSession(sessionId);
+            const result = await this.agent.resumeSession(sessionId, {
+                consumePendingMessages: () => this.consumePendingMessages(sessionId),
+            });
             if (!result.resumed) {
                 this.store.pushSystemMessage(`ℹ️ ${result.reason ?? "没有可继续的内容"}`, sessionId);
             } else if (result.aborted) {

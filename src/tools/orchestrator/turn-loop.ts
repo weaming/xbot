@@ -116,6 +116,20 @@ export async function runTurnLoop(ctx: TurnContext): Promise<TurnLoopResult> {
     ctx.turnMessages.push(message);
     ctx.persistMessage(message);
   };
+  const consumePending = async (): Promise<boolean> => {
+    if (!ctx.consumePendingMessages) return false;
+    const pending = ctx.consumePendingMessages();
+    if (!pending?.length) return false;
+
+    const pendingInputs = pending.map(input => typeof input === "string" ? { text: input } : input);
+    const pendingInput: UserMessageInput = {
+      text: pendingInputs.map(input => input.text).join("\n"),
+      images: pendingInputs.flatMap(input => input.images ?? []),
+    };
+    ctx.appendTurnMessage({ role: "user", content: toUserContent(pendingInput) });
+    await ctx.onConsumePending?.(pendingInput.text, pending);
+    return true;
+  };
 
   try {
     while (true) {
@@ -126,18 +140,7 @@ export async function runTurnLoop(ctx: TurnContext): Promise<TurnLoopResult> {
       if (ctx.signal?.aborted) throw new DOMException("User terminated the request", "AbortError");
 
       // 消费执行期间新进入的 pending 消息并注入本轮后续请求
-      if (ctx.iteration > 1 && ctx.consumePendingMessages) {
-        const pending = ctx.consumePendingMessages();
-        if (pending && pending.length > 0) {
-          const pendingInputs = pending.map(input => typeof input === "string" ? { text: input } : input);
-          const pendingInput: UserMessageInput = {
-            text: pendingInputs.map(input => input.text).join("\n"),
-            images: pendingInputs.flatMap(input => input.images ?? []),
-          };
-          ctx.appendTurnMessage({ role: "user", content: toUserContent(pendingInput) });
-          await ctx.onConsumePending?.(pendingInput.text, pending);
-        }
-      }
+      if (ctx.iteration > 1 || ctx.initialRequestKind === "turn_resume") await consumePending();
 
       if (ctx.iteration > 1 && ctx.compactMessagesIfNeeded) {
         const compacted = await ctx.compactMessagesIfNeeded(ctx.messages, lastUsageInfo?.promptTokens);
@@ -284,6 +287,9 @@ export async function runTurnLoop(ctx: TurnContext): Promise<TurnLoopResult> {
 
       if (decision.kind === "done") {
         if (decision.content || reasoning) ctx.appendTurnMessage(messageToStore);
+        // 最后一条响应也可能与用户输入并发到达；把新消息接在当前上下文后继续，
+        // 不要等续跑回合结束后才另开一轮。
+        if (await consumePending()) continue;
         if (citations.length > 0) ctx.emit({ type: "citations", items: citations });
         finalContent = decision.content;
         break;
