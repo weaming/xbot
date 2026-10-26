@@ -10,23 +10,27 @@ import {
     getOrCreateSessionSystemPrompt,
     validateChatApiSettings,
 } from "../../src/services/chat-runtime.js";
-import { setEmbeddedWorkspaceIdentity } from "../../src/skills/base-skill.js";
+import { setEmbeddedIdentity } from "../../src/skills/base-skill.js";
 import { skillRegistry } from "../../src/skills/skill-registry.js";
 import { appendCompletedTurn, getSessionContextHistory } from "../../src/utils/conversation-history.js";
 import type { Session } from "../../src/types/session.js";
-import { useTmpWorkspace, type TmpWorkspace } from "./test-env.js";
+import { useTmpStateDir, type TmpStateDir } from "./test-env.js";
 import { DEFAULT_MEMORY_USER_ID, getUserMemoryFilePath, getUserMemoriesDir } from "../../src/utils/runtime-paths.js";
 import { getTodayDateString } from "../../src/utils/time.js";
 import { toolCatalog } from "../../src/tools/tool-catalog.js";
 
 let tmpDir: string;
-let workspace: TmpWorkspace;
+let stateDir: TmpStateDir;
+let previousTuiCwd: string | undefined;
 
-async function resetSkillRegistryToEmptyWorkspace(): Promise<void> {
-    const emptyWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-chat-runtime-empty-"));
-    process.env.WORKSPACE = emptyWorkspace;
+async function resetSkillRegistryToEmptyState(): Promise<void> {
+    const previousStateDir = process.env.XBOT_STATE_DIR;
+    const emptyStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-chat-runtime-empty-"));
+    process.env.XBOT_STATE_DIR = emptyStateDir;
     await skillRegistry.load();
-    fs.rmSync(emptyWorkspace, { recursive: true, force: true });
+    if (previousStateDir === undefined) delete process.env.XBOT_STATE_DIR;
+    else process.env.XBOT_STATE_DIR = previousStateDir;
+    fs.rmSync(emptyStateDir, { recursive: true, force: true });
 }
 
 function expectNextRequestToReusePrefix(completedTranscript: any[], nextRequest: any[]): void {
@@ -34,15 +38,18 @@ function expectNextRequestToReusePrefix(completedTranscript: any[], nextRequest:
 }
 
 beforeEach(async () => {
-    workspace = useTmpWorkspace("xbot-chat-runtime-test-");
-    tmpDir = workspace.dir;
-    await resetSkillRegistryToEmptyWorkspace();
-    process.env.WORKSPACE = tmpDir;
+    stateDir = useTmpStateDir("xbot-chat-runtime-test-");
+    tmpDir = stateDir.dir;
+    previousTuiCwd = process.env.TUI_CWD;
+    await resetSkillRegistryToEmptyState();
+    process.env.TUI_CWD = tmpDir;
 });
 
 afterEach(async () => {
-    await resetSkillRegistryToEmptyWorkspace();
-    workspace.cleanup();
+    await resetSkillRegistryToEmptyState();
+    if (previousTuiCwd === undefined) delete process.env.TUI_CWD;
+    else process.env.TUI_CWD = previousTuiCwd;
+    stateDir.cleanup();
 });
 
 describe("chat runtime", () => {
@@ -159,7 +166,7 @@ Alpha prompt body`,
         const previousTuiCwd = process.env.TUI_CWD;
         process.env.XBOT_EXTRA_IDENTITY_FILE = extraIdentityFile;
         process.env.TUI_CWD = "/tmp/tui-working-directory";
-        setEmbeddedWorkspaceIdentity("内置 TUI 身份\n当前目录（pwd）：{{TUI_CWD}}");
+        setEmbeddedIdentity("内置 TUI 身份\n当前目录（pwd）：{{TUI_CWD}}");
 
         try {
             const result = buildSystemPrompt({ includeMemory: false, includeDailyMemory: false });
@@ -167,7 +174,7 @@ Alpha prompt body`,
             expect(result.systemPrompt).toContain("当前目录（pwd）：/tmp/tui-working-directory");
             expect(result.systemPrompt.indexOf("用户级补充规则")).toBeGreaterThan(result.systemPrompt.indexOf("内置 TUI 身份"));
         } finally {
-            setEmbeddedWorkspaceIdentity();
+            setEmbeddedIdentity();
             if (previousExtraIdentityFile === undefined) delete process.env.XBOT_EXTRA_IDENTITY_FILE;
             else process.env.XBOT_EXTRA_IDENTITY_FILE = previousExtraIdentityFile;
             if (previousTuiCwd === undefined) delete process.env.TUI_CWD;
@@ -346,7 +353,7 @@ Beta prompt body`,
 });
 
 describe("system prompt PWD 与会话绑定目录一致", () => {
-    const identityTemplate = "## 当前环境\n- 当前目录（`PWD`）：`{{TUI_CWD}}`\n- 工作区：`{{TUI_WORKSPACE}}`";
+    const identityTemplate = "## 当前环境\n- 当前目录（`PWD`）：`{{TUI_CWD}}`";
 
     function makeSession(cwd: string) {
         return {
@@ -362,12 +369,12 @@ describe("system prompt PWD 与会话绑定目录一致", () => {
     }
 
     beforeEach(() => {
-        setEmbeddedWorkspaceIdentity(identityTemplate);
+        setEmbeddedIdentity(identityTemplate);
         process.env.TUI_CWD = "/global/activated/cwd";
     });
 
     afterEach(() => {
-        setEmbeddedWorkspaceIdentity(undefined);
+        setEmbeddedIdentity(undefined);
         delete process.env.TUI_CWD;
     });
 

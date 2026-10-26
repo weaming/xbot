@@ -1,11 +1,11 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
-import { getUserMemoryFilePath, getUserMemoriesDir, getWorkspaceRoot } from "../utils/runtime-paths.js";
+import { getToolCwd, getUserMemoryFilePath, getUserMemoriesDir } from "../utils/runtime-paths.js";
 import { getDateStringOffsetDays, getTodayDateString } from "../utils/time.js";
 
-const WORKSPACE_IDENTITY_FILES = ['AGENTS.md', 'SOUL.md', 'IDENTITY.md', 'USER.md'];
-let embeddedWorkspaceIdentity: string | undefined;
+const IDENTITY_FILES = ['AGENTS.md', 'SOUL.md', 'IDENTITY.md', 'USER.md'];
+let embeddedIdentity: string | undefined;
 
 /**
  * 读取文件内容，空内容返回 '空'
@@ -47,17 +47,17 @@ function interpolateEnvVars(content: string, overrides?: Record<string, string>)
 }
 
 /**
- * 从 workspace 根目录加载身份文件（AGENTS.md / SOUL.md / IDENTITY.md / USER.md）。
+ * 从应用配置根目录加载身份文件（AGENTS.md / SOUL.md / IDENTITY.md / USER.md）。
  * 文件内容支持 {{VAR_NAME}} 格式的环境变量插值（envOverrides 优先于 process.env，
  * 用于按会话覆盖 {{TUI_CWD}} 等随会话变化的占位）。
  * 文件不存在时跳过，全部不存在则返回空字符串。
  */
-export function loadWorkspaceIdentity(envOverrides?: Record<string, string>): string {
+export function loadIdentityContext(envOverrides?: Record<string, string>): string {
     const identityOverride = process.env.XBOT_IDENTITY_FILE;
     const extraIdentityFile = process.env.XBOT_EXTRA_IDENTITY_FILE;
 
-    if (embeddedWorkspaceIdentity) {
-        const parts = [formatIdentityContent(embeddedWorkspaceIdentity, "AGENTS.md", envOverrides)];
+    if (embeddedIdentity) {
+        const parts = [formatIdentityContent(embeddedIdentity, "AGENTS.md", envOverrides)];
         if (extraIdentityFile && fs.existsSync(extraIdentityFile)) {
             parts.push(readIdentityOverride(extraIdentityFile, envOverrides));
         }
@@ -76,11 +76,11 @@ export function loadWorkspaceIdentity(envOverrides?: Record<string, string>): st
         return readIdentityOverride(extraIdentityFile, envOverrides);
     }
 
-    const workspace = getWorkspaceRoot();
+    const identityRoot = getToolCwd();
     const parts: string[] = [];
 
-    for (const filename of WORKSPACE_IDENTITY_FILES) {
-        const filePath = path.join(workspace, filename);
+    for (const filename of IDENTITY_FILES) {
+        const filePath = path.join(identityRoot, filename);
         if (fs.existsSync(filePath)) {
             const raw = fs.readFileSync(filePath, 'utf-8').trim();
             if (raw) {
@@ -96,8 +96,8 @@ export function loadWorkspaceIdentity(envOverrides?: Record<string, string>): st
     return parts.join('\n\n');
 }
 
-export function setEmbeddedWorkspaceIdentity(content?: string): void {
-    embeddedWorkspaceIdentity = content?.trim() || undefined;
+export function setEmbeddedIdentity(content?: string): void {
+    embeddedIdentity = content?.trim() || undefined;
 }
 
 function readIdentityOverride(filePath: string, envOverrides?: Record<string, string>): string {

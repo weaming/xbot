@@ -29,7 +29,6 @@ mock.module("../../src/services/chat-runtime.js", () => {
 const { LocalTuiAgent } = await import("../../src/tui/agent.js");
 
 let tmpDir: string;
-let originalWorkspace: string | undefined;
 let originalStateDir: string | undefined;
 let originalEnvAgents: string | undefined;
 let originalExtraAgents: string | undefined;
@@ -38,11 +37,9 @@ let sessionId: string;
 
 beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-tui-agent-partial-"));
-    originalWorkspace = process.env.WORKSPACE;
     originalStateDir = process.env.XBOT_STATE_DIR;
     originalEnvAgents = process.env.XBOT_IDENTITY_FILE;
     originalExtraAgents = process.env.XBOT_EXTRA_IDENTITY_FILE;
-    process.env.WORKSPACE = tmpDir;
     process.env.XBOT_STATE_DIR = tmpDir;
     delete process.env.XBOT_IDENTITY_FILE;
     delete process.env.XBOT_EXTRA_IDENTITY_FILE;
@@ -54,8 +51,6 @@ beforeEach(async () => {
 
 afterEach(() => {
     agent.close();
-    if (originalWorkspace === undefined) delete process.env.WORKSPACE;
-    else process.env.WORKSPACE = originalWorkspace;
     if (originalStateDir === undefined) delete process.env.XBOT_STATE_DIR;
     else process.env.XBOT_STATE_DIR = originalStateDir;
     if (originalEnvAgents === undefined) delete process.env.XBOT_IDENTITY_FILE;

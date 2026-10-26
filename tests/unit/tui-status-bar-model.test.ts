@@ -25,7 +25,7 @@ function input(overrides: Partial<StatusBarInput> = {}): StatusBarInput {
         cacheHitTokens: 0,
         cacheMissTokens: 0,
         costYuan: 0,
-        cwd: "/workspace/project",
+        cwd: "/project",
         isChatObserver: false,
         isDeepSeekPriced: false,
         contextWindow: 0,

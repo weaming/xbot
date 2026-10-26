@@ -37,7 +37,6 @@ const { setSessionControl } = await import("../../src/control/runtime.js");
 const { getSocketPath } = await import("../../src/control/paths.js");
 
 let tmpDir: string;
-let originalWorkspace: string | undefined;
 let originalStateDir: string | undefined;
 let agent: InstanceType<typeof LocalTuiAgent>;
 let sessionA: string;
@@ -45,9 +44,7 @@ let sessionB: string;
 
 beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-control-agent-"));
-    originalWorkspace = process.env.WORKSPACE;
     originalStateDir = process.env.XBOT_STATE_DIR;
-    process.env.WORKSPACE = tmpDir;
     process.env.XBOT_STATE_DIR = tmpDir;
 
     agent = new LocalTuiAgent();
@@ -63,8 +60,6 @@ afterEach(async () => {
     turnGate = null;
     await agent.close();
     setSessionControl(undefined);
-    if (originalWorkspace === undefined) delete process.env.WORKSPACE;
-    else process.env.WORKSPACE = originalWorkspace;
     if (originalStateDir === undefined) delete process.env.XBOT_STATE_DIR;
     else process.env.XBOT_STATE_DIR = originalStateDir;
     fs.rmSync(tmpDir, { recursive: true, force: true });

@@ -1,7 +1,7 @@
 /**
  * grep 工具：基于 ripgrep 的文件内容搜索
  * 调用逻辑参考 sst/opencode 的 grep 实现（MIT）：rg --json 输出、退出码语义、结果分组格式
- * 差异：流式解析并按 limit 提前终止子进程，输出路径相对 workspace
+ * 差异：流式解析并按 limit 提前终止子进程，输出路径相对搜索目录
  */
 
 import { spawn } from "child_process";
@@ -11,7 +11,7 @@ import readline from "readline";
 import type { ExecutableTool, ToolExecutionResult } from "./tool-interface.js";
 import { ok, err } from "./tool-interface.js";
 import { resolvePath } from "./path-utils.js";
-import { getWorkspaceRoot } from "../utils/runtime-paths.js";
+import { getToolCwd } from "../utils/runtime-paths.js";
 
 const DEFAULT_LIMIT = 200;
 const MAX_LIMIT = 1000;
@@ -32,13 +32,9 @@ type GrepRunResult = {
     stderr: string;
 };
 
-/** rg 二进制解析：环境变量覆盖 → 镜像内置 bin/ → PATH 兜底（本机调试） */
+/** rg 二进制解析：环境变量覆盖 → PATH。 */
 export function resolveRgBinary(): string {
     if (process.env.RG_BIN) return process.env.RG_BIN;
-
-    const imageBinary = path.join(getWorkspaceRoot(), "..", "bin", "rg");
-    if (fs.existsSync(imageBinary)) return imageBinary;
-
     return "rg";
 }
 
@@ -169,7 +165,7 @@ async function executeGrep(
     if (!args.pattern) return err("Missing required argument: pattern");
 
     const limit = Math.min(Math.max(args.limit ?? DEFAULT_LIMIT, 1), MAX_LIMIT);
-    const cwdRoot = resolvePath(args.cwd, getWorkspaceRoot());
+    const cwdRoot = resolvePath(args.cwd, getToolCwd());
     if (!fs.existsSync(cwdRoot) || !fs.statSync(cwdRoot).isDirectory()) {
         return err(`Invalid cwd: ${args.cwd}`);
     }
@@ -214,7 +210,7 @@ async function executeGrep(
 const grepSchema = {
     type: "object",
     properties: {
-        cwd: { type: "string", description: "搜索工作目录，相对 workspace 根目录解析" },
+        cwd: { type: "string", description: "搜索工作目录，相对当前目录解析" },
         pattern: { type: "string", description: "正则表达式，用于搜索文件内容" },
         path: { type: "string", description: "要搜索的子目录（相对 cwd），默认为 cwd" },
         include: {

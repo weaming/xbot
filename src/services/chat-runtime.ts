@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { isIP } from "node:net";
 import { skillRegistry } from "../skills/skill-registry.js";
-import { loadCoreMemoryContext, loadDailyMemoryContext, loadWorkspaceIdentity } from "../skills/base-skill.js";
+import { loadCoreMemoryContext, loadDailyMemoryContext, loadIdentityContext } from "../skills/base-skill.js";
 import { DEFAULT_MEMORY_USER_ID, normalizeMemoryUserId } from "../utils/runtime-paths.js";
 import { executeWithChat, createChatClient, isAbortError } from "../tools/chat-orchestrator.js";
 import { executeMcpTool, getAllToolSummary, getOpenAIToolDefinitions } from "../tools/tool-registry.js";
@@ -360,7 +360,7 @@ export function buildExtraToolsSection(preface?: string): string {
 export function buildSystemPrompt(options: BuildSystemPromptOptions = { userId: DEFAULT_MEMORY_USER_ID }): BuildSystemPromptResult {
     const sections: string[] = [];
     const memoryUserId = normalizeMemoryUserId(options.userId);
-    const identity = loadWorkspaceIdentity(options.cwd ? { TUI_CWD: options.cwd } : undefined).trim();
+    const identity = loadIdentityContext(options.cwd ? { TUI_CWD: options.cwd } : undefined).trim();
     if (identity) {
         sections.push(identity);
     }

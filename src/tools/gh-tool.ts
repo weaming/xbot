@@ -8,7 +8,7 @@ import { promisify } from "util";
 import type { ExecutableTool, ToolExecutionResult } from "./tool-interface.js";
 import { buildExecutionEnv } from "../utils/skill-env.js";
 import { PROXY_URL } from "../utils/proxy.js";
-import { getWorkspaceRoot } from "../utils/runtime-paths.js";
+import { getToolCwd } from "../utils/runtime-paths.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -31,7 +31,7 @@ async function executeGh(
     }
 
     const { stdout, stderr } = await execFileAsync("gh", commandArgs, {
-        cwd: getWorkspaceRoot(),
+        cwd: getToolCwd(),
         env,
         signal,
         timeout: 30000,

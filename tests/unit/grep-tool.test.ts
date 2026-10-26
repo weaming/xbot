@@ -4,22 +4,22 @@ import * as os from "os";
 import * as path from "path";
 import { grepFileTool } from "../../src/tools/grep-tool.js";
 import { toolResultToText } from "../../src/tools/tool-interface.js";
-import { useTmpWorkspace, type TmpWorkspace } from "./test-env.js";
+import { useTmpStateDir, type TmpStateDir } from "./test-env.js";
 
 let tmpDir: string;
 let outsideDir: string;
-let workspace: TmpWorkspace;
+let stateDir: TmpStateDir;
 
 beforeEach(() => {
-    workspace = useTmpWorkspace("xbot-grep-test-");
-    tmpDir = workspace.dir;
+    stateDir = useTmpStateDir("xbot-grep-test-");
+    tmpDir = stateDir.dir;
     outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-grep-outside-"));
     delete process.env.RG_BIN;
 });
 
 afterEach(() => {
     fs.rmSync(outsideDir, { recursive: true, force: true });
-    workspace.cleanup();
+    stateDir.cleanup();
 });
 
 function writeTemp(relPath: string, content: string): string {

@@ -7,7 +7,7 @@ import { promisify } from "util";
 import type { ExecutableTool, ToolExecutionResult } from "./tool-interface.js";
 import { buildExecutionEnv } from "../utils/skill-env.js";
 import { PROXY_URL } from "../utils/proxy.js";
-import { getWorkspaceRoot } from "../utils/runtime-paths.js";
+import { getToolCwd } from "../utils/runtime-paths.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -26,7 +26,7 @@ export function buildUrl2mdArgs(url: string, proxyUrl?: string): string[] {
 async function executeUrl2md(url: string, signal?: AbortSignal): Promise<string> {
     const commandArgs = buildUrl2mdArgs(url, PROXY_URL);
     const { stdout, stderr } = await execFileAsync("url2md", commandArgs, {
-        cwd: getWorkspaceRoot(),
+        cwd: getToolCwd(),
         env: buildExecutionEnv(),
         signal,
         timeout: 60000,

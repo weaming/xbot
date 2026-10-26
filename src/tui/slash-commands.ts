@@ -3,7 +3,7 @@
 import { Key } from "@earendil-works/pi-tui";
 import type { SlashCommand } from "@earendil-works/pi-tui";
 import { skillRegistry } from "../skills/skill-registry.js";
-import { getAgentsSkillsDir, getSkillsDir, getUserSkillsDir } from "../utils/runtime-paths.js";
+import { getAgentsSkillsDir, getUserSkillsDir } from "../utils/runtime-paths.js";
 
 export const SLASH_COMMANDS: SlashCommand[] = [
     { name: "new", description: "新建会话" },
@@ -72,7 +72,7 @@ export function buildSkillsHelpText(): string {
         "可用技能（会自动扫描并热加载）：",
         ...lines,
         "",
-        `技能目录：${getUserSkillsDir()}（用户级，优先） · ${getAgentsSkillsDir()}（共享） · ${getSkillsDir()}（workspace 级）`,
+        `技能目录：${getUserSkillsDir()}（用户级，优先） · ${getAgentsSkillsDir()}（共享）`,
         "提示：每个技能为一个子目录，内含 SKILL.md（frontmatter 含 name/description）。",
     ].join("\n");
 }

@@ -25,7 +25,6 @@ const SESSION = "01JASKAPP000000000000000TEST";
 const OTHER = "01JASKAPP000000000000000OTHR";
 
 let tmpDir: string;
-let originalWorkspace: string | undefined;
 let originalStateDir: string | undefined;
 
 function makeAgent() {
@@ -82,15 +81,11 @@ function request(sessionId = SESSION) {
 
 beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-tui-ask-"));
-    originalWorkspace = process.env.WORKSPACE;
     originalStateDir = process.env.XBOT_STATE_DIR;
-    process.env.WORKSPACE = tmpDir;
     process.env.XBOT_STATE_DIR = tmpDir;
 });
 
 afterEach(() => {
-    if (originalWorkspace === undefined) delete process.env.WORKSPACE;
-    else process.env.WORKSPACE = originalWorkspace;
     if (originalStateDir === undefined) delete process.env.XBOT_STATE_DIR;
     else process.env.XBOT_STATE_DIR = originalStateDir;
     fs.rmSync(tmpDir, { recursive: true, force: true });

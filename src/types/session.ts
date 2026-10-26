@@ -59,7 +59,7 @@ interface ContextState {
 
 export interface Session {
     sessionId: string; // ULID，会话唯一标识
-    /** 会话绑定的工作目录：新会话取创建时当前工具目录；旧数据无记录时以 workspace 为默认。恢复/切换会话时作为工具执行与路径渲染基准。 */
+    /** 会话绑定的工作目录：新会话取创建时当前工具目录；旧数据无记录时回退当前工具目录。恢复/切换会话时作为工具执行与路径渲染基准。 */
     cwd: string;
     /** 会话标题：显式重命名优先，否则取首条用户消息；tab 展示用。 */
     title?: string;

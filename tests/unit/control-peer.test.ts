@@ -10,15 +10,15 @@ import { getSocketPath } from "../../src/control/paths.js";
 import { createPeerMessage, encodeFrame, splitFrames, type PeerResult } from "../../src/control/protocol.js";
 import { forgetBound, locallyBoundSessionIds, probeOwnership } from "../../src/control/registry.js";
 import { PeerServer, type PeerServerHandlers } from "../../src/control/server.js";
-import { useTmpWorkspace, type TmpWorkspace } from "./test-env.js";
+import { useTmpStateDir, type TmpStateDir } from "./test-env.js";
 
-let workspace: TmpWorkspace;
+let stateDir: TmpStateDir;
 const servers: PeerServer[] = [];
 const pools: PeerClientPool[] = [];
 const raws: net.Server[] = [];
 
 beforeEach(() => {
-    workspace = useTmpWorkspace("xbot-control-peer-");
+    stateDir = useTmpStateDir("xbot-control-peer-");
     for (const sessionId of locallyBoundSessionIds()) forgetBound(sessionId);
 });
 
@@ -33,7 +33,7 @@ afterEach(() => {
         }
     }
     for (const sessionId of locallyBoundSessionIds()) forgetBound(sessionId);
-    workspace.cleanup();
+    stateDir.cleanup();
 });
 
 interface RecordingHandlers extends PeerServerHandlers {
@@ -111,7 +111,7 @@ describe("PeerServer 绑定与归属", () => {
 
     test("被外来监听占用时 bind 报 owned 且不清理对方文件", async () => {
         const socketPath = getSocketPath("s2");
-        fs.mkdirSync(`${workspace.dir}/sessions/control`, { recursive: true });
+        fs.mkdirSync(`${stateDir.dir}/sessions/control`, { recursive: true });
         const foreign = net.createServer(() => undefined);
         await new Promise<void>((resolve) => foreign.listen(socketPath, () => resolve()));
         raws.push(foreign);
@@ -124,7 +124,7 @@ describe("PeerServer 绑定与归属", () => {
     });
 
     test("残留 socket 文件被清理后可成功 bind", async () => {
-        fs.mkdirSync(`${workspace.dir}/sessions/control`, { recursive: true });
+        fs.mkdirSync(`${stateDir.dir}/sessions/control`, { recursive: true });
         fs.writeFileSync(getSocketPath("s3"), "");
 
         const server = new PeerServer("s3", makeHandlers(), { probeTimeoutMs: 100 });
@@ -277,7 +277,7 @@ describe("客户端断线补发", () => {
     test("连接断开后重连 query_pending 取回已就绪结果", async () => {
         const results: PeerResult[] = [];
         const socketPath = getSocketPath("s4");
-        fs.mkdirSync(`${workspace.dir}/sessions/control`, { recursive: true });
+        fs.mkdirSync(`${stateDir.dir}/sessions/control`, { recursive: true });
 
         // 假持有者：ack 投递后立刻断开连接，随后回应 query_pending 补发结果
         const raw = net.createServer((socket) => {
@@ -326,7 +326,7 @@ describe("客户端断线补发", () => {
     test("目标彻底消失时上报结果丢失", async () => {
         const lost: string[][] = [];
         const socketPath = getSocketPath("s5");
-        fs.mkdirSync(`${workspace.dir}/sessions/control`, { recursive: true });
+        fs.mkdirSync(`${stateDir.dir}/sessions/control`, { recursive: true });
 
         const raw = net.createServer((socket) => {
             socket.setEncoding("utf8");

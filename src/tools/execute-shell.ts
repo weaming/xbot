@@ -1,5 +1,5 @@
 /**
- * shell 工具：在容器内执行 shell 命令
+ * shell 工具：在当前会话目录执行 shell 命令
  */
 
 import * as fs from "fs";
@@ -7,7 +7,7 @@ import type { ExecutableTool, ToolExecutionResult } from "./tool-interface.js";
 import { backgroundTaskManager, type BackgroundTaskSummary } from "./background-tasks.js";
 import { buildExecutionEnv } from "../utils/skill-env.js";
 import { PROXY_URL } from "../utils/proxy.js";
-import { getToolCwd, getWorkspaceRoot } from "../utils/runtime-paths.js";
+import { getToolCwd } from "../utils/runtime-paths.js";
 
 const DEFAULT_COMMAND_TIMEOUT_SECONDS = 120;
 const MIN_TIMEOUT_SECONDS = 1;
@@ -40,8 +40,6 @@ function resolveTimeoutSeconds(timeout?: number): number {
 }
 
 function getExecutionCwd(): string {
-  const ws = getWorkspaceRoot();
-  if (fs.existsSync(ws)) return ws;
   const toolCwd = getToolCwd();
   if (fs.existsSync(toolCwd)) return toolCwd;
   return process.cwd();

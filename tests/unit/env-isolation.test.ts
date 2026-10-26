@@ -13,12 +13,9 @@ import path from "path";
 describe("测试环境隔离", () => {
     test("状态目录与工作目录不落真实 HOME", () => {
         const stateDir = process.env.XBOT_STATE_DIR;
-        const workspace = process.env.WORKSPACE;
         expect(stateDir).toBeDefined();
-        expect(workspace).toBeDefined();
 
         const realStateDir = path.join(os.homedir(), ".xbot");
         expect(stateDir!.startsWith(realStateDir)).toBe(false);
-        expect(workspace!.startsWith(realStateDir)).toBe(false);
     });
 });

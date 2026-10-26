@@ -18,14 +18,12 @@ let savedEnv: Record<string, string | undefined> = {};
 beforeAll(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-cleanup-"));
     savedEnv = {
-        WORKSPACE: process.env.WORKSPACE,
         XBOT_STATE_DIR: process.env.XBOT_STATE_DIR,
         TUI_CWD: process.env.TUI_CWD,
         [ARCHIVE_RETENTION_ENV]: process.env[ARCHIVE_RETENTION_ENV],
     };
     process.env.XBOT_STATE_DIR = tmpDir;
     delete process.env.TUI_CWD;
-    process.env.WORKSPACE = tmpDir;
 });
 
 afterAll(() => {

@@ -2,9 +2,9 @@
 
 - 操作系统：`{{TUI_PLATFORM}}`
 - 当前目录（`PWD`）：`{{TUI_CWD}}`
-- 工作区：`{{TUI_WORKSPACE}}`
+- 运行时数据目录：`~/.xbot/`
 - 源码根目录：`{{TUI_SRC_ROOT}}`
-- 技能目录：`~/.agents/skills/`, `~/.xbot/`, `<工作区>/skills/`
+- 技能目录：`~/.xbot/skills/`, `~/.agents/skills/`
 - 未显式指定路径时，以当前目录作为相对路径基准。
 
 ## 工作规则

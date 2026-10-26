@@ -17,18 +17,18 @@ import {
     registerBound,
     releaseSocketFile,
 } from "../../src/control/registry.js";
-import { useTmpWorkspace, type TmpWorkspace } from "./test-env.js";
+import { useTmpStateDir, type TmpStateDir } from "./test-env.js";
 
-let workspace: TmpWorkspace;
+let stateDir: TmpStateDir;
 
 beforeEach(() => {
-    workspace = useTmpWorkspace("xbot-control-registry-");
+    stateDir = useTmpStateDir("xbot-control-registry-");
     for (const sessionId of locallyBoundSessionIds()) forgetBound(sessionId);
 });
 
 afterEach(() => {
     for (const sessionId of locallyBoundSessionIds()) forgetBound(sessionId);
-    workspace.cleanup();
+    stateDir.cleanup();
 });
 
 /** 在指定路径起一个假监听：answeringWho 决定它是否回应 who 握手。 */
@@ -76,13 +76,13 @@ function closeServer(server: net.Server): Promise<void> {
 
 describe("路径与本地表", () => {
     test("socket 路径按 sessionId 归一到 sessions/control", () => {
-        expect(getSocketPath("s1")).toBe(`${workspace.dir}/sessions/control/s1.sock`);
+        expect(getSocketPath("s1")).toBe(`${stateDir.dir}/sessions/control/s1.sock`);
     });
 
     test("本地表决定 mine，缺省为 free", async () => {
         expect(await probeOwnership("s1", 100)).toEqual({ state: "free" });
 
-        fs.mkdirSync(`${workspace.dir}/sessions/control`, { recursive: true });
+        fs.mkdirSync(`${stateDir.dir}/sessions/control`, { recursive: true });
         const file = getSocketPath("s1");
         fs.writeFileSync(file, "");
         registerBound("s1", file, fs.statSync(file).ino);
@@ -98,7 +98,7 @@ describe("归属探测", () => {
     });
 
     test("残留普通文件判定 free，可被清理", async () => {
-        fs.mkdirSync(`${workspace.dir}/sessions/control`, { recursive: true });
+        fs.mkdirSync(`${stateDir.dir}/sessions/control`, { recursive: true });
         fs.writeFileSync(getSocketPath("s-stale"), "");
 
         expect(await probeOwnership("s-stale", 100)).toEqual({ state: "free" });
@@ -132,9 +132,9 @@ describe("归属探测", () => {
     });
 
     test("listSocketSessionIds 只列出 .sock 文件", async () => {
-        fs.mkdirSync(`${workspace.dir}/sessions/control`, { recursive: true });
+        fs.mkdirSync(`${stateDir.dir}/sessions/control`, { recursive: true });
         fs.writeFileSync(getSocketPath("a"), "");
-        fs.writeFileSync(`${workspace.dir}/sessions/control/note.txt`, "");
+        fs.writeFileSync(`${stateDir.dir}/sessions/control/note.txt`, "");
 
         expect(listSocketSessionIds()).toEqual(["a"]);
     });
@@ -142,7 +142,7 @@ describe("归属探测", () => {
 
 describe("socket 文件释放的 inode 保护", () => {
     test("文件仍是自己 bind 的那个时删除", () => {
-        fs.mkdirSync(`${workspace.dir}/sessions/control`, { recursive: true });
+        fs.mkdirSync(`${stateDir.dir}/sessions/control`, { recursive: true });
         const file = getSocketPath("s1");
         fs.writeFileSync(file, "");
         registerBound("s1", file, fs.statSync(file).ino);
@@ -153,7 +153,7 @@ describe("socket 文件释放的 inode 保护", () => {
     });
 
     test("文件已被他人重建时不删除", () => {
-        fs.mkdirSync(`${workspace.dir}/sessions/control`, { recursive: true });
+        fs.mkdirSync(`${stateDir.dir}/sessions/control`, { recursive: true });
         const file = getSocketPath("s1");
         fs.writeFileSync(file, "");
         registerBound("s1", file, fs.statSync(file).ino);

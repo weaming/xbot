@@ -15,15 +15,15 @@ import {
     getFileInfoTool,
 } from "../../src/tools/file-ops.js";
 import { toolResultToText } from "../../src/tools/tool-interface.js";
-import { useTmpWorkspace, type TmpWorkspace } from "./test-env.js";
+import { useTmpStateDir, type TmpStateDir } from "./test-env.js";
 
 let tmpDir: string;
 let outsideDir: string;
-let workspace: TmpWorkspace;
+let stateDir: TmpStateDir;
 
 beforeEach(() => {
-    workspace = useTmpWorkspace("xbot-file-ops-test-");
-    tmpDir = workspace.dir;
+    stateDir = useTmpStateDir("xbot-file-ops-test-");
+    tmpDir = stateDir.dir;
     outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-file-ops-outside-test-"));
     process.env.TUI_CWD = tmpDir;
 });
@@ -31,7 +31,7 @@ beforeEach(() => {
 afterEach(() => {
     fs.rmSync(outsideDir, { recursive: true, force: true });
     delete process.env.TUI_CWD;
-    workspace.cleanup();
+    stateDir.cleanup();
 });
 
 function resultText(result: any): string {
@@ -87,7 +87,7 @@ describe("filesystem tools", () => {
         expect(resultText(conflict)).toContain("Cannot specify offset/limit together with head/tail");
     });
 
-    test("允许通过 workspace 外部的符号链接访问文件", async () => {
+    test("允许通过当前目录外的符号链接访问文件", async () => {
         fs.writeFileSync(path.join(outsideDir, "secret.txt"), "secret");
         fs.symlinkSync(outsideDir, path.join(tmpDir, "outside-link"));
 

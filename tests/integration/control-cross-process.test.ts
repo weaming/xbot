@@ -27,7 +27,6 @@ const SESSION_MISSING = "01PEERNONE00000000000000DD";
 
 let stateDir: string;
 let originalStateDir: string | undefined;
-let originalWorkspace: string | undefined;
 
 /** 子进程 stdout 的 JSON 事件流：按事件名等待，超时即失败。 */
 class ChildPeer {
@@ -51,7 +50,6 @@ class ChildPeer {
             env: {
                 ...process.env,
                 XBOT_STATE_DIR: stateDir,
-                WORKSPACE: stateDir,
                 PEER_CHILD_SESSION: sessionId,
                 ...env,
             },
@@ -128,9 +126,7 @@ let child: ChildPeer;
 beforeAll(async () => {
     stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-peer-xproc-"));
     originalStateDir = process.env.XBOT_STATE_DIR;
-    originalWorkspace = process.env.WORKSPACE;
     process.env.XBOT_STATE_DIR = stateDir;
-    process.env.WORKSPACE = stateDir;
 
     parent = createHost(SESSION_PARENT);
     const claimed = await parent.control.claim(SESSION_PARENT);
@@ -148,8 +144,6 @@ afterAll(async () => {
     child?.kill();
     if (originalStateDir === undefined) delete process.env.XBOT_STATE_DIR;
     else process.env.XBOT_STATE_DIR = originalStateDir;
-    if (originalWorkspace === undefined) delete process.env.WORKSPACE;
-    else process.env.WORKSPACE = originalWorkspace;
     fs.rmSync(stateDir, { recursive: true, force: true });
 });
 

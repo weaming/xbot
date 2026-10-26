@@ -2,13 +2,12 @@ import { BaseSkill, parseSkillMarkdown } from "./base-skill.js";
 import { readdirSync, existsSync, statSync } from "fs";
 import path from "path";
 import chokidar from "chokidar";
-import { getAgentsSkillsDir, getSkillsDir, getUserSkillsDir } from "../utils/runtime-paths.js";
+import { getAgentsSkillsDir, getUserSkillsDir } from "../utils/runtime-paths.js";
 
-/** 技能根目录列表：用户级优先，workspace 级兜底（同名技能以用户级为准）。 */
+/** 技能目录：用户级优先，其次加载共享技能。 */
 function getSkillRegistryDirs(): string[] {
     const dirs = [getUserSkillsDir()];
     if (process.env.TUI_PLATFORM) dirs.push(getAgentsSkillsDir());
-    dirs.push(getSkillsDir());
     return [...new Set(dirs.map((dir) => path.resolve(dir)))];
 }
 
@@ -25,7 +24,7 @@ export class SkillRegistry {
     private skillDirs: Map<string, string> = new Map();
 
     /**
-     * dirs 缺省时按环境变量解析（用户级 → 共享 → workspace）。
+     * dirs 缺省时按默认路径解析（用户级 → 共享）。
      * 显式传入后不再读环境，便于测试隔离与嵌入其他宿主。
      */
     constructor(private readonly dirs?: readonly string[]) {}
@@ -88,7 +87,7 @@ export class SkillRegistry {
         const newMetas = new Map<string, SkillMeta>();
         const newSkillDirs = new Map<string, string>();
 
-        // 用户级目录先加载，同名技能在 workspace 级跳过
+        // 用户级目录先加载，同名技能在共享目录跳过
         for (const dir of this.resolveDirs()) {
             this.loadSkillDir(dir, next, newMetas, newSkillDirs);
         }

@@ -10,7 +10,7 @@ import { skillRegistry } from '../skills/skill-registry.js';
 const activeSkillPaths = new Set<string>();
 
 /**
- * 添加 skill 实际目录到 PATH 集合（技能可能位于用户级或 workspace 级目录）。
+ * 添加 skill 实际目录到 PATH 集合（技能可能位于用户级或共享目录）。
  */
 export function addSkillPath(skillName: string): void {
     const skillPath = skillRegistry.getSkillDir(skillName);

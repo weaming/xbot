@@ -9,7 +9,7 @@ import { execFileSync } from "child_process";
 import type { ExecutableTool, ToolExecutionResult } from "./tool-interface.js";
 import { ok, err } from "./tool-interface.js";
 import { resolvePath } from "./path-utils.js";
-import { getWorkspaceRoot } from "../utils/runtime-paths.js";
+import { getToolCwd } from "../utils/runtime-paths.js";
 
 // ─── JSON key-path helpers ────────────────────────────────────────────────────
 
@@ -433,7 +433,7 @@ export const runJqTool: ExecutableTool = {
         let output: string;
         try {
             output = execFileSync("jq", jqArgs, {
-                cwd: getWorkspaceRoot(),
+                cwd: getToolCwd(),
                 encoding: "utf-8",
                 maxBuffer: 10 * 1024 * 1024,
             });

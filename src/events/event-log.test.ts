@@ -15,13 +15,11 @@ beforeAll(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-events-"));
     // 隔离会话存储：宿主环境可能注入 XBOT_STATE_DIR/TUI_CWD，统一指向临时目录避免写到真实会话目录。
     savedEnv = {
-        WORKSPACE: process.env.WORKSPACE,
         XBOT_STATE_DIR: process.env.XBOT_STATE_DIR,
         TUI_CWD: process.env.TUI_CWD,
     };
     process.env.XBOT_STATE_DIR = tmpDir;
     delete process.env.TUI_CWD;
-    process.env.WORKSPACE = tmpDir;
 });
 
 afterAll(() => {

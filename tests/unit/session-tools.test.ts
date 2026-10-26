@@ -13,9 +13,9 @@ import {
     type PeerResultRecord,
 } from "../../src/control/runtime.js";
 import { getSessionToolNames, SESSION_TOOLS } from "../../src/tools/session-tools.js";
-import { useTmpWorkspace, type TmpWorkspace } from "./test-env.js";
+import { useTmpStateDir, type TmpStateDir } from "./test-env.js";
 
-let workspace: TmpWorkspace;
+let stateDir: TmpStateDir;
 let control: SessionControl;
 const accepted: string[] = [];
 const outbound: PeerMessage[] = [];
@@ -78,7 +78,7 @@ function tool(name: string) {
 }
 
 beforeEach(() => {
-    workspace = useTmpWorkspace("xbot-session-tools-");
+    stateDir = useTmpStateDir("xbot-session-tools-");
     for (const sessionId of locallyBoundSessionIds()) forgetBound(sessionId);
     accepted.length = 0;
     outbound.length = 0;
@@ -102,7 +102,7 @@ afterEach(() => {
     setSessionDirectory(undefined);
     setPeerResultHistory(undefined);
     for (const sessionId of locallyBoundSessionIds()) forgetBound(sessionId);
-    workspace.cleanup();
+    stateDir.cleanup();
 });
 
 describe("下发条件", () => {

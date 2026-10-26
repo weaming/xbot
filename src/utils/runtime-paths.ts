@@ -2,43 +2,23 @@ import path from "path";
 import os from "os";
 import { getAsyncToolCwd } from "./tool-cwd-context.js";
 
-export function getWorkspaceRoot(): string {
-    return path.resolve(expandEnv(process.env.WORKSPACE || "/app/workspace"));
+const DEFAULT_STATE_DIR = path.join(os.homedir(), ".xbot");
+
+export function getStateDir(...parts: string[]): string {
+    const stateRoot = process.env.XBOT_STATE_DIR || DEFAULT_STATE_DIR;
+    return path.join(path.resolve(expandEnv(stateRoot)), ...parts);
 }
 
 export function getToolCwd(): string {
     const scopedCwd = getAsyncToolCwd();
     if (scopedCwd) return path.resolve(scopedCwd);
-    return path.resolve(expandEnv(process.env.TUI_CWD || getWorkspaceRoot()));
+
+    const tuiCwd = process.env.TUI_CWD || process.cwd();
+    return path.resolve(expandEnv(tuiCwd));
 }
 
-/** 宿主机源码目录根（~/src 挂载点），容器内位于 workspace/src */
-export function getSrcRoot(): string {
-    return path.resolve(expandEnv(process.env.SRC_ROOT || "/app/workspace/src"));
-}
-
-/** @public */
-export function getWorkspacePath(...parts: string[]): string {
-    return path.join(getWorkspaceRoot(), ...parts);
-}
-
-export function getWorkspaceStateDir(...parts: string[]): string {
-    const stateRoot = process.env.XBOT_STATE_DIR;
-    return stateRoot
-        ? path.join(path.resolve(expandEnv(stateRoot)), ...parts)
-        : getWorkspacePath("state", ...parts);
-}
-
-export function getSkillsDir(...parts: string[]): string {
-    return getWorkspacePath("skills", ...parts);
-}
-
-/** 用户级技能目录：优先 XBOT_STATE_DIR/skills（TUI 下即 ~/.xbot/skills），未设置时回退 workspace/skills。 */
 export function getUserSkillsDir(...parts: string[]): string {
-    const stateRoot = process.env.XBOT_STATE_DIR;
-    return stateRoot
-        ? path.join(path.resolve(expandEnv(stateRoot)), "skills", ...parts)
-        : getWorkspacePath("skills", ...parts);
+    return getStateDir("skills", ...parts);
 }
 
 /** TUI 共享技能目录，兼容 ~/.agents/skills 中的用户级技能。 */
@@ -47,13 +27,13 @@ export function getAgentsSkillsDir(...parts: string[]): string {
     return path.join(homeDir, ".agents", "skills", ...parts);
 }
 
-const configuredMemoryUserId = Number.parseInt(process.env.XBOT_MEMORY_USER_ID || '0', 10);
+const configuredMemoryUserId = Number.parseInt(process.env.XBOT_MEMORY_USER_ID || "0", 10);
 export const DEFAULT_MEMORY_USER_ID = Number.isSafeInteger(configuredMemoryUserId) && configuredMemoryUserId >= 0
     ? configuredMemoryUserId
     : 0;
 
 export function getMemoriesRootDir(...parts: string[]): string {
-    return getWorkspacePath("memories", ...parts);
+    return getStateDir("memories", ...parts);
 }
 
 export function normalizeMemoryUserId(userId?: number | string): number {
@@ -74,10 +54,7 @@ export function getUserMemoryFilePath(userId: number): string {
 }
 
 export function getSessionsDir(...parts: string[]): string {
-    const stateRoot = process.env.XBOT_STATE_DIR;
-    return stateRoot
-        ? path.join(path.resolve(expandEnv(stateRoot)), "sessions", ...parts)
-        : getWorkspacePath("sessions", ...parts);
+    return getStateDir("sessions", ...parts);
 }
 
 /** 会话任务清单目录：sessions/todos/。 */
@@ -91,10 +68,10 @@ export function getSessionTodosFile(sessionId: string): string {
 }
 
 export function getUploadsDir(...parts: string[]): string {
-    return getWorkspaceStateDir("uploads", ...parts);
+    return getStateDir("uploads", ...parts);
 }
 
-/** 展开 ${VAR} 形式的环境变量引用（compose 风格 env 文件值在宿主机不会自动展开）。 */
+/** 展开 ${VAR} 形式的环境变量引用。 */
 function expandEnv(value: string): string {
     return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, name: string) => process.env[name] ?? "");
 }

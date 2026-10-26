@@ -11,15 +11,15 @@ import {
     writeCsvTool,
     runJqTool,
 } from "../../src/tools/data-ops.js";
-import { useTmpWorkspace, type TmpWorkspace } from "./test-env.js";
+import { useTmpStateDir, type TmpStateDir } from "./test-env.js";
 
 let tmpDir: string;
 let savedTuiCwd: string | undefined;
-let workspace: TmpWorkspace;
+let stateDir: TmpStateDir;
 
 beforeEach(() => {
-    workspace = useTmpWorkspace("xbot-data-ops-test-");
-    tmpDir = workspace.dir;
+    stateDir = useTmpStateDir("xbot-data-ops-test-");
+    tmpDir = stateDir.dir;
     // getToolCwd 优先 TUI_CWD；宿主环境注入时会导致相对路径解析到外部目录，须清除。
     savedTuiCwd = process.env.TUI_CWD;
     delete process.env.TUI_CWD;
@@ -31,7 +31,7 @@ afterEach(() => {
     } else {
         process.env.TUI_CWD = savedTuiCwd;
     }
-    workspace.cleanup();
+    stateDir.cleanup();
 });
 
 function resultText(result: any): string {

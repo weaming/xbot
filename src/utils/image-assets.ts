@@ -12,14 +12,14 @@ import type {
     ImageUrlRef,
     UserContent,
 } from "../types/image.js";
-import { getSessionsDir, getWorkspaceStateDir } from "./runtime-paths.js";
+import { getSessionsDir, getStateDir } from "./runtime-paths.js";
 import { sanitizeSessionId } from "./session-id.js";
 
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const execFileAsync = promisify(execFile);
 
 function getImageAssetsDir(sessionId?: string): string {
-    if (sessionId === undefined) return getWorkspaceStateDir("assets", "images");
+    if (sessionId === undefined) return getStateDir("assets", "images");
     const safeId = sanitizeSessionId(sessionId);
     if (!safeId || safeId !== sessionId) throw new Error(`会话 ID 无效：${sessionId}`);
     return getSessionsDir("assets", safeId);

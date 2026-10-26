@@ -21,23 +21,18 @@ const { getTuiStartupCwd } = await import("../../src/tui/runtime-context.js");
 
 let tmpDir: string;
 let otherDir: string;
-let originalWorkspace: string | undefined;
 let originalStateDir: string | undefined;
 let originalTuiCwd: string | undefined;
 
 beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-tui-cwd-"));
     otherDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-tui-other-"));
-    originalWorkspace = process.env.WORKSPACE;
     originalStateDir = process.env.XBOT_STATE_DIR;
     originalTuiCwd = process.env.TUI_CWD;
-    process.env.WORKSPACE = tmpDir;
     process.env.XBOT_STATE_DIR = tmpDir;
 });
 
 afterEach(() => {
-    if (originalWorkspace === undefined) delete process.env.WORKSPACE;
-    else process.env.WORKSPACE = originalWorkspace;
     if (originalStateDir === undefined) delete process.env.XBOT_STATE_DIR;
     else process.env.XBOT_STATE_DIR = originalStateDir;
     if (originalTuiCwd === undefined) delete process.env.TUI_CWD;

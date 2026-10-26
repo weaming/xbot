@@ -30,20 +30,15 @@ const WHEEL_IN_PANEL = "\x1b[<65;40;16M"; // -> (x=39, y=15)
 const WHEEL_OUTSIDE_PANEL = "\x1b[<65;40;2M"; // -> (x=39, y=1)
 
 let tmpDir: string;
-let originalWorkspace: string | undefined;
 let originalStateDir: string | undefined;
 
 beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-tui-firstframe-"));
-    originalWorkspace = process.env.WORKSPACE;
     originalStateDir = process.env.XBOT_STATE_DIR;
-    process.env.WORKSPACE = tmpDir;
     process.env.XBOT_STATE_DIR = tmpDir;
 });
 
 afterEach(() => {
-    if (originalWorkspace === undefined) delete process.env.WORKSPACE;
-    else process.env.WORKSPACE = originalWorkspace;
     if (originalStateDir === undefined) delete process.env.XBOT_STATE_DIR;
     else process.env.XBOT_STATE_DIR = originalStateDir;
     fs.rmSync(tmpDir, { recursive: true, force: true });

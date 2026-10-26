@@ -7,18 +7,18 @@ import {
     todoTool,
 } from "../../src/tools/todo-tool.js";
 import { toolResultToText } from "../../src/tools/tool-interface.js";
-import { useTmpWorkspace, type TmpWorkspace } from "./test-env.js";
+import { useTmpStateDir, type TmpStateDir } from "./test-env.js";
 
 let tmpDir: string;
-let workspace: TmpWorkspace;
+let stateDir: TmpStateDir;
 
 beforeEach(() => {
-    workspace = useTmpWorkspace("xbot-todo-test-");
-    tmpDir = workspace.dir;
+    stateDir = useTmpStateDir("xbot-todo-test-");
+    tmpDir = stateDir.dir;
 });
 
 afterEach(() => {
-    workspace.cleanup();
+    stateDir.cleanup();
 });
 
 async function todoResult(args: any): Promise<{ text: string; isError: boolean }> {

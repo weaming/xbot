@@ -10,7 +10,6 @@ import path from "path";
  */
 
 let tmpDir: string;
-let originalWorkspace: string | undefined;
 let originalStateDir: string | undefined;
 
 let queriedHistories: any[] = [];
@@ -51,16 +50,12 @@ const { createToolImageAsset } = await import("../../src/utils/image-assets.js")
 
 beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-tui-multi-test-"));
-    originalWorkspace = process.env.WORKSPACE;
     originalStateDir = process.env.XBOT_STATE_DIR;
-    process.env.WORKSPACE = tmpDir;
     process.env.XBOT_STATE_DIR = tmpDir;
     queriedHistories = [];
 });
 
 afterEach(() => {
-    if (originalWorkspace === undefined) delete process.env.WORKSPACE;
-    else process.env.WORKSPACE = originalWorkspace;
     if (originalStateDir === undefined) delete process.env.XBOT_STATE_DIR;
     else process.env.XBOT_STATE_DIR = originalStateDir;
     fs.rmSync(tmpDir, { recursive: true, force: true });

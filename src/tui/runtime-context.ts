@@ -2,11 +2,11 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import embeddedTuiIdentity from "./AGENTS.md" with { type: "text" };
-import { setEmbeddedWorkspaceIdentity } from "../skills/base-skill.js";
+import { setEmbeddedIdentity } from "../skills/base-skill.js";
 import { getTuiSessionLogFile, getTuiStartupLogFile } from "../utils/tui-state-paths.js";
 import { CONSOLE_TIMESTAMP_MARK } from "../utils/logger.js";
 
-const DEFAULT_HOST_WORKSPACE = path.join(os.homedir(), ".xbot", "workspace");
+const DEFAULT_HOST_STATE_DIR = path.join(os.homedir(), ".xbot");
 const DEFAULT_HOST_SRC_ROOT = "src";
 const CONTAINER_PATH_PREFIX = "/app/";
 function expandHome(value: string): string {
@@ -17,15 +17,6 @@ function expandHome(value: string): string {
 
 function isContainerPath(value: string | undefined): boolean {
     return !value || value.startsWith(CONTAINER_PATH_PREFIX);
-}
-
-function resolveHostWorkspace(): string {
-    const configuredHost = process.env.TUI_WORKSPACE;
-    if (configuredHost && !isContainerPath(configuredHost)) {
-        return path.resolve(expandHome(configuredHost));
-    }
-
-    return DEFAULT_HOST_WORKSPACE;
 }
 
 function resolveHostSrcRoot(): string {
@@ -117,20 +108,18 @@ export function setTuiLogSession(sessionId: string): void {
 
 /** 将本地工具依赖的路径和宿主服务地址切换为 TUI 所在环境。 */
 export function configureTuiHostEnvironment(): void {
-    const workspace = resolveHostWorkspace();
+    const stateDir = DEFAULT_HOST_STATE_DIR;
     const srcRoot = resolveHostSrcRoot();
-    fs.mkdirSync(workspace, { recursive: true });
+    fs.mkdirSync(stateDir, { recursive: true });
 
-    process.env.WORKSPACE = workspace;
     process.env.SRC_ROOT = srcRoot;
-    process.env.XBOT_STATE_DIR = path.join(os.homedir(), ".xbot");
-    setEmbeddedWorkspaceIdentity(embeddedTuiIdentity);
+    process.env.XBOT_STATE_DIR = stateDir;
+    setEmbeddedIdentity(embeddedTuiIdentity);
     process.env.XBOT_EXTRA_IDENTITY_FILE = path.join(os.homedir(), ".xbot", "AGENTS.md");
     process.env.TUI_PLATFORM = `${process.platform} ${process.arch}`;
     process.env.TUI_CWD = process.cwd();
     // 固化启动目录：TUI_CWD 之后会随会话切换被改写，新建会话仍须以启动目录为初始值。
     tuiStartupCwd = process.cwd();
-    process.env.TUI_WORKSPACE = workspace;
     process.env.TUI_SRC_ROOT = srcRoot;
     rewriteContainerServicesForHost();
 }

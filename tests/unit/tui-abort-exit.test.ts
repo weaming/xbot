@@ -8,8 +8,11 @@
  */
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import fs from "fs";
+import os from "os";
+import path from "path";
 import { tuiStub } from "./tui-stub.js";
-import { isolateModelEnv, useTmpWorkspace, type TmpWorkspace } from "./test-env.js";
+import { isolateModelEnv } from "./test-env.js";
 
 mock.module("@earendil-works/pi-tui", () => tuiStub);
 
@@ -23,17 +26,22 @@ const { ChatApp } = await import("../../src/tui/app.js");
 const { ChatStore } = await import("../../src/tui/store.js");
 
 const SESSION = "sess-abort-exit";
-let workspace: TmpWorkspace;
+let stateDir: string;
+let previousStateDir: string | undefined;
 let restoreModelEnv: () => void;
 
 beforeEach(() => {
     restoreModelEnv = isolateModelEnv();
-    workspace = useTmpWorkspace("xbot-abort-exit-");
+    stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-abort-exit-"));
+    previousStateDir = process.env.XBOT_STATE_DIR;
+    process.env.XBOT_STATE_DIR = stateDir;
 });
 
 afterEach(() => {
     restoreModelEnv();
-    workspace.cleanup();
+    if (previousStateDir === undefined) delete process.env.XBOT_STATE_DIR;
+    else process.env.XBOT_STATE_DIR = previousStateDir;
+    fs.rmSync(stateDir, { recursive: true, force: true });
 });
 
 function makeAgent(overrides: Record<string, unknown> = {}) {

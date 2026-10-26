@@ -16,13 +16,11 @@ describe("工具 cwd 上下文", () => {
         expect(result).toBe(path.resolve("/proj/alpha"));
     });
 
-    test("无绑定时回退 TUI_CWD，再回退 WORKSPACE", () => {
+    test("无绑定时回退 TUI_CWD，再回退进程当前目录", () => {
         const previousCwd = process.env.TUI_CWD;
-        const previousWorkspace = process.env.WORKSPACE;
         try {
             delete process.env.TUI_CWD;
-            process.env.WORKSPACE = "/workspace-fallback";
-            expect(getToolCwd()).toBe(path.resolve("/workspace-fallback"));
+            expect(getToolCwd()).toBe(path.resolve(process.cwd()));
 
             process.env.TUI_CWD = "/tui-cwd";
             expect(getToolCwd()).toBe(path.resolve("/tui-cwd"));
@@ -31,11 +29,6 @@ describe("工具 cwd 上下文", () => {
                 delete process.env.TUI_CWD;
             } else {
                 process.env.TUI_CWD = previousCwd;
-            }
-            if (previousWorkspace === undefined) {
-                delete process.env.WORKSPACE;
-            } else {
-                process.env.WORKSPACE = previousWorkspace;
             }
         }
     });

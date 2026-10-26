@@ -18,65 +18,56 @@ function makeSkill(skillDir: string, name: string, description: string, extraYam
 
 describe("skill registry multi-source loading", () => {
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-skill-state-"));
-    const wsDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-skill-ws-"));
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-skill-home-"));
     const userSkillsDir = path.join(stateDir, "skills");
-    const wsSkillsDir = path.join(wsDir, "skills");
     const agentsSkillsDir = path.join(homeDir, ".agents", "skills");
 
     let previousStateDir: string | undefined;
-    let previousWorkspace: string | undefined;
     let previousHome: string | undefined;
     let previousTuiPlatform: string | undefined;
 
     beforeEach(() => {
         previousStateDir = process.env.XBOT_STATE_DIR;
-        previousWorkspace = process.env.WORKSPACE;
         previousHome = process.env.HOME;
         previousTuiPlatform = process.env.TUI_PLATFORM;
     });
 
     afterEach(() => {
         restoreEnv("XBOT_STATE_DIR", previousStateDir);
-        restoreEnv("WORKSPACE", previousWorkspace);
         restoreEnv("HOME", previousHome);
         restoreEnv("TUI_PLATFORM", previousTuiPlatform);
         fs.rmSync(stateDir, { recursive: true, force: true });
-        fs.rmSync(wsDir, { recursive: true, force: true });
         fs.rmSync(homeDir, { recursive: true, force: true });
     });
 
-    test("loads skills from user dir with priority over workspace dir", async () => {
+    test("loads skills from user dir with priority over shared dir", async () => {
         makeSkill(userSkillsDir, "alpha", "user-alpha");
         makeSkill(userSkillsDir, "beta", "user-beta");
-        makeSkill(wsSkillsDir, "alpha", "ws-alpha"); // 同名：应被用户级覆盖
-        makeSkill(wsSkillsDir, "gamma", "ws-gamma");
+        makeSkill(agentsSkillsDir, "alpha", "shared-alpha");
+        makeSkill(agentsSkillsDir, "gamma", "shared-gamma");
 
-        // 只注入这两层：共享目录（~/.agents/skills）由专门用例覆盖，不在此处干扰。
-        const registry = new SkillRegistry([userSkillsDir, wsSkillsDir]);
+        const registry = new SkillRegistry([userSkillsDir, agentsSkillsDir]);
         await registry.load();
 
         expect(registry.getSkillNames().sort()).toEqual(["alpha", "beta", "gamma"]);
         expect(registry.getSkillMeta("alpha")?.description).toBe("user-alpha");
         expect(registry.getSkillDir("alpha")).toBe(path.join(userSkillsDir, "alpha"));
         expect(registry.getSkillDir("beta")).toBe(path.join(userSkillsDir, "beta"));
-        expect(registry.getSkillDir("gamma")).toBe(path.join(wsSkillsDir, "gamma"));
+        expect(registry.getSkillDir("gamma")).toBe(path.join(agentsSkillsDir, "gamma"));
     });
 
     test("loads ~/.agents/skills in TUI and keeps local skills first", async () => {
         makeSkill(userSkillsDir, "local", "local-skill");
         makeSkill(agentsSkillsDir, "shared", "shared-skill");
-        makeSkill(wsSkillsDir, "workspace", "workspace-skill");
 
         process.env.HOME = homeDir;
         process.env.TUI_PLATFORM = "test";
         process.env.XBOT_STATE_DIR = stateDir;
-        process.env.WORKSPACE = wsDir;
 
         const registry = new SkillRegistry();
         await registry.load();
 
-        expect(registry.getSkillNames().sort()).toEqual(["local", "shared", "workspace"]);
+        expect(registry.getSkillNames().sort()).toEqual(["local", "shared"]);
         expect(registry.getSkillDir("shared")).toBe(path.join(agentsSkillsDir, "shared"));
     });
 
@@ -84,7 +75,6 @@ describe("skill registry multi-source loading", () => {
         makeSkill(userSkillsDir, "alpha", "user-alpha", "allowed-tools:\n  - Bash(git *)\nmodel: sonnet\n");
 
         process.env.XBOT_STATE_DIR = stateDir;
-        process.env.WORKSPACE = wsDir;
 
         const registry = new SkillRegistry();
         await registry.load();
@@ -100,7 +90,6 @@ describe("skill registry multi-source loading", () => {
         fs.writeFileSync(path.join(dir, "SKILL.md"), "---\ndescription: no name field\n---\n# Bare\n");
 
         process.env.XBOT_STATE_DIR = stateDir;
-        process.env.WORKSPACE = wsDir;
 
         const registry = new SkillRegistry();
         await registry.load();

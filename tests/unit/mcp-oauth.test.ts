@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { useTmpWorkspace } from "./test-env.js";
+import { useTmpStateDir } from "./test-env.js";
 
 import { interpolateConfig, resolveMcpOAuthConfig } from "../../src/mcp/config.js";
 import { McpOAuthClient, OAuthCallbackServer, resolveOAuthStorePath } from "../../src/mcp/oauth.js";
@@ -43,11 +43,11 @@ describe("mcp oauth config", () => {
     });
 
     test("resolveOAuthStorePath 落在 XBOT_STATE_DIR/mcp-auth 下", () => {
-        const workspace = useTmpWorkspace("xbot-oauth-path-");
+        const stateDir = useTmpStateDir("xbot-oauth-path-");
         try {
-            expect(resolveOAuthStorePath("my server/1")).toBe(path.join(workspace.dir, "mcp-auth", "my_server_1.json"));
+            expect(resolveOAuthStorePath("my server/1")).toBe(path.join(stateDir.dir, "mcp-auth", "my_server_1.json"));
         } finally {
-            workspace.cleanup();
+            stateDir.cleanup();
         }
     });
 });

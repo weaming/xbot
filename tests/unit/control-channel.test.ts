@@ -10,14 +10,14 @@ import { requestOnce } from "../../src/control/client.js";
 import { ensureControlDir, getSocketPath } from "../../src/control/paths.js";
 import { createPeerMessage, encodeFrame, splitFrames, type PeerFrame, type PeerMessage, type PeerResult } from "../../src/control/protocol.js";
 import { forgetBound, locallyBoundSessionIds } from "../../src/control/registry.js";
-import { useTmpWorkspace, type TmpWorkspace } from "./test-env.js";
+import { useTmpStateDir, type TmpStateDir } from "./test-env.js";
 
-let workspace: TmpWorkspace;
+let stateDir: TmpStateDir;
 const controls: SessionControl[] = [];
 const fakes: FakePeer[] = [];
 
 beforeEach(() => {
-    workspace = useTmpWorkspace("xbot-control-channel-");
+    stateDir = useTmpStateDir("xbot-control-channel-");
     for (const sessionId of locallyBoundSessionIds()) forgetBound(sessionId);
 });
 
@@ -25,7 +25,7 @@ afterEach(() => {
     for (const control of controls.splice(0)) control.close();
     for (const fake of fakes.splice(0)) fake.stop();
     for (const sessionId of locallyBoundSessionIds()) forgetBound(sessionId);
-    workspace.cleanup();
+    stateDir.cleanup();
 });
 
 /** 假的外部持有者：按配置回应 release / who / deliver。 */

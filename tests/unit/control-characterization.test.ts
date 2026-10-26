@@ -10,20 +10,20 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { describeClaimFailure, SessionControl, type SessionControlHost } from "../../src/control/channel.js";
 import type { PeerMessage, PeerResult } from "../../src/control/protocol.js";
 import { forgetBound, locallyBoundSessionIds } from "../../src/control/registry.js";
-import { useTmpWorkspace, type TmpWorkspace } from "./test-env.js";
+import { useTmpStateDir, type TmpStateDir } from "./test-env.js";
 
-let workspace: TmpWorkspace;
+let stateDir: TmpStateDir;
 const controls: SessionControl[] = [];
 
 beforeEach(() => {
-    workspace = useTmpWorkspace("xbot-control-invariants-");
+    stateDir = useTmpStateDir("xbot-control-invariants-");
     for (const sessionId of locallyBoundSessionIds()) forgetBound(sessionId);
 });
 
 afterEach(() => {
     for (const control of controls.splice(0)) control.close();
     for (const sessionId of locallyBoundSessionIds()) forgetBound(sessionId);
-    workspace.cleanup();
+    stateDir.cleanup();
 });
 
 interface Recorder extends SessionControlHost {
