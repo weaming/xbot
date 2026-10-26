@@ -66,6 +66,41 @@ export function formatToolBlockArgs(toolName: string, args?: string): string {
     return [prefix, command.trim()].filter(Boolean).join(" ");
 }
 
+/** 折叠态正文占位符。 */
+const COLLAPSED_TEXT_PLACEHOLDER = "...";
+
+/** 折叠态需要隐藏 text 正文字段的工具。 */
+const COLLAPSED_LONG_TEXT_TOOLS = new Set(["session_send"]);
+
+/** 折叠态参数行：普通工具走常规格式化，正文类工具只把 text 换成占位符。 */
+export function formatCollapsedToolArgs(toolName: string, args?: string): string {
+    const rawArgs = args ?? "";
+    if (COLLAPSED_LONG_TEXT_TOOLS.has(toolName)) {
+        const collapsedArgs = shortenTextArg(rawArgs);
+        if (collapsedArgs !== undefined) return collapsedArgs;
+    }
+    return formatToolBlockArgs(toolName, rawArgs);
+}
+
+/** 把 text 字段换成占位符并按 name=value 排版；参数不是合法 JSON 时返回 undefined 交给常规渲染。 */
+function shortenTextArg(rawArgs: string): string | undefined {
+    let parsedArgs: unknown;
+    try {
+        parsedArgs = JSON.parse(rawArgs.trim());
+    } catch {
+        return undefined;
+    }
+    if (!isRecord(parsedArgs)) return undefined;
+
+    const collapsedArgs = Object.fromEntries(
+        Object.entries(parsedArgs).map(([key, value]) => [
+            key,
+            key === "text" && typeof value === "string" ? COLLAPSED_TEXT_PLACEHOLDER : value,
+        ]),
+    );
+    return formatToolArguments(collapsedArgs);
+}
+
 /** 渲染非展开模式的工具摘要；特殊工具交给专用渲染器处理。 */
 export function renderCollapsedToolBlock(block: CollapsedToolBlock): string {
     const digest = isAskUserTool(block.name) ? parseAskUserBlock(block) : undefined;
@@ -81,10 +116,8 @@ export function renderCollapsedToolBlock(block: CollapsedToolBlock): string {
             ? ` ${theme.statusBad("❌")}`
             : ` ${theme.statusOk("✅")}`;
     const lines = [theme.tool(`🔧 ${block.name}`) + status];
-    const formattedArgs = formatToolBlockArgs(block.name, block.args);
-    if (formattedArgs && formattedArgs !== "{}" && formattedArgs !== "[]") {
-        lines.push(theme.toolArgs(formattedArgs));
-    }
+    const argsText = formatCollapsedToolArgs(block.name, block.args);
+    if (argsText) lines.push(theme.toolArgs(argsText));
     return lines.join("\n");
 }
 

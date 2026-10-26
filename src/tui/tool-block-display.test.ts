@@ -80,6 +80,40 @@ describe("工具块参数转换", () => {
         expect(rendered).not.toContain("422.95");
     });
 
+    test("session_send 折叠时只有 text 换成占位符，展开时仍是完整参数", () => {
+        const block = {
+            name: "session_send",
+            args: '{"session":"a1b2c3d4","text":"帮我改一下 README 的命令示例","expect_result":true}',
+            result: "已发送到会话 a1b2c3d4（msgId=7）",
+        };
+
+        const collapsed = renderCollapsedToolBlock(block);
+
+        expect(stripTerminalSequences(collapsed)).toBe(
+            "🔧 session_send ✅\nsession=a1b2c3d4 text=... expect_result=true",
+        );
+        expect(collapsed).not.toContain("README");
+
+        const expanded = renderExpandedToolBlock(block);
+
+        expect(expanded).toContain("README");
+        expect(expanded).toContain("a1b2c3d4");
+    });
+
+    test("session_send 无参数时不留参数行", () => {
+        expect(stripTerminalSequences(renderCollapsedToolBlock({ name: "session_send", args: "{}" }))).toBe(
+            "🔧 session_send",
+        );
+    });
+
+    test("session_send 参数不是合法 JSON 时退回原始参数", () => {
+        const brokenArgs = '{"session":"a1b2c3d4","text":';
+
+        expect(stripTerminalSequences(renderCollapsedToolBlock({ name: "session_send", args: brokenArgs }))).toBe(
+            `🔧 session_send\n${brokenArgs}`,
+        );
+    });
+
     test("edit_file 使用变更统计摘要并为增删行着色", () => {
         const result = [
             "Edited file successfully: sample.txt",
