@@ -31,6 +31,7 @@ import {
     buildHelpText,
     buildSkillsHelpText,
     EXIT_CONFIRM_MS,
+    REVIEW_PROMPT,
     SESSION_NEW_URL,
     SESSION_PANEL_URL,
     SHORTCUT_PANEL_URL,
@@ -592,10 +593,17 @@ export class ChatApp {
         }
         return true;
     }
-    /** 斜杠命令：/new /clear /delete /close /compact /system /help。 */
+    /** 斜杠命令：/new /review /clear /delete /close /compact /system /help。 */
     private async handleCommand(raw: string): Promise<void> {
         const sessionId = this.store.currentSessionId;
         const [command, ...rest] = raw.split(/\s+/);
+        // /review 等价于用户直接输入评审指令：入历史的是指令正文而非命令名
+        if (command === "/review") {
+            this.editor.setText("");
+            this.enqueueOrSend(REVIEW_PROMPT);
+            this.restoreFocus();
+            return;
+        }
         if (sessionId) this.recordSubmittedInput(sessionId, raw.trim());
         else this.editor.addToHistory(raw.trim());
         if (!sessionId && SESSION_REQUIRED_COMMANDS.has(command)) {

@@ -7,6 +7,7 @@ import { getAgentsSkillsDir, getUserSkillsDir } from "../utils/runtime-paths.js"
 
 export const SLASH_COMMANDS: SlashCommand[] = [
     { name: "new", description: "新建会话" },
+    { name: "review", description: "发起 dev-review → 修复循环，通过后暂存并提交" },
     { name: "sessions", description: "打开会话面板（搜索 / 切换 / 管理）" },
     { name: "todo", description: "打开任务清单面板（Ctrl+T）" },
     { name: "tasks", description: "查看或管理后台 shell 任务（list/status/wait/stop）" },
@@ -30,6 +31,13 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     { name: "mcp", description: "显示 MCP 服务状态与工具清单" },
     { name: "help", description: "显示帮助" },
 ];
+
+/** /review 发送的固定指令：dev-review → 修复循环，通过后再暂存并提交。 */
+export const REVIEW_PROMPT = [
+    "做 dev-review → fix 循环，直到 review 通过再 commit。",
+    "每轮 review 都交给同一个 subagent：跨轮复用，循环结束后 close 它。",
+    "被 review 的改动在 review 期间保持 unstaged，每轮 review 完就 stage；review 通过后 commit。",
+].join("\n");
 
 export const SESSION_SHORTCUTS = [
     Key.ctrl("1"),
@@ -96,6 +104,7 @@ export function buildHelpText(): string {
     return [
         "可用命令：",
         "  /new      新建会话",
+        "  /review   发送 dev-review → 修复循环指令（通过后暂存并提交）",
         "  /sessions 打开会话面板（⌘P / ⌃P）",
         "  /todo     打开任务清单面板（⌃T）",
         "  /tasks [list]                  列出当前会话的后台任务",
