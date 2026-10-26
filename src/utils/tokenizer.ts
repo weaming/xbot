@@ -26,9 +26,9 @@ let loading: Promise<DeepSeekTokenizer | null> | undefined;
 /** 已精确统计过的消息（内容不可变的 StoredChatMessage 按 id 记账）。 */
 const messageCache = new Map<string, number>();
 
-/** 关闭真分词（诊断/测试用）：`XBOT_TOKENIZER=off`。 */
+/** 关闭真分词（诊断/测试用）：`ZBOT_TOKENIZER=off`。 */
 function tokenizerDisabled(): boolean {
-    const mode = (process.env.XBOT_TOKENIZER ?? "").trim().toLowerCase();
+    const mode = (process.env.ZBOT_TOKENIZER ?? "").trim().toLowerCase();
     return mode === "off" || mode === "0" || mode === "false";
 }
 

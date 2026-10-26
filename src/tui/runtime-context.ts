@@ -6,7 +6,7 @@ import { setEmbeddedIdentity } from "../skills/base-skill.js";
 import { getTuiSessionLogFile, getTuiStartupLogFile } from "../utils/tui-state-paths.js";
 import { CONSOLE_TIMESTAMP_MARK } from "../utils/logger.js";
 
-const DEFAULT_HOST_STATE_DIR = path.join(os.homedir(), ".xbot");
+const DEFAULT_HOST_STATE_DIR = path.join(os.homedir(), ".zbot");
 const DEFAULT_HOST_SRC_ROOT = "src";
 const CONTAINER_PATH_PREFIX = "/app/";
 function expandHome(value: string): string {
@@ -113,9 +113,9 @@ export function configureTuiHostEnvironment(): void {
     fs.mkdirSync(stateDir, { recursive: true });
 
     process.env.SRC_ROOT = srcRoot;
-    process.env.XBOT_STATE_DIR = stateDir;
+    process.env.ZBOT_STATE_DIR = stateDir;
     setEmbeddedIdentity(embeddedTuiIdentity);
-    process.env.XBOT_EXTRA_IDENTITY_FILE = path.join(os.homedir(), ".xbot", "AGENTS.md");
+    process.env.ZBOT_EXTRA_IDENTITY_FILE = path.join(os.homedir(), ".zbot", "AGENTS.md");
     process.env.TUI_PLATFORM = `${process.platform} ${process.arch}`;
     process.env.TUI_CWD = process.cwd();
     // 固化启动目录：TUI_CWD 之后会随会话切换被改写，新建会话仍须以启动目录为初始值。

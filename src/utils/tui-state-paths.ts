@@ -1,5 +1,5 @@
 /**
- * TUI 进程专属 state 路径（state root 即 ~/.xbot，TUI 独占、无任何 tui/ 子目录）：
+ * TUI 进程专属 state 路径（state root 即 ~/.zbot，TUI 独占、无任何 tui/ 子目录）：
  *  - 输入历史 `input-history.json`（全局，条目按 sessionId 区分）
  *  - 会话草稿 `sessions/session-drafts.json`（与事件/交换日志同域）
  *  - 日志按 session 分离到 `sessions/log/<sessionId>.log`（与事件日志同域），
@@ -12,9 +12,9 @@ import path from "path";
 function resolveStateRoot(stateRoot?: string): string {
     return stateRoot
         ? path.resolve(stateRoot)
-        : process.env.XBOT_STATE_DIR
-            ? path.resolve(process.env.XBOT_STATE_DIR)
-            : path.join(os.homedir(), ".xbot");
+        : process.env.ZBOT_STATE_DIR
+            ? path.resolve(process.env.ZBOT_STATE_DIR)
+            : path.join(os.homedir(), ".zbot");
 }
 
 /** 启动阶段（session 未知）的 TUI 日志。 */

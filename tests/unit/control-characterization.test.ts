@@ -16,7 +16,7 @@ let stateDir: TmpStateDir;
 const controls: SessionControl[] = [];
 
 beforeEach(() => {
-    stateDir = useTmpStateDir("xbot-control-invariants-");
+    stateDir = useTmpStateDir("zbot-control-invariants-");
     for (const sessionId of locallyBoundSessionIds()) forgetBound(sessionId);
 });
 

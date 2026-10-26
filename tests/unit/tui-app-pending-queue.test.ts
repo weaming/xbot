@@ -163,15 +163,15 @@ function makeFakeAgent(): FakeAgent {
 beforeEach(async () => {
     // 宿主 shell 导出的模型配置会让 getChatApiSettings 返回真实模型，隔离后再断言默认值。
     restoreModelEnv = isolateModelEnv();
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-tui-pending-"));
-    originalStateDir = process.env.XBOT_STATE_DIR;
-    process.env.XBOT_STATE_DIR = tmpDir;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-tui-pending-"));
+    originalStateDir = process.env.ZBOT_STATE_DIR;
+    process.env.ZBOT_STATE_DIR = tmpDir;
 });
 
 afterEach(() => {
     restoreModelEnv();
-    if (originalStateDir === undefined) delete process.env.XBOT_STATE_DIR;
-    else process.env.XBOT_STATE_DIR = originalStateDir;
+    if (originalStateDir === undefined) delete process.env.ZBOT_STATE_DIR;
+    else process.env.ZBOT_STATE_DIR = originalStateDir;
     fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -891,7 +891,7 @@ describe("ChatApp pending queue", () => {
         expect(tui.scrollByCalls).toEqual([-19, 19]);
     });
 
-    test("滚轮诊断写入独立文件（仅 XBOT_TUI_DEBUG_WHEEL=1 时）", async () => {
+    test("滚轮诊断写入独立文件（仅 ZBOT_TUI_DEBUG_WHEEL=1 时）", async () => {
         const agent = makeFakeAgent();
         const store = new ChatStore();
         const app = new ChatApp(agent as any, store);
@@ -901,18 +901,18 @@ describe("ChatApp pending queue", () => {
 
         // 默认关闭：不写文件
         const logFile = getTuiWheelLogFile();
-        delete process.env.XBOT_TUI_DEBUG_WHEEL;
+        delete process.env.ZBOT_TUI_DEBUG_WHEEL;
         fs.rmSync(logFile, { force: true });
         expect((app as any).isWheelOutsidePanel("\x1b[<65;1;1M")).toBe(true);
         expect(fs.existsSync(logFile)).toBe(false);
 
         // 开启后：面板外/面板内都落盘
-        process.env.XBOT_TUI_DEBUG_WHEEL = "1";
+        process.env.ZBOT_TUI_DEBUG_WHEEL = "1";
         try {
             expect((app as any).isWheelOutsidePanel("\x1b[<65;1;1M")).toBe(true);
             expect((app as any).isWheelOutsidePanel("\x1b[<65;40;12M")).toBe(false);
         } finally {
-            delete process.env.XBOT_TUI_DEBUG_WHEEL;
+            delete process.env.ZBOT_TUI_DEBUG_WHEEL;
         }
 
         const content = fs.readFileSync(logFile, "utf8");

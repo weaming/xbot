@@ -11,9 +11,9 @@ let outsideDir: string;
 let stateDir: TmpStateDir;
 
 beforeEach(() => {
-    stateDir = useTmpStateDir("xbot-grep-test-");
+    stateDir = useTmpStateDir("zbot-grep-test-");
     tmpDir = stateDir.dir;
-    outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-grep-outside-"));
+    outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-grep-outside-"));
     delete process.env.RG_BIN;
 });
 

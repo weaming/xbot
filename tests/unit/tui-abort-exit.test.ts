@@ -32,15 +32,15 @@ let restoreModelEnv: () => void;
 
 beforeEach(() => {
     restoreModelEnv = isolateModelEnv();
-    stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-abort-exit-"));
-    previousStateDir = process.env.XBOT_STATE_DIR;
-    process.env.XBOT_STATE_DIR = stateDir;
+    stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-abort-exit-"));
+    previousStateDir = process.env.ZBOT_STATE_DIR;
+    process.env.ZBOT_STATE_DIR = stateDir;
 });
 
 afterEach(() => {
     restoreModelEnv();
-    if (previousStateDir === undefined) delete process.env.XBOT_STATE_DIR;
-    else process.env.XBOT_STATE_DIR = previousStateDir;
+    if (previousStateDir === undefined) delete process.env.ZBOT_STATE_DIR;
+    else process.env.ZBOT_STATE_DIR = previousStateDir;
     fs.rmSync(stateDir, { recursive: true, force: true });
 });
 

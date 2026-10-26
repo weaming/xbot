@@ -25,16 +25,16 @@ let originalStateDir: string | undefined;
 let originalTuiCwd: string | undefined;
 
 beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-tui-cwd-"));
-    otherDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-tui-other-"));
-    originalStateDir = process.env.XBOT_STATE_DIR;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-tui-cwd-"));
+    otherDir = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-tui-other-"));
+    originalStateDir = process.env.ZBOT_STATE_DIR;
     originalTuiCwd = process.env.TUI_CWD;
-    process.env.XBOT_STATE_DIR = tmpDir;
+    process.env.ZBOT_STATE_DIR = tmpDir;
 });
 
 afterEach(() => {
-    if (originalStateDir === undefined) delete process.env.XBOT_STATE_DIR;
-    else process.env.XBOT_STATE_DIR = originalStateDir;
+    if (originalStateDir === undefined) delete process.env.ZBOT_STATE_DIR;
+    else process.env.ZBOT_STATE_DIR = originalStateDir;
     if (originalTuiCwd === undefined) delete process.env.TUI_CWD;
     else process.env.TUI_CWD = originalTuiCwd;
     fs.rmSync(tmpDir, { recursive: true, force: true });

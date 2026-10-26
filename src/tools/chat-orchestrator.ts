@@ -102,12 +102,12 @@ export function createChatClient(
   const finalURL = baseURL || "https://api.openai.com/v1";
   const normalizedApiKey = apiKey.trim();
   const client = new OpenAI({
-    apiKey: normalizedApiKey || "xbot-local-no-auth",
+    apiKey: normalizedApiKey || "zbot-local-no-auth",
     baseURL: finalURL,
     maxRetries: 0,
     defaultHeaders: {
       Authorization: normalizedApiKey ? undefined : null,
-      "x-llm-caller": "xbot",
+      "x-llm-caller": "zbot",
     },
     fetch: getOpenAIProxyFetch(),
   });
@@ -168,7 +168,7 @@ export interface OrchestratorOptions {
   onEvent?: (event: UIEvent) => void | Promise<void>;
   // 历史消息
   history?: ChatMessage[];
-  // 会话标识，仅 xbot 对话请求提供
+  // 会话标识，仅 zbot 对话请求提供
   sessionId?: string;
   contextEpochId?: string;
   initialRequestKind?: Exclude<LLMRequestKind, 'tool_response'>;

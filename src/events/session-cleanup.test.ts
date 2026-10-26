@@ -16,13 +16,13 @@ let tmpDir: string;
 let savedEnv: Record<string, string | undefined> = {};
 
 beforeAll(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-cleanup-"));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-cleanup-"));
     savedEnv = {
-        XBOT_STATE_DIR: process.env.XBOT_STATE_DIR,
+        ZBOT_STATE_DIR: process.env.ZBOT_STATE_DIR,
         TUI_CWD: process.env.TUI_CWD,
         [ARCHIVE_RETENTION_ENV]: process.env[ARCHIVE_RETENTION_ENV],
     };
-    process.env.XBOT_STATE_DIR = tmpDir;
+    process.env.ZBOT_STATE_DIR = tmpDir;
     delete process.env.TUI_CWD;
 });
 

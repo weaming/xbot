@@ -179,7 +179,7 @@ async function createMcpClientInstance(
 
     const isLegacy = serverConfig.legacy === true || serverConfig.protocolVersion === "2025-11-25";
     const client = new Client(
-        { name: `xbot-${name}`, version: "1.0.0" },
+        { name: `zbot-${name}`, version: "1.0.0" },
         isLegacy
             ? { versionNegotiation: { mode: "legacy" } }
             : {

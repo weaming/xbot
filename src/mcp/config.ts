@@ -1,6 +1,6 @@
 /**
  * MCP 客户端配置解析与加载器
- * 支持加载 ~/.xbot/mcp-servers.yaml
+ * 支持加载 ~/.zbot/mcp-servers.yaml
  * 支持 ${VAR} 环境变量插值、requiredEnv 条件检查、tools filter 规则与 OAuth 认证
  */
 
@@ -27,9 +27,9 @@ export interface McpOAuthConfig {
     callbackPort?: number;
     /** 授权等待超时（秒），默认 600 */
     authTimeoutSec?: number;
-    /** 凭据文件路径，默认 $XBOT_STATE_DIR/mcp-auth/<name>.json */
+    /** 凭据文件路径，默认 $ZBOT_STATE_DIR/mcp-auth/<name>.json */
     storePath?: string;
-    /** 授权页展示的客户端名称，默认 xbot-<name> */
+    /** 授权页展示的客户端名称，默认 zbot-<name> */
     clientName?: string;
 }
 
@@ -60,7 +60,7 @@ export interface McpConfigRoot {
     mcpServers?: Record<string, Omit<McpServerConfig, "name"> & { name?: string }>;
 }
 
-export const DEFAULT_TUI_MCP_CONFIG_FILE = path.join(os.homedir(), ".xbot", "mcp-servers.yaml");
+export const DEFAULT_TUI_MCP_CONFIG_FILE = path.join(os.homedir(), ".zbot", "mcp-servers.yaml");
 
 export function resolvePathWithTilde(inputPath: string): string {
     if (inputPath === "~") return os.homedir();
@@ -134,7 +134,7 @@ export function resolveMcpOAuthConfig(config: McpServerConfig): ResolvedMcpOAuth
     const options = config.oauth === true ? {} : config.oauth;
     return {
         ...options,
-        clientName: options.clientName || `xbot-${config.name}`,
+        clientName: options.clientName || `zbot-${config.name}`,
     };
 }
 
@@ -203,17 +203,17 @@ export function normalizeParsedConfig(parsed: any): McpServerConfig[] {
 export interface LoadMcpConfigOptions {
     /** 显式指定的配置文件路径，不传时依据 mode 自动判定 */
     configPath?: string;
-    /** 模式：tui（只读 ~/.xbot/mcp-servers.yaml，无则不连），hub（无配置则默认连 mcp-hub），auto */
+    /** 模式：tui（只读 ~/.zbot/mcp-servers.yaml，无则不连），hub（无配置则默认连 mcp-hub），auto */
     mode?: "tui" | "hub" | "auto";
 }
 
 /**
  * 加载并解析 MCP 配置文件
- * - mode === "tui": 若 ~/.xbot/mcp-servers.yaml 不存在，返回空列表（没有则不连）
+ * - mode === "tui": 若 ~/.zbot/mcp-servers.yaml 不存在，返回空列表（没有则不连）
  * - mode === "hub" / 默认: 若无配置文件，返回连接 mcp-hub 的单服务默认配置
  */
 export function loadMcpServersConfig(options: LoadMcpConfigOptions = {}): McpServerConfig[] {
-    const explicitFile = options.configPath || process.env.XBOT_MCP_SERVERS_FILE;
+    const explicitFile = options.configPath || process.env.ZBOT_MCP_SERVERS_FILE;
     const targetPath = explicitFile
         ? resolvePathWithTilde(explicitFile)
         : (options.mode === "tui" ? DEFAULT_TUI_MCP_CONFIG_FILE : undefined);

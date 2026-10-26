@@ -49,15 +49,15 @@ const { getSessionLockFilePath } = await import("../../src/utils/session-lock.js
 const { createToolImageAsset } = await import("../../src/utils/image-assets.js");
 
 beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-tui-multi-test-"));
-    originalStateDir = process.env.XBOT_STATE_DIR;
-    process.env.XBOT_STATE_DIR = tmpDir;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-tui-multi-test-"));
+    originalStateDir = process.env.ZBOT_STATE_DIR;
+    process.env.ZBOT_STATE_DIR = tmpDir;
     queriedHistories = [];
 });
 
 afterEach(() => {
-    if (originalStateDir === undefined) delete process.env.XBOT_STATE_DIR;
-    else process.env.XBOT_STATE_DIR = originalStateDir;
+    if (originalStateDir === undefined) delete process.env.ZBOT_STATE_DIR;
+    else process.env.ZBOT_STATE_DIR = originalStateDir;
     fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 

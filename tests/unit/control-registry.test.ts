@@ -22,7 +22,7 @@ import { useTmpStateDir, type TmpStateDir } from "./test-env.js";
 let stateDir: TmpStateDir;
 
 beforeEach(() => {
-    stateDir = useTmpStateDir("xbot-control-registry-");
+    stateDir = useTmpStateDir("zbot-control-registry-");
     for (const sessionId of locallyBoundSessionIds()) forgetBound(sessionId);
 });
 

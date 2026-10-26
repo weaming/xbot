@@ -25,15 +25,15 @@ describe("TUI 终端通知 (Ghostty / OSC 777 & OSC 9)", () => {
 
         try {
             sendTerminalNotification({
-                title: "xbot 会话",
+                title: "zbot 会话",
                 body: "任务处理完成！",
                 force: true,
             });
 
             // OSC 777 校验
-            expect(output).toContain("\x1b]777;notify;xbot 会话;任务处理完成！\x07");
+            expect(output).toContain("\x1b]777;notify;zbot 会话;任务处理完成！\x07");
             // OSC 9 校验
-            expect(output).toContain("\x1b]9;xbot 会话: 任务处理完成！\x07");
+            expect(output).toContain("\x1b]9;zbot 会话: 任务处理完成！\x07");
         } finally {
             writeSpy.mockRestore();
         }
@@ -80,7 +80,7 @@ describe("TUI 终端通知 (Ghostty / OSC 777 & OSC 9)", () => {
                 force: true,
             });
 
-            expect(output).toContain("xbot · 长任务");
+            expect(output).toContain("zbot · 长任务");
             expect(output).toContain("已完成多文件代码重构与单测编写");
         } finally {
             writeSpy.mockRestore();
@@ -106,7 +106,7 @@ describe("TUI 终端通知 (Ghostty / OSC 777 & OSC 9)", () => {
                 force: true,
             });
 
-            expect(output).toContain("xbot · 后台数据拉取");
+            expect(output).toContain("zbot · 后台数据拉取");
             expect(output).toContain("数据已拉取完毕");
 
             output = "";
@@ -122,16 +122,16 @@ describe("TUI 终端通知 (Ghostty / OSC 777 & OSC 9)", () => {
                 force: true,
             });
 
-            expect(output).toContain("xbot · 编译代码");
+            expect(output).toContain("zbot · 编译代码");
             expect(output).toContain("⚠️ 编译失败：语法错误");
         } finally {
             writeSpy.mockRestore();
         }
     });
 
-    it("设置 XBOT_DISABLE_NOTIFICATIONS 环境变量时静默", () => {
-        const originalEnv = process.env.XBOT_DISABLE_NOTIFICATIONS;
-        process.env.XBOT_DISABLE_NOTIFICATIONS = "true";
+    it("设置 ZBOT_DISABLE_NOTIFICATIONS 环境变量时静默", () => {
+        const originalEnv = process.env.ZBOT_DISABLE_NOTIFICATIONS;
+        process.env.ZBOT_DISABLE_NOTIFICATIONS = "true";
 
         let called = false;
         const writeSpy = spyOn(process.stdout, "write").mockImplementation(() => {
@@ -147,7 +147,7 @@ describe("TUI 终端通知 (Ghostty / OSC 777 & OSC 9)", () => {
             });
             expect(called).toBe(false);
         } finally {
-            process.env.XBOT_DISABLE_NOTIFICATIONS = originalEnv;
+            process.env.ZBOT_DISABLE_NOTIFICATIONS = originalEnv;
             writeSpy.mockRestore();
         }
     });

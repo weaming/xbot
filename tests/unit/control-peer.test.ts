@@ -18,7 +18,7 @@ const pools: PeerClientPool[] = [];
 const raws: net.Server[] = [];
 
 beforeEach(() => {
-    stateDir = useTmpStateDir("xbot-control-peer-");
+    stateDir = useTmpStateDir("zbot-control-peer-");
     for (const sessionId of locallyBoundSessionIds()) forgetBound(sessionId);
 });
 

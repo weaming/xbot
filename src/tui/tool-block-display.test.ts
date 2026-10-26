@@ -469,7 +469,7 @@ describe("工具块参数转换", () => {
 });
 
 describe("displayPath 相对化展示", () => {
-    const root = path.join(os.tmpdir(), "xbot-display-test");
+    const root = path.join(os.tmpdir(), "zbot-display-test");
     const cwd = path.join(root, "proj");
 
     test("cwd 之下的绝对路径转为相对路径", () => {

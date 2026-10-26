@@ -36,13 +36,13 @@ let agent: InstanceType<typeof LocalTuiAgent>;
 let sessionId: string;
 
 beforeEach(async () => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-tui-agent-partial-"));
-    originalStateDir = process.env.XBOT_STATE_DIR;
-    originalEnvAgents = process.env.XBOT_IDENTITY_FILE;
-    originalExtraAgents = process.env.XBOT_EXTRA_IDENTITY_FILE;
-    process.env.XBOT_STATE_DIR = tmpDir;
-    delete process.env.XBOT_IDENTITY_FILE;
-    delete process.env.XBOT_EXTRA_IDENTITY_FILE;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-tui-agent-partial-"));
+    originalStateDir = process.env.ZBOT_STATE_DIR;
+    originalEnvAgents = process.env.ZBOT_IDENTITY_FILE;
+    originalExtraAgents = process.env.ZBOT_EXTRA_IDENTITY_FILE;
+    process.env.ZBOT_STATE_DIR = tmpDir;
+    delete process.env.ZBOT_IDENTITY_FILE;
+    delete process.env.ZBOT_EXTRA_IDENTITY_FILE;
 
     agent = new LocalTuiAgent();
     const { sessionId: id } = await agent.createSession();
@@ -51,12 +51,12 @@ beforeEach(async () => {
 
 afterEach(() => {
     agent.close();
-    if (originalStateDir === undefined) delete process.env.XBOT_STATE_DIR;
-    else process.env.XBOT_STATE_DIR = originalStateDir;
-    if (originalEnvAgents === undefined) delete process.env.XBOT_IDENTITY_FILE;
-    else process.env.XBOT_IDENTITY_FILE = originalEnvAgents;
-    if (originalExtraAgents === undefined) delete process.env.XBOT_EXTRA_IDENTITY_FILE;
-    else process.env.XBOT_EXTRA_IDENTITY_FILE = originalExtraAgents;
+    if (originalStateDir === undefined) delete process.env.ZBOT_STATE_DIR;
+    else process.env.ZBOT_STATE_DIR = originalStateDir;
+    if (originalEnvAgents === undefined) delete process.env.ZBOT_IDENTITY_FILE;
+    else process.env.ZBOT_IDENTITY_FILE = originalEnvAgents;
+    if (originalExtraAgents === undefined) delete process.env.ZBOT_EXTRA_IDENTITY_FILE;
+    else process.env.ZBOT_EXTRA_IDENTITY_FILE = originalExtraAgents;
     fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 

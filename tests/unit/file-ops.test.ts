@@ -22,9 +22,9 @@ let outsideDir: string;
 let stateDir: TmpStateDir;
 
 beforeEach(() => {
-    stateDir = useTmpStateDir("xbot-file-ops-test-");
+    stateDir = useTmpStateDir("zbot-file-ops-test-");
     tmpDir = stateDir.dir;
-    outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-file-ops-outside-test-"));
+    outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-file-ops-outside-test-"));
     process.env.TUI_CWD = tmpDir;
 });
 
@@ -179,7 +179,7 @@ describe("filesystem tools", () => {
     });
 
     test("list_directory allows the TUI process cwd", async () => {
-        const tuiCwd = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-tui-cwd-test-"));
+        const tuiCwd = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-tui-cwd-test-"));
         const previousTuiCwd = process.env.TUI_CWD;
         process.env.TUI_CWD = tuiCwd;
         fs.writeFileSync(path.join(tuiCwd, "README.md"), "# tui\n");

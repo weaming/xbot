@@ -1,13 +1,13 @@
 /**
  * 真实分词器（DeepSeek V4 tokenizer.json）计数：精度对齐、缓存与回退。
  *
- * preload（tests/unit/env-isolation.ts）默认把 `XBOT_TOKENIZER` 设为 off，
+ * preload（tests/unit/env-isolation.ts）默认把 `ZBOT_TOKENIZER` 设为 off，
  * 本文件在用例前清掉该开关，走真实分词路径。
  */
 
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 
-const previousTokenizerMode = process.env.XBOT_TOKENIZER;
+const previousTokenizerMode = process.env.ZBOT_TOKENIZER;
 
 const {
     countTextTokens,
@@ -21,11 +21,11 @@ const { appendCompletedTurn } = await import("../../src/utils/conversation-histo
 
 beforeEach(() => {
     // preload 只在变量缺失时补 off，这里用显式值覆盖（空串在 Bun 里等于删除变量，会把它放回来）
-    process.env.XBOT_TOKENIZER = "on";
+    process.env.ZBOT_TOKENIZER = "on";
 });
 
 afterAll(() => {
-    process.env.XBOT_TOKENIZER = previousTokenizerMode ?? "off";
+    process.env.ZBOT_TOKENIZER = previousTokenizerMode ?? "off";
 });
 
 describe("真实分词器计数", () => {
@@ -68,8 +68,8 @@ describe("真实分词器计数", () => {
         expect(await countTextTokens(text, "gemini-2.5-pro")).toBe(estimateTextTokens(text));
     });
 
-    test("XBOT_TOKENIZER=off 时整体回退启发式", async () => {
-        process.env.XBOT_TOKENIZER = "off";
+    test("ZBOT_TOKENIZER=off 时整体回退启发式", async () => {
+        process.env.ZBOT_TOKENIZER = "off";
         const text = "上下文压缩的触发判定";
         expect(await countTextTokens(text)).toBe(estimateTextTokens(text));
     });

@@ -18,7 +18,7 @@ let savedTuiCwd: string | undefined;
 let stateDir: TmpStateDir;
 
 beforeEach(() => {
-    stateDir = useTmpStateDir("xbot-data-ops-test-");
+    stateDir = useTmpStateDir("zbot-data-ops-test-");
     tmpDir = stateDir.dir;
     // 相对路径只允许落在本测试的临时目录中。
     savedTuiCwd = process.env.TUI_CWD;
@@ -103,7 +103,7 @@ describe("read_json", () => {
     });
 
     test("允许读取允许目录外的 JSON", async () => {
-        const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-data-outside-test-"));
+        const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-data-outside-test-"));
         const outsideFile = path.join(outsideDir, "outside.json");
         fs.writeFileSync(outsideFile, JSON.stringify({ accessible: true }));
 
@@ -117,7 +117,7 @@ describe("read_json", () => {
     });
 
     test("允许通过外部符号链接读取", async () => {
-        const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-data-ops-outside-test-"));
+        const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-data-ops-outside-test-"));
         fs.writeFileSync(path.join(outsideDir, "secret.json"), '{"secret":true}');
         fs.symlinkSync(outsideDir, path.join(tmpDir, "outside-link"));
 
@@ -160,7 +160,7 @@ describe("write_json", () => {
 
     // 文件工具不限制目录访问：`..` 只做路径解析，不当作越权。
     test("相对路径可穿越到上级目录", async () => {
-        const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-data-write-outside-"));
+        const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-data-write-outside-"));
         try {
             process.env.TUI_CWD = path.join(outsideDir, "inner");
             const result = await writeJsonTool.execute({ path: "../escaped.json", value: { ok: true } });

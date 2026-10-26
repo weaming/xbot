@@ -960,7 +960,7 @@ describe("Chat Orchestrator", () => {
 
   test("DeepSeek 图片请求使用图片内容并携带工具", async () => {
     const { executeWithChat } = await import('../../src/tools/chat-orchestrator.js');
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-orchestrator-image-"));
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-orchestrator-image-"));
     const originalPath = createTestImageFile(tempDir);
     const requests: any[] = [];
     const client = {

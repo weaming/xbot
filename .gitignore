@@ -8,7 +8,7 @@ env.*
 .env.*
 /mcp-servers.yaml
 /mcp-auth/
-/.xbot/
+/.zbot/
 .DS_Store
 *.log
 dist-pack/

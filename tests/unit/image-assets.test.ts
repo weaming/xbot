@@ -21,15 +21,15 @@ describe("image assets", () => {
     let previousFilesAPI: string | undefined;
 
     beforeEach(() => {
-        stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-image-assets-"));
-        previousStateDir = process.env.XBOT_STATE_DIR;
+        stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-image-assets-"));
+        previousStateDir = process.env.ZBOT_STATE_DIR;
         previousFilesAPI = process.env.DEEPSEEK_FILES_API;
-        process.env.XBOT_STATE_DIR = stateDir;
+        process.env.ZBOT_STATE_DIR = stateDir;
     });
 
     afterEach(() => {
-        if (previousStateDir === undefined) delete process.env.XBOT_STATE_DIR;
-        else process.env.XBOT_STATE_DIR = previousStateDir;
+        if (previousStateDir === undefined) delete process.env.ZBOT_STATE_DIR;
+        else process.env.ZBOT_STATE_DIR = previousStateDir;
         if (previousFilesAPI === undefined) delete process.env.DEEPSEEK_FILES_API;
         else process.env.DEEPSEEK_FILES_API = previousFilesAPI;
         fs.rmSync(stateDir, { recursive: true, force: true });

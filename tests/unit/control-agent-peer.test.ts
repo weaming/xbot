@@ -49,9 +49,9 @@ let sessionA: string;
 let sessionB: string;
 
 beforeEach(async () => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-control-agent-"));
-    originalStateDir = process.env.XBOT_STATE_DIR;
-    process.env.XBOT_STATE_DIR = tmpDir;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-control-agent-"));
+    originalStateDir = process.env.ZBOT_STATE_DIR;
+    process.env.ZBOT_STATE_DIR = tmpDir;
 
     agent = new LocalTuiAgent();
     sessionA = (await agent.createSession()).sessionId;
@@ -68,8 +68,8 @@ afterEach(async () => {
     await agent.close();
     setSessionControl(undefined);
     setSessionDirectory(undefined);
-    if (originalStateDir === undefined) delete process.env.XBOT_STATE_DIR;
-    else process.env.XBOT_STATE_DIR = originalStateDir;
+    if (originalStateDir === undefined) delete process.env.ZBOT_STATE_DIR;
+    else process.env.ZBOT_STATE_DIR = originalStateDir;
     fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 

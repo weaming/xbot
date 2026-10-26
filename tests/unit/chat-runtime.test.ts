@@ -24,12 +24,12 @@ let stateDir: TmpStateDir;
 let previousTuiCwd: string | undefined;
 
 async function resetSkillRegistryToEmptyState(): Promise<void> {
-    const previousStateDir = process.env.XBOT_STATE_DIR;
-    const emptyStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-chat-runtime-empty-"));
-    process.env.XBOT_STATE_DIR = emptyStateDir;
+    const previousStateDir = process.env.ZBOT_STATE_DIR;
+    const emptyStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-chat-runtime-empty-"));
+    process.env.ZBOT_STATE_DIR = emptyStateDir;
     await skillRegistry.load();
-    if (previousStateDir === undefined) delete process.env.XBOT_STATE_DIR;
-    else process.env.XBOT_STATE_DIR = previousStateDir;
+    if (previousStateDir === undefined) delete process.env.ZBOT_STATE_DIR;
+    else process.env.ZBOT_STATE_DIR = previousStateDir;
     fs.rmSync(emptyStateDir, { recursive: true, force: true });
 }
 
@@ -38,7 +38,7 @@ function expectNextRequestToReusePrefix(completedTranscript: any[], nextRequest:
 }
 
 beforeEach(async () => {
-    stateDir = useTmpStateDir("xbot-chat-runtime-test-");
+    stateDir = useTmpStateDir("zbot-chat-runtime-test-");
     tmpDir = stateDir.dir;
     previousTuiCwd = process.env.TUI_CWD;
     await resetSkillRegistryToEmptyState();
@@ -142,29 +142,29 @@ Alpha prompt body`,
         fs.writeFileSync(identityFile, "TUI 身份", "utf-8");
         fs.writeFileSync(extraIdentityFile, "用户级补充规则", "utf-8");
 
-        const previousIdentityFile = process.env.XBOT_IDENTITY_FILE;
-        const previousExtraIdentityFile = process.env.XBOT_EXTRA_IDENTITY_FILE;
-        process.env.XBOT_IDENTITY_FILE = identityFile;
-        process.env.XBOT_EXTRA_IDENTITY_FILE = extraIdentityFile;
+        const previousIdentityFile = process.env.ZBOT_IDENTITY_FILE;
+        const previousExtraIdentityFile = process.env.ZBOT_EXTRA_IDENTITY_FILE;
+        process.env.ZBOT_IDENTITY_FILE = identityFile;
+        process.env.ZBOT_EXTRA_IDENTITY_FILE = extraIdentityFile;
 
         try {
             const result = buildSystemPrompt({ includeMemory: false, includeDailyMemory: false });
             expect(result.systemPrompt.indexOf("TUI 身份")).toBeGreaterThanOrEqual(0);
             expect(result.systemPrompt.indexOf("用户级补充规则")).toBeGreaterThan(result.systemPrompt.indexOf("TUI 身份"));
         } finally {
-            if (previousIdentityFile === undefined) delete process.env.XBOT_IDENTITY_FILE;
-            else process.env.XBOT_IDENTITY_FILE = previousIdentityFile;
-            if (previousExtraIdentityFile === undefined) delete process.env.XBOT_EXTRA_IDENTITY_FILE;
-            else process.env.XBOT_EXTRA_IDENTITY_FILE = previousExtraIdentityFile;
+            if (previousIdentityFile === undefined) delete process.env.ZBOT_IDENTITY_FILE;
+            else process.env.ZBOT_IDENTITY_FILE = previousIdentityFile;
+            if (previousExtraIdentityFile === undefined) delete process.env.ZBOT_EXTRA_IDENTITY_FILE;
+            else process.env.ZBOT_EXTRA_IDENTITY_FILE = previousExtraIdentityFile;
         }
     });
 
     test("buildSystemPrompt uses the embedded identity before the optional extra file", () => {
         const extraIdentityFile = path.join(tmpDir, "user-AGENTS.md");
         fs.writeFileSync(extraIdentityFile, "用户级补充规则", "utf-8");
-        const previousExtraIdentityFile = process.env.XBOT_EXTRA_IDENTITY_FILE;
+        const previousExtraIdentityFile = process.env.ZBOT_EXTRA_IDENTITY_FILE;
         const previousTuiCwd = process.env.TUI_CWD;
-        process.env.XBOT_EXTRA_IDENTITY_FILE = extraIdentityFile;
+        process.env.ZBOT_EXTRA_IDENTITY_FILE = extraIdentityFile;
         process.env.TUI_CWD = "/tmp/tui-working-directory";
         setEmbeddedIdentity("内置 TUI 身份\n当前目录（pwd）：{{TUI_CWD}}");
 
@@ -175,8 +175,8 @@ Alpha prompt body`,
             expect(result.systemPrompt.indexOf("用户级补充规则")).toBeGreaterThan(result.systemPrompt.indexOf("内置 TUI 身份"));
         } finally {
             setEmbeddedIdentity();
-            if (previousExtraIdentityFile === undefined) delete process.env.XBOT_EXTRA_IDENTITY_FILE;
-            else process.env.XBOT_EXTRA_IDENTITY_FILE = previousExtraIdentityFile;
+            if (previousExtraIdentityFile === undefined) delete process.env.ZBOT_EXTRA_IDENTITY_FILE;
+            else process.env.ZBOT_EXTRA_IDENTITY_FILE = previousExtraIdentityFile;
             if (previousTuiCwd === undefined) delete process.env.TUI_CWD;
             else process.env.TUI_CWD = previousTuiCwd;
         }

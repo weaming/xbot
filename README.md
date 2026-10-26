@@ -1,14 +1,14 @@
-# xbot
+# zbot
 
-xbot 是一个基于 Bun 的终端 AI 助手，提供 TUI 界面。
+zbot 是一个基于 Bun 的终端 AI 助手，提供 TUI 界面。
 
 ## 安装
 
 需要先安装 [Bun](https://bun.sh/)：
 
 ```sh
-git clone https://github.com/weaming/xbot.git
-cd xbot
+git clone https://github.com/weaming/zbot.git
+cd zbot
 bun install
 make build-pack
 ```
@@ -23,9 +23,9 @@ make build-pack
 ## 配置
 
 ```sh
-mkdir -p ~/.xbot
-cp env.example ~/.xbot/env
-vi ~/.xbot/env
+mkdir -p ~/.zbot
+cp env.example ~/.zbot/env
+vi ~/.zbot/env
 ```
 
 填写 `OPENAI_MODEL`。旧的 `OPENAI_*` 配置按 Chat Completions 使用；云端服务填写 `OPENAI_API_KEY`，本地或局域网服务可省略密钥。兼容接口可按需调整 `OPENAI_BASE_URL`。
@@ -35,7 +35,7 @@ Responses API 和 Chat Completions 可使用各自的 `OPENAI_RESPONSES_*` 与 `
 ## 使用
 
 ```sh
-~/.bun/bin/xbot
+~/.bun/bin/zbot
 ```
 
 文档：[MCP 多服务配置](docs/mcp.md)、[TUI 链接与终端交互](docs/tui-links.md)。

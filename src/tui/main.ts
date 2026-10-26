@@ -10,7 +10,7 @@ import { herdrReporter } from "./herdr-reporter.js";
 import { officialDeepSeekCostYuan } from "../pricing/deepseek.js";
 import type { ChatApp } from "./app.js";
 
-const DEFAULT_ENV_FILE = path.join(os.homedir(), ".xbot", "env");
+const DEFAULT_ENV_FILE = path.join(os.homedir(), ".zbot", "env");
 
 function resolveEnvFile(value: string): string {
     if (value === "~") return os.homedir();
@@ -18,7 +18,7 @@ function resolveEnvFile(value: string): string {
     return value;
 }
 
-const envFile = resolveEnvFile(process.env.XBOT_ENV_FILE || DEFAULT_ENV_FILE);
+const envFile = resolveEnvFile(process.env.ZBOT_ENV_FILE || DEFAULT_ENV_FILE);
 // quiet：不向终端输出 "injected env" 提示，避免启动前污染主 buffer。
 dotenv.config({ path: envFile, quiet: true });
 configureTuiHostEnvironment();

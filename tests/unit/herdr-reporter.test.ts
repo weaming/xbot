@@ -67,12 +67,12 @@ describe("HerdrReporter", () => {
         expect(calls).toHaveLength(2);
         expect(calls[0]).toEqual([
             "pane", "report-agent", "w1:p1",
-            "--source", "custom:xbot", "--agent", "xbot",
+            "--source", "custom:zbot", "--agent", "zbot",
             "--state", "working", "--seq", "0",
         ]);
         expect(calls[1]).toEqual([
             "pane", "report-agent", "w1:p1",
-            "--source", "custom:xbot", "--agent", "xbot",
+            "--source", "custom:zbot", "--agent", "zbot",
             "--state", "idle", "--seq", "1",
         ]);
     });
@@ -105,7 +105,7 @@ describe("HerdrReporter", () => {
         expect(calls).toHaveLength(2);
         expect(calls[1]).toEqual([
             "pane", "release-agent", "w1:p1",
-            "--source", "custom:xbot", "--agent", "xbot",
+            "--source", "custom:zbot", "--agent", "zbot",
             "--seq", "1",
         ]);
     });

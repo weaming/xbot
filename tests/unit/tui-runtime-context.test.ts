@@ -16,18 +16,18 @@ describe("TUI 日志重定向", () => {
         restoreLogs = undefined;
 
         if (previousStateDir === undefined) {
-            delete process.env.XBOT_STATE_DIR;
+            delete process.env.ZBOT_STATE_DIR;
         } else {
-            process.env.XBOT_STATE_DIR = previousStateDir;
+            process.env.ZBOT_STATE_DIR = previousStateDir;
         }
 
         fs.rmSync(tmpDir, { recursive: true, force: true });
     });
 
     test("将 debug 日志写入文件，避免污染 TUI 终端输出", () => {
-        previousStateDir = process.env.XBOT_STATE_DIR;
-        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-tui-log-"));
-        process.env.XBOT_STATE_DIR = tmpDir;
+        previousStateDir = process.env.ZBOT_STATE_DIR;
+        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-tui-log-"));
+        process.env.ZBOT_STATE_DIR = tmpDir;
         restoreLogs = redirectTuiLogsToFile();
 
         console.debug("MCP stderr");

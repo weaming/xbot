@@ -137,7 +137,7 @@ describe("会话条渲染", () => {
     test("tab 携带可点击的 OSC 8 会话链接", () => {
         const bar = buildSessionBar(makeTabs(2), 120, styles);
 
-        expect(bar.line).toContain("xbot://session/");
-        expect(bar.line).toContain("xbot://new");
+        expect(bar.line).toContain("zbot://session/");
+        expect(bar.line).toContain("zbot://new");
     });
 });

@@ -186,7 +186,7 @@ async function resizeDeepSeekImage(
     maxSide: number,
 ): Promise<ImageDataRef> {
     const safeFilename = path.basename(filename) || "image.bin";
-    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "xbot-image-"));
+    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "zbot-image-"));
     const inputPath = path.join(tempDir, safeFilename);
     const outputPath = path.join(tempDir, "resized.jpg");
 
@@ -287,7 +287,7 @@ export async function uploadDeepSeekFileData(
     }
 
     const fileData = typeof data === "string" ? Buffer.from(data, "base64") : data;
-    const boundary = `xbot-${crypto.randomUUID()}`;
+    const boundary = `zbot-${crypto.randomUUID()}`;
     const safeFilename = path.basename(filename) || "image.jpg";
     const escapedFilename = safeFilename.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
     const field = (name: string, value: string): Buffer => Buffer.from(

@@ -132,7 +132,7 @@ function startMockServer() {
 
 describe("mcp oauth 端到端", () => {
     const mock = startMockServer();
-    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-mcp-oauth-flow-"));
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-mcp-oauth-flow-"));
     const storePath = path.join(tmpRoot, "mock-oauth.json");
     const configPath = path.join(tmpRoot, "mcp-servers.yaml");
     const notices: McpNotice[] = [];

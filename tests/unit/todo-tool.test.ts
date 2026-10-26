@@ -13,7 +13,7 @@ let tmpDir: string;
 let stateDir: TmpStateDir;
 
 beforeEach(() => {
-    stateDir = useTmpStateDir("xbot-todo-test-");
+    stateDir = useTmpStateDir("zbot-todo-test-");
     tmpDir = stateDir.dir;
 });
 

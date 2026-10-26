@@ -53,8 +53,8 @@ function interpolateEnvVars(content: string, overrides?: Record<string, string>)
  * 文件不存在时跳过，全部不存在则返回空字符串。
  */
 export function loadIdentityContext(envOverrides?: Record<string, string>): string {
-    const identityOverride = process.env.XBOT_IDENTITY_FILE;
-    const extraIdentityFile = process.env.XBOT_EXTRA_IDENTITY_FILE;
+    const identityOverride = process.env.ZBOT_IDENTITY_FILE;
+    const extraIdentityFile = process.env.ZBOT_EXTRA_IDENTITY_FILE;
 
     if (embeddedIdentity) {
         const parts = [formatIdentityContent(embeddedIdentity, "AGENTS.md", envOverrides)];

@@ -2,7 +2,7 @@
  * 归档会话的磁盘回收：已归档、且超过保留期的会话，整份目录一起删除。
  *
  * 只删已归档的会话 —— 未归档的会话用户随时可能继续，不参与清理。
- * 保留期默认 14 天，`XBOT_ARCHIVE_RETENTION_DAYS` 可覆盖；<= 0 表示不清理。
+ * 保留期默认 14 天，`ZBOT_ARCHIVE_RETENTION_DAYS` 可覆盖；<= 0 表示不清理。
  */
 
 import fs from "fs";
@@ -15,7 +15,7 @@ import { isInjectedContext, type AgentEvent } from "./agent-events.js";
 export const DEFAULT_ARCHIVE_RETENTION_DAYS = 14;
 
 /** 环境变量：覆盖保留天数。 */
-export const ARCHIVE_RETENTION_ENV = "XBOT_ARCHIVE_RETENTION_DAYS";
+export const ARCHIVE_RETENTION_ENV = "ZBOT_ARCHIVE_RETENTION_DAYS";
 
 /**
  * 单个会话在 sessions/ 下占用的全部落点（子目录 + 文件），与 deleteSession 的清理

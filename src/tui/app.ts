@@ -1272,9 +1272,9 @@ export class ChatApp {
         this.writeWheelLog(`面板滚轮 ${detail}`);
     }
 
-    /** 滚轮诊断写独立文件（XBOT_TUI_DEBUG_WHEEL=1 时开启），便于 cat 复制、不混进会话日志。 */
+    /** 滚轮诊断写独立文件（ZBOT_TUI_DEBUG_WHEEL=1 时开启），便于 cat 复制、不混进会话日志。 */
     private writeWheelLog(line: string): void {
-        if (process.env.XBOT_TUI_DEBUG_WHEEL !== "1") return;
+        if (process.env.ZBOT_TUI_DEBUG_WHEEL !== "1") return;
         try {
             const file = getTuiWheelLogFile();
             fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -2466,7 +2466,7 @@ export class ChatApp {
         if (notice.url) this.tui.flash("MCP 需要浏览器授权：请打开会话中的链接");
     }
 
-    /** 处理点击链接：xbot:// 内部动作（切会话 / 会话面板 / 新建）在本进程处理；外链 macOS 按住 Cmd 才打开（与 Ghostty 原生一致），其他平台保持单击打开。 */
+    /** 处理点击链接：zbot:// 内部动作（切会话 / 会话面板 / 新建）在本进程处理；外链 macOS 按住 Cmd 才打开（与 Ghostty 原生一致），其他平台保持单击打开。 */
     private handleOpenUrl(url: string): void {
         if (url === SESSION_PANEL_URL) {
             this.openSessionPanel();

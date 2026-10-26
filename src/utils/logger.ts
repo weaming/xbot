@@ -13,7 +13,7 @@ function nowISO() {
  * console 时间戳标记：TUI 的日志重定向自己会写 ISO 时间戳，接管时打上此标记，
  * 这里的 patch 便跳过，避免同一行出现两个时间戳（ISO + 本地时间）。
  */
-export const CONSOLE_TIMESTAMP_MARK = Symbol.for("xbot.consoleTimestamped");
+export const CONSOLE_TIMESTAMP_MARK = Symbol.for("zbot.consoleTimestamped");
 
 const _log = console.log.bind(console);
 const _warn = console.warn.bind(console);
@@ -36,13 +36,13 @@ export function applyConsoleTimestamps(target: Console = console): void {
 applyConsoleTimestamps();
 
 /**
- * LLM 交换日志目录：脱离 cwd，固定到 XBOT_STATE_DIR（默认 ~/.xbot）。
+ * LLM 交换日志目录：脱离 cwd，固定到 ZBOT_STATE_DIR（默认 ~/.zbot）。
  * 旧位置 `cwd/logs/llm-api.log` 不再写入新数据。
  */
 function resolveLogDir(): string {
-    const stateRoot = process.env.XBOT_STATE_DIR
-        ? path.resolve(process.env.XBOT_STATE_DIR)
-        : path.join(os.homedir(), '.xbot');
+    const stateRoot = process.env.ZBOT_STATE_DIR
+        ? path.resolve(process.env.ZBOT_STATE_DIR)
+        : path.join(os.homedir(), '.zbot');
     return path.join(stateRoot, 'logs');
 }
 
@@ -54,9 +54,9 @@ function resolveLogFiles(): { logDir: string; exchangeFile: string } {
     };
 }
 
-/** 主日志写失败时的兜底路径，避免 cwd 或 XBOT_STATE_DIR 切换后丢排查线索。 */
+/** 主日志写失败时的兜底路径，避免 cwd 或 ZBOT_STATE_DIR 切换后丢排查线索。 */
 function getFallbackLogFile(): string {
-    return path.join(os.homedir(), '.xbot', 'logs', 'llm-exchange.fallback.jsonl');
+    return path.join(os.homedir(), '.zbot', 'logs', 'llm-exchange.fallback.jsonl');
 }
 
 export type LLMRequestKind = 'user_request' | 'tool_response' | 'context_compaction' | 'cli_request' | 'turn_resume' | 'peer_request';
@@ -102,11 +102,11 @@ export interface LLMExchangeMeta {
     usage?: LLMUsageLogEntry;
 }
 
-/** 与 resolveLogDir 同源（无 XBOT_STATE_DIR 时默认 ~/.xbot），避免回退容器只读路径。 */
+/** 与 resolveLogDir 同源（无 ZBOT_STATE_DIR 时默认 ~/.zbot），避免回退容器只读路径。 */
 function resolveSessionsDir(...parts: string[]): string {
-    const stateRoot = process.env.XBOT_STATE_DIR
-        ? path.resolve(process.env.XBOT_STATE_DIR)
-        : path.join(os.homedir(), '.xbot');
+    const stateRoot = process.env.ZBOT_STATE_DIR
+        ? path.resolve(process.env.ZBOT_STATE_DIR)
+        : path.join(os.homedir(), '.zbot');
     return path.join(stateRoot, 'sessions', ...parts);
 }
 

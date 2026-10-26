@@ -1,6 +1,6 @@
 /**
- * herdr 状态上报：xbot TUI 在 herdr（终端复用器）pane 内运行时，
- * 通过 herdr CLI 上报 turn 生命周期状态，让 herdr 侧边栏识别 xbot agent。
+ * herdr 状态上报：zbot TUI 在 herdr（终端复用器）pane 内运行时，
+ * 通过 herdr CLI 上报 turn 生命周期状态，让 herdr 侧边栏识别 zbot agent。
  * 非 herdr 环境（无 HERDR_ENV）全部 no-op，不影响本地直接运行。
  *
  * 参考 herdr 文档 "Integrate your own agent"：pane 内进程继承
@@ -17,8 +17,8 @@ export interface HerdrContext {
     paneId: string;
 }
 
-const AGENT_LABEL = "xbot";
-const SOURCE_ID = "custom:xbot";
+const AGENT_LABEL = "zbot";
+const SOURCE_ID = "custom:zbot";
 
 /** 从 herdr 注入的环境变量读取上下文；不在 herdr 内时返回 undefined。 */
 export function readHerdrContext(): HerdrContext | undefined {
@@ -65,7 +65,7 @@ export class HerdrReporter {
         this.runner(this.context.binPath, args);
     }
 
-    /** xbot TUI 退出时释放生命周期权威，herdr 恢复该 pane 的普通进程状态。 */
+    /** zbot TUI 退出时释放生命周期权威，herdr 恢复该 pane 的普通进程状态。 */
     release(): void {
         if (!this.context) return;
         this.lastState = undefined;

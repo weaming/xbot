@@ -91,7 +91,7 @@ function tool(name: string) {
 }
 
 beforeEach(() => {
-    stateDir = useTmpStateDir("xbot-session-tools-");
+    stateDir = useTmpStateDir("zbot-session-tools-");
     for (const sessionId of locallyBoundSessionIds()) forgetBound(sessionId);
     accepted.length = 0;
     outbound.length = 0;

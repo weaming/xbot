@@ -33,14 +33,14 @@ let tmpDir: string;
 let originalStateDir: string | undefined;
 
 beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-tui-firstframe-"));
-    originalStateDir = process.env.XBOT_STATE_DIR;
-    process.env.XBOT_STATE_DIR = tmpDir;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-tui-firstframe-"));
+    originalStateDir = process.env.ZBOT_STATE_DIR;
+    process.env.ZBOT_STATE_DIR = tmpDir;
 });
 
 afterEach(() => {
-    if (originalStateDir === undefined) delete process.env.XBOT_STATE_DIR;
-    else process.env.XBOT_STATE_DIR = originalStateDir;
+    if (originalStateDir === undefined) delete process.env.ZBOT_STATE_DIR;
+    else process.env.ZBOT_STATE_DIR = originalStateDir;
     fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 

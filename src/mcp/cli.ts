@@ -28,7 +28,7 @@ function writeOutput(text: string): void {
 }
 
 function getConfigPath(): string {
-    const configuredPath = process.env.XBOT_MCP_SERVERS_FILE;
+    const configuredPath = process.env.ZBOT_MCP_SERVERS_FILE;
     return configuredPath ? resolvePathWithTilde(configuredPath) : DEFAULT_TUI_MCP_CONFIG_FILE;
 }
 
@@ -69,7 +69,7 @@ function parsePair(value: string, flag: string): [string, string] {
 
 function parseAddArgs(args: string[]): McpAddOptions {
     const name = args.shift();
-    if (!name || name.startsWith("-")) throw new Error("用法：xbot mcp add <名称> (--url <URL> | -- <命令> [参数...])");
+    if (!name || name.startsWith("-")) throw new Error("用法：zbot mcp add <名称> (--url <URL> | -- <命令> [参数...])");
 
     const options: McpAddOptions = { name, env: {}, headers: {} };
     let commandSeparator = -1;
@@ -121,7 +121,7 @@ function printList(servers: McpServerConfig[], asJson: boolean): void {
     }
 
     if (servers.length === 0) {
-        writeOutput("尚未配置 MCP 服务。使用 `xbot mcp add <名称> -- <命令>` 添加服务。");
+        writeOutput("尚未配置 MCP 服务。使用 `zbot mcp add <名称> -- <命令>` 添加服务。");
         return;
     }
 
@@ -147,10 +147,10 @@ function printList(servers: McpServerConfig[], asJson: boolean): void {
 
 function printHelp(): void {
     writeOutput(`用法：
-  xbot mcp list [--json]
-  xbot mcp add <名称> [--env KEY=VALUE] [--cwd <目录>] -- <命令> [参数...]
-  xbot mcp add <名称> --url <URL> [--header KEY=VALUE]
-  xbot mcp remove <名称>`);
+  zbot mcp list [--json]
+  zbot mcp add <名称> [--env KEY=VALUE] [--cwd <目录>] -- <命令> [参数...]
+  zbot mcp add <名称> --url <URL> [--header KEY=VALUE]
+  zbot mcp remove <名称>`);
 }
 
 export function isMcpCliCommand(args: string[]): boolean {
@@ -196,7 +196,7 @@ export async function runMcpCli(args: string[], options: McpCliOptions = {}): Pr
 
     if (subcommand === "remove") {
         const [name, ...extraArgs] = subcommandArgs;
-        if (!name || extraArgs.length > 0) throw new Error("用法：xbot mcp remove <名称>");
+        if (!name || extraArgs.length > 0) throw new Error("用法：zbot mcp remove <名称>");
         const config = readConfig(configPath);
         if (!config.servers.some((server) => server.name === name)) throw new Error(`找不到 MCP 服务：${name}`);
         writeConfig(configPath, config.root, config.servers.filter((server) => server.name !== name));

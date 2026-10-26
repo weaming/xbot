@@ -29,9 +29,9 @@ export function sanitizeNotificationText(text: string): string {
  */
 export function sendTerminalNotification(options: TerminalNotificationOptions): void {
     if (!options.force && !process.stdout.isTTY) return;
-    if (process.env.XBOT_DISABLE_NOTIFICATIONS === "true" || process.env.XBOT_DISABLE_NOTIFICATIONS === "1") return;
+    if (process.env.ZBOT_DISABLE_NOTIFICATIONS === "true" || process.env.ZBOT_DISABLE_NOTIFICATIONS === "1") return;
 
-    const rawTitle = options.title ?? "xbot";
+    const rawTitle = options.title ?? "zbot";
     const title = sanitizeNotificationText(rawTitle);
     const body = sanitizeNotificationText(options.body);
 
@@ -69,8 +69,8 @@ export function notifyTurnResult(params: {
     }
 
     const title = isError
-        ? `xbot · ${sessionName || "执行异常"}`
-        : `xbot · ${sessionName || "回复完成"}`;
+        ? `zbot · ${sessionName || "执行异常"}`
+        : `zbot · ${sessionName || "回复完成"}`;
 
     let body = "";
     if (isError) {

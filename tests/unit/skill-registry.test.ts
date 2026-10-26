@@ -17,8 +17,8 @@ function makeSkill(skillDir: string, name: string, description: string, extraYam
 }
 
 describe("skill registry multi-source loading", () => {
-    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-skill-state-"));
-    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-skill-home-"));
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-skill-state-"));
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-skill-home-"));
     const userSkillsDir = path.join(stateDir, "skills");
     const agentsSkillsDir = path.join(homeDir, ".agents", "skills");
 
@@ -27,13 +27,13 @@ describe("skill registry multi-source loading", () => {
     let previousTuiPlatform: string | undefined;
 
     beforeEach(() => {
-        previousStateDir = process.env.XBOT_STATE_DIR;
+        previousStateDir = process.env.ZBOT_STATE_DIR;
         previousHome = process.env.HOME;
         previousTuiPlatform = process.env.TUI_PLATFORM;
     });
 
     afterEach(() => {
-        restoreEnv("XBOT_STATE_DIR", previousStateDir);
+        restoreEnv("ZBOT_STATE_DIR", previousStateDir);
         restoreEnv("HOME", previousHome);
         restoreEnv("TUI_PLATFORM", previousTuiPlatform);
         fs.rmSync(stateDir, { recursive: true, force: true });
@@ -62,7 +62,7 @@ describe("skill registry multi-source loading", () => {
 
         process.env.HOME = homeDir;
         process.env.TUI_PLATFORM = "test";
-        process.env.XBOT_STATE_DIR = stateDir;
+        process.env.ZBOT_STATE_DIR = stateDir;
 
         const registry = new SkillRegistry();
         await registry.load();
@@ -74,7 +74,7 @@ describe("skill registry multi-source loading", () => {
     test("handles claude-codex style frontmatter with extra fields", async () => {
         makeSkill(userSkillsDir, "alpha", "user-alpha", "allowed-tools:\n  - Bash(git *)\nmodel: sonnet\n");
 
-        process.env.XBOT_STATE_DIR = stateDir;
+        process.env.ZBOT_STATE_DIR = stateDir;
 
         const registry = new SkillRegistry();
         await registry.load();
@@ -89,7 +89,7 @@ describe("skill registry multi-source loading", () => {
         fs.mkdirSync(dir, { recursive: true });
         fs.writeFileSync(path.join(dir, "SKILL.md"), "---\ndescription: no name field\n---\n# Bare\n");
 
-        process.env.XBOT_STATE_DIR = stateDir;
+        process.env.ZBOT_STATE_DIR = stateDir;
 
         const registry = new SkillRegistry();
         await registry.load();

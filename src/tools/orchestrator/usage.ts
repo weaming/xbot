@@ -122,7 +122,7 @@ export function buildUsageStats(input: UsageStatsInput): LLMUsageLogEntry {
 
     return {
         timestamp: new Date(input.now ?? Date.now()).toISOString(),
-        caller: "xbot",
+        caller: "zbot",
         ...(input.sessionId ? { session_id: input.sessionId } : {}),
         ...(input.contextEpochId ? { context_epoch_id: input.contextEpochId } : {}),
         request_kind: input.requestKind,

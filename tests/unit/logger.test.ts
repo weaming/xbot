@@ -12,12 +12,12 @@ import {
 let tmpDir: string;
 
 beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-logger-"));
-    process.env.XBOT_STATE_DIR = tmpDir;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-logger-"));
+    process.env.ZBOT_STATE_DIR = tmpDir;
 });
 
 afterEach(() => {
-    delete process.env.XBOT_STATE_DIR;
+    delete process.env.ZBOT_STATE_DIR;
     fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -166,7 +166,7 @@ describe("LLM exchange 链式增量记录", () => {
             requestId: "r1",
             usage: {
                 timestamp: "2026-08-31T00:00:00.000Z",
-                caller: "xbot",
+                caller: "zbot",
                 request_kind: "user_request",
                 model: "m",
                 prompt_tokens: 10,

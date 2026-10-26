@@ -9,9 +9,9 @@ test("bash 工具使用可用的 shell 执行命令并返回输出", async () =>
     expect(shellResult.isError).toBeUndefined();
     expect(shellResult.content[0].text).toBe(fs.existsSync("/bin/bash") ? "/bin/bash" : "/bin/sh");
 
-    const result = await executeShellTool.execute({ command: "echo 'hello from xbot bash'" });
+    const result = await executeShellTool.execute({ command: "echo 'hello from zbot bash'" });
     expect(result.isError).toBeUndefined();
-    expect(result.content[0].text).toBe("hello from xbot bash");
+    expect(result.content[0].text).toBe("hello from zbot bash");
 });
 
 test("bash 工具不限制命令内容", async () => {
@@ -64,7 +64,7 @@ test("bash 工具超时后会自动终止命令并返回友好提示与部分输
 });
 
 test("bash 工具超时时会通过进程组 (-PGID) 连带杀死所有孙进程", async () => {
-    const pidFile = `/tmp/xbot_test_timeout_grandchild_${Date.now()}.pid`;
+    const pidFile = `/tmp/zbot_test_timeout_grandchild_${Date.now()}.pid`;
     const command = `sh -c 'sleep 50 & echo $! > ${pidFile}; wait'`;
 
     const resultPromise = executeShellTool.execute({ command, timeout: 1 });
@@ -118,7 +118,7 @@ test("bash 工具会终止已取消的命令", async () => {
 test("bash 工具中止时通过进程组 (-PGID) 连带杀死所有孙进程，不残留后台进程", async () => {
     const abortController = new AbortController();
     // 派生深层孙进程并在 /tmp 写下其 PID
-    const pidFile = `/tmp/xbot_test_grandchild_${Date.now()}.pid`;
+    const pidFile = `/tmp/zbot_test_grandchild_${Date.now()}.pid`;
     const command = `sh -c 'sleep 50 & echo $! > ${pidFile}; wait'`;
 
     const runPromise = executeShellTool.execute({ command }, abortController.signal);

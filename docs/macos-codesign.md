@@ -9,15 +9,15 @@ macOS arm64 要求可执行文件**必须有签名结构**（Mach-O 里存在 `L
 进程被内核直接杀掉，终端只显示：
 
 ```
-zsh: killed     ./xbot
+zsh: killed     ./zbot
 ```
 
-系统日志（`log show --predicate 'eventMessage CONTAINS "xbot"' --last 5m`）给出真实原因：
+系统日志（`log show --predicate 'eventMessage CONTAINS "zbot"' --last 5m`）给出真实原因：
 
 ```
-AMFI: 'xbot' has no CMS blob?
-AMFI: 'xbot': Unrecoverable CT signature issue, bailing out.
-ASP: Security policy would not allow process: /Users/.../xbot
+AMFI: 'zbot' has no CMS blob?
+AMFI: 'zbot': Unrecoverable CT signature issue, bailing out.
+ASP: Security policy would not allow process: /Users/.../zbot
 ```
 
 注意不是崩溃，是**没启动起来**。
@@ -27,7 +27,7 @@ ASP: Security policy would not allow process: /Users/.../xbot
 AppleMobileFileIntegrity 是内核里强制执行代码签名的子系统。`execve` 之前先校验，**没有签名结构就拒绝加载**，进程变成 corpse 并收到 SIGKILL。签名存在但结构有瑕疵时通常只记日志（见下方实测）。
 
 ```
-用户执行 ./xbot
+用户执行 ./zbot
     ↓
 内核 execve
     ↓
@@ -91,7 +91,7 @@ C 程序（33KB）与 Go 程序（3.2MB）的 linker-signed 版本都能稳定�
 查当前产物的签名级别：
 
 ```fish
-codesign -dvvv xbot | grep CodeDirectory
+codesign -dvvv zbot | grep CodeDirectory
 # flags=0x20002(linker-signed)   ← 有缺陷
 # flags=0x2(adhoc)               ← 正常
 ```
@@ -101,8 +101,8 @@ codesign -dvvv xbot | grep CodeDirectory
 `codesign` 签名前会校验 Mach-O 结构自洽。文件追加过数据后它会拒绝：
 
 ```
-$ codesign --force --sign - xbot
-xbot: main executable failed strict validation
+$ codesign --force --sign - zbot
+zbot: main executable failed strict validation
 ```
 
 且**静默失败**——退出码 0，文件一个字节没改。只能靠 `flags` 判断是否真的签上。
@@ -154,14 +154,14 @@ func resign(path string) error {
 
 ```fish
 # 签名级别
-codesign -dvvv ~/.bun/bin/xbot | grep CodeDirectory
+codesign -dvvv ~/.bun/bin/zbot | grep CodeDirectory
 
 # 是否被 AMFI 拦截（应输出 is adhoc signed）
-log show --predicate 'eventMessage CONTAINS "xbot"' --last 1m | grep AMFI
+log show --predicate 'eventMessage CONTAINS "zbot"' --last 1m | grep AMFI
 
 # 连续启动（124 是超时，表示正常运行）
 for i in 1 2 3
-    timeout 4 ~/.bun/bin/xbot </dev/null >/dev/null 2>&1
+    timeout 4 ~/.bun/bin/zbot </dev/null >/dev/null 2>&1
     echo "run$i=$?"
 end
 ```

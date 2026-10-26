@@ -6,7 +6,7 @@ import { withFileLock } from "./file-lock.js";
 
 describe("跨进程文件锁", () => {
     it("串行执行同一文件的临界区", async () => {
-        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-file-lock-"));
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-file-lock-"));
         const file = path.join(dir, "state.json");
         let activeCount = 0;
         let maxActiveCount = 0;
@@ -34,7 +34,7 @@ describe("跨进程文件锁", () => {
     });
 
     it("清理已退出进程留下的过期锁", async () => {
-        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-file-lock-"));
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-file-lock-"));
         const file = path.join(dir, "state.json");
         const lockFile = `${file}.lock`;
 
@@ -54,7 +54,7 @@ describe("跨进程文件锁", () => {
     });
 
     it("释放时保留由其他持有者创建的新锁", async () => {
-        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-file-lock-"));
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-file-lock-"));
         const file = path.join(dir, "state.json");
         const lockFile = `${file}.lock`;
 

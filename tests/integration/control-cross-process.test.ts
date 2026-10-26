@@ -49,7 +49,7 @@ class ChildPeer {
             stderr: "inherit",
             env: {
                 ...process.env,
-                XBOT_STATE_DIR: stateDir,
+                ZBOT_STATE_DIR: stateDir,
                 PEER_CHILD_SESSION: sessionId,
                 ...env,
             },
@@ -124,9 +124,9 @@ let parent: ReturnType<typeof createHost>;
 let child: ChildPeer;
 
 beforeAll(async () => {
-    stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-peer-xproc-"));
-    originalStateDir = process.env.XBOT_STATE_DIR;
-    process.env.XBOT_STATE_DIR = stateDir;
+    stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-peer-xproc-"));
+    originalStateDir = process.env.ZBOT_STATE_DIR;
+    process.env.ZBOT_STATE_DIR = stateDir;
 
     parent = createHost(SESSION_PARENT);
     const claimed = await parent.control.claim(SESSION_PARENT);
@@ -142,8 +142,8 @@ beforeAll(async () => {
 afterAll(async () => {
     parent?.control.close();
     child?.kill();
-    if (originalStateDir === undefined) delete process.env.XBOT_STATE_DIR;
-    else process.env.XBOT_STATE_DIR = originalStateDir;
+    if (originalStateDir === undefined) delete process.env.ZBOT_STATE_DIR;
+    else process.env.ZBOT_STATE_DIR = originalStateDir;
     fs.rmSync(stateDir, { recursive: true, force: true });
 });
 

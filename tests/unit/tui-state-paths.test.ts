@@ -19,17 +19,17 @@ let stateRoot: string;
 let previousStateDir: string | undefined;
 
 beforeEach(() => {
-    stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-tui-state-"));
-    previousStateDir = process.env.XBOT_STATE_DIR;
-    process.env.XBOT_STATE_DIR = stateRoot;
+    stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-tui-state-"));
+    previousStateDir = process.env.ZBOT_STATE_DIR;
+    process.env.ZBOT_STATE_DIR = stateRoot;
 });
 
 afterEach(() => {
-    // 还原而非删除：preload 注入的隔离目录被删掉后，同进程后续测试会回退到真实 ~/.xbot。
+    // 还原而非删除：preload 注入的隔离目录被删掉后，同进程后续测试会回退到真实 ~/.zbot。
     if (previousStateDir === undefined) {
-        delete process.env.XBOT_STATE_DIR;
+        delete process.env.ZBOT_STATE_DIR;
     } else {
-        process.env.XBOT_STATE_DIR = previousStateDir;
+        process.env.ZBOT_STATE_DIR = previousStateDir;
     }
     fs.rmSync(stateRoot, { recursive: true, force: true });
 });

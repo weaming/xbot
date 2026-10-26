@@ -2,7 +2,7 @@
 
 ## 环境变量
 
-首次运行前，在 `~/.xbot/env` 配置模型服务：
+首次运行前，在 `~/.zbot/env` 配置模型服务：
 
 ```dotenv
 # Shared fallback settings
@@ -47,7 +47,7 @@ OPENAI_RESPONSES_EFFORTS=low,high,max
 
 各协议字段和厂家支持的值不同，具体还受所选模型限制：
 
-| 协议 | 厂家 / 模型 | 请求字段 | 厂家支持的值 | xbot 处理 |
+| 协议 | 厂家 / 模型 | 请求字段 | 厂家支持的值 | zbot 处理 |
 | --- | --- | --- | --- | --- |
 | Responses | OpenAI | `reasoning.effort` | `none`、`minimal`、`low`、`medium`、`high`、`xhigh`；具体模型支持范围不同 | 直接发送选择值 |
 | Responses | Codex Responses 服务（当前 3060 endpoint） | `reasoning.effort` | `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`（按该服务返回的错误提示） | 直接发送选择值 |
@@ -57,7 +57,7 @@ OPENAI_RESPONSES_EFFORTS=low,high,max
 
 `auto` 不发送强度设置，由服务端使用默认值。DeepSeek 也为兼容旧客户端接受 `minimal`、`medium`、`xhigh`、`ultra` 等别名并在服务端映射；内置候选只展示原生值。字段格式和兼容行为见其 [思考模式文档](https://api-docs.deepseek.com/guides/thinking_mode/) 与 [Responses API 文档](https://api-docs.deepseek.com/api/create-response/)。OpenAI 的值也会因模型而异，详见 [Responses API](https://platform.openai.com/docs/api-reference/responses/create) 和 [Chat Completions](https://platform.openai.com/docs/api-reference/chat/create) 文档。兼容服务可能采用不同的字段或支持范围。
 
-可从仓库根目录的 `env.example` 复制模板。也可以通过 `XBOT_ENV_FILE` 指定其他文件路径。不要把真实密钥提交到仓库。
+可从仓库根目录的 `env.example` 复制模板。也可以通过 `ZBOT_ENV_FILE` 指定其他文件路径。不要把真实密钥提交到仓库。
 
 可选项：
 
@@ -66,17 +66,17 @@ OPENAI_RESPONSES_EFFORTS=low,high,max
 | `OPENAI_CHAT_EFFORTS` | Chat Completions 可选思考强度，逗号分隔 |
 | `OPENAI_RESPONSES_EFFORTS` | Responses API 可选思考强度，逗号分隔 |
 | `OPENAI_RESPONSES_HOSTED_TOOLS` | Responses 可选托管工具（如 `web_search,tool_search`），上游执行；Chat Completions 无托管工具 |
-| `XBOT_MEMORY_USER_ID` | 记忆用户标识，默认 `0` |
+| `ZBOT_MEMORY_USER_ID` | 记忆用户标识，默认 `0` |
 | `NETWORK_PROXY` | 网络和命令行工具使用的代理；TUI 会将容器默认代理地址调整为 `http://localhost:7890` |
 | `OPENAI_PROXY` | 模型 API 请求使用的代理 |
 
-TUI 的 MCP 服务列表由 `~/.xbot/mcp-servers.yaml` 管理。详见 [MCP 服务配置](mcp.md)。
+TUI 的 MCP 服务列表由 `~/.zbot/mcp-servers.yaml` 管理。详见 [MCP 服务配置](mcp.md)。
 
 ## 配置和数据目录
 
-默认情况下，xbot 将环境文件、MCP 配置、会话、日志和 OAuth 凭据保存在 `~/.xbot/`。MCP OAuth 凭据保存在 `~/.xbot/mcp-auth/`，应按敏感信息保护。
+默认情况下，zbot 将环境文件、MCP 配置、会话、日志和 OAuth 凭据保存在 `~/.zbot/`。MCP OAuth 凭据保存在 `~/.zbot/mcp-auth/`，应按敏感信息保护。
 
-可用 `XBOT_MCP_SERVERS_FILE` 指定 MCP 配置文件。可用 `XBOT_ENV_FILE` 指定环境文件。
+可用 `ZBOT_MCP_SERVERS_FILE` 指定 MCP 配置文件。可用 `ZBOT_ENV_FILE` 指定环境文件。
 
 ## 构建独立命令
 
@@ -87,9 +87,9 @@ bun install
 make build-cli
 ```
 
-命令会构建可执行文件 `xbot`，默认写入 `~/.bun/bin/xbot`。图片缩放在 macOS 使用系统自带的 `sips`；其他平台使用 ImageMagick 的 `magick` 命令。确保 `~/.bun/bin` 在 `PATH` 中即可直接运行 `xbot`。可通过 `XBOT_TUI_BIN` 覆盖输出路径：
+命令会构建可执行文件 `zbot`，默认写入 `~/.bun/bin/zbot`。图片缩放在 macOS 使用系统自带的 `sips`；其他平台使用 ImageMagick 的 `magick` 命令。确保 `~/.bun/bin` 在 `PATH` 中即可直接运行 `zbot`。可通过 `ZBOT_TUI_BIN` 覆盖输出路径：
 
 ```fish
-set -x XBOT_TUI_BIN "$HOME/.local/bin/xbot"
+set -x ZBOT_TUI_BIN "$HOME/.local/bin/zbot"
 make build-cli
 ```

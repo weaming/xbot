@@ -1,5 +1,5 @@
 BUN ?= bun
-XBOT_TUI_BIN ?= $(HOME)/.bun/bin/xbot
+ZBOT_TUI_BIN ?= $(HOME)/.bun/bin/zbot
 GO ?= go
 BUNPACK_DIR = bunpack
 BUNPACK = $(CURDIR)/.cache/bunpack
@@ -9,11 +9,11 @@ BUNPACK = $(CURDIR)/.cache/bunpack
 build-pack:
 	mkdir -p $(dir $(BUNPACK))
 	$(GO) build -C $(BUNPACK_DIR) -trimpath -ldflags "-s -w" -o $(BUNPACK) .
-	$(BUNPACK) build src/tui/main.ts -out $(XBOT_TUI_BIN) -name xbot \
+	$(BUNPACK) build src/tui/main.ts -out $(ZBOT_TUI_BIN) -name zbot \
 		-inline .tokjson
 
 build-cli:
 	$(BUN) run build
-	mkdir -p "$(dir $(XBOT_TUI_BIN))"
-	$(BUN) build dist-bundle/main.js --compile --no-compile-autoload-dotenv --outfile="$(XBOT_TUI_BIN)"
+	mkdir -p "$(dir $(ZBOT_TUI_BIN))"
+	$(BUN) build dist-bundle/main.js --compile --no-compile-autoload-dotenv --outfile="$(ZBOT_TUI_BIN)"
 

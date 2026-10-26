@@ -6,7 +6,7 @@
  * 令牌落盘复用（含 refresh_token 自动续期）。
  *
  * 回调按 RFC 8252 原生应用约定监听 127.0.0.1 的随机或固定端口；
- * 凭据默认存于 $XBOT_STATE_DIR/mcp-auth/<server>.json（0600）。
+ * 凭据默认存于 $ZBOT_STATE_DIR/mcp-auth/<server>.json（0600）。
  */
 
 import fs from "fs";
@@ -42,7 +42,7 @@ export interface McpOAuthLogEvent {
 export interface McpOAuthClientOptions extends Omit<ResolvedMcpOAuthConfig, "clientName"> {
     serverName: string;
     serverUrl: string;
-    /** 授权页展示的客户端名称，默认 xbot-<server> */
+    /** 授权页展示的客户端名称，默认 zbot-<server> */
     clientName?: string;
     /** 授权链接就绪 / 流程进展通知（TUI 侧展示，日志兜底） */
     onEvent?: (event: McpOAuthLogEvent) => void;
@@ -61,9 +61,9 @@ interface OAuthStoreData {
     resourceUrl?: string;
 }
 
-/** 解析默认凭据文件：$XBOT_STATE_DIR/mcp-auth/<server>.json */
+/** 解析默认凭据文件：$ZBOT_STATE_DIR/mcp-auth/<server>.json */
 export function resolveOAuthStorePath(serverName: string): string {
-    const stateRoot = process.env.XBOT_STATE_DIR || path.join(os.homedir(), ".xbot");
+    const stateRoot = process.env.ZBOT_STATE_DIR || path.join(os.homedir(), ".zbot");
     const safeName = serverName.replace(/[^A-Za-z0-9._-]/g, "_");
     return path.join(stateRoot, "mcp-auth", `${safeName}.json`);
 }
@@ -188,7 +188,7 @@ export class OAuthCallbackServer {
         }
 
         this.deliver(params, null);
-        res.writeHead(200, HTML_HEADERS).end(renderPage("授权成功", "已完成授权，可以关闭此页面并回到 xbot。"));
+        res.writeHead(200, HTML_HEADERS).end(renderPage("授权成功", "已完成授权，可以关闭此页面并回到 zbot。"));
     }
 
     /** 回调参数交给等待方；无人等待时暂存，等下一个等待方接手 */
@@ -369,7 +369,7 @@ export class McpOAuthClient {
         const provider = new FileOAuthClientProvider({
             store,
             redirectUrl: callbacks.redirectUrl,
-            clientName: options.clientName || `xbot-${options.serverName}`,
+            clientName: options.clientName || `zbot-${options.serverName}`,
             scope: options.scope,
             clientId: options.clientId,
             clientSecret: options.clientSecret,

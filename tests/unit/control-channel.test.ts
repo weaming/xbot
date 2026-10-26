@@ -17,7 +17,7 @@ const controls: SessionControl[] = [];
 const fakes: FakePeer[] = [];
 
 beforeEach(() => {
-    stateDir = useTmpStateDir("xbot-control-channel-");
+    stateDir = useTmpStateDir("zbot-control-channel-");
     for (const sessionId of locallyBoundSessionIds()) forgetBound(sessionId);
 });
 

@@ -17,7 +17,7 @@ describe("mcp oauth config", () => {
         expect(resolveMcpOAuthConfig({ name: "a", type: "stdio", oauth: true })).toBeNull();
 
         const resolved = resolveMcpOAuthConfig({ name: "alphaxiv", type: "http", oauth: true });
-        expect(resolved).toEqual({ clientName: "xbot-alphaxiv" });
+        expect(resolved).toEqual({ clientName: "zbot-alphaxiv" });
 
         const custom = resolveMcpOAuthConfig({
             name: "alphaxiv",
@@ -42,8 +42,8 @@ describe("mcp oauth config", () => {
         });
     });
 
-    test("resolveOAuthStorePath 落在 XBOT_STATE_DIR/mcp-auth 下", () => {
-        const stateDir = useTmpStateDir("xbot-oauth-path-");
+    test("resolveOAuthStorePath 落在 ZBOT_STATE_DIR/mcp-auth 下", () => {
+        const stateDir = useTmpStateDir("zbot-oauth-path-");
         try {
             expect(resolveOAuthStorePath("my server/1")).toBe(path.join(stateDir.dir, "mcp-auth", "my_server_1.json"));
         } finally {
@@ -115,7 +115,7 @@ describe("mcp oauth callback server", () => {
 
 describe("mcp oauth client", () => {
     test("凭据落盘复用：clientMetadata、tokens、issuer 隔离、invalidate", async () => {
-        const dir = tmpDir("xbot-oauth-store-");
+        const dir = tmpDir("zbot-oauth-store-");
         const storePath = path.join(dir, "alphaxiv.json");
         const client = await McpOAuthClient.create({
             serverName: "alphaxiv",
@@ -130,7 +130,7 @@ describe("mcp oauth client", () => {
             const provider = client.provider;
             expect(provider.clientMetadata).toMatchObject({
                 redirect_uris: [client.redirectUrl],
-                client_name: "xbot-alphaxiv",
+                client_name: "zbot-alphaxiv",
                 grant_types: ["authorization_code", "refresh_token"],
                 token_endpoint_auth_method: "none",
             });
@@ -171,7 +171,7 @@ describe("mcp oauth client", () => {
     });
 
     test("静态 clientId 直接作为客户端凭据，回调端口复用失败时清除注册信息", async () => {
-        const dir = tmpDir("xbot-oauth-static-");
+        const dir = tmpDir("zbot-oauth-static-");
         const storePath = path.join(dir, "static.json");
 
         const first = await McpOAuthClient.create({

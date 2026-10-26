@@ -1,5 +1,5 @@
 {
-  "name": "xbot",
+  "name": "zbot",
   "version": "1.0.0",
   "description": "Terminal AI assistant",
   "packageManager": "bun@1.3.14",

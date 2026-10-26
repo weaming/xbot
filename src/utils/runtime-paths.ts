@@ -2,10 +2,10 @@ import path from "path";
 import os from "os";
 import { getAsyncToolCwd } from "./tool-cwd-context.js";
 
-const DEFAULT_STATE_DIR = path.join(os.homedir(), ".xbot");
+const DEFAULT_STATE_DIR = path.join(os.homedir(), ".zbot");
 
 export function getStateDir(...parts: string[]): string {
-    const stateRoot = process.env.XBOT_STATE_DIR || DEFAULT_STATE_DIR;
+    const stateRoot = process.env.ZBOT_STATE_DIR || DEFAULT_STATE_DIR;
     return path.join(path.resolve(expandEnv(stateRoot)), ...parts);
 }
 
@@ -27,7 +27,7 @@ export function getAgentsSkillsDir(...parts: string[]): string {
     return path.join(homeDir, ".agents", "skills", ...parts);
 }
 
-const configuredMemoryUserId = Number.parseInt(process.env.XBOT_MEMORY_USER_ID || "0", 10);
+const configuredMemoryUserId = Number.parseInt(process.env.ZBOT_MEMORY_USER_ID || "0", 10);
 export const DEFAULT_MEMORY_USER_ID = Number.isSafeInteger(configuredMemoryUserId) && configuredMemoryUserId >= 0
     ? configuredMemoryUserId
     : 0;

@@ -43,12 +43,12 @@ export const SESSION_SHORTCUTS = [
     Key.ctrl("9"),
 ];
 
-export const TAB_LINK_PREFIX = "xbot://session/";
+export const TAB_LINK_PREFIX = "zbot://session/";
 /** 会话面板与新建会话的点击目标（由 TUI 内部处理，不交给系统浏览器）。 */
-export const SESSION_PANEL_URL = "xbot://sessions";
-export const SESSION_NEW_URL = "xbot://new";
-export const TODO_PANEL_URL = "xbot://todos";
-export const SHORTCUT_PANEL_URL = "xbot://keys";
+export const SESSION_PANEL_URL = "zbot://sessions";
+export const SESSION_NEW_URL = "zbot://new";
+export const TODO_PANEL_URL = "zbot://todos";
+export const SHORTCUT_PANEL_URL = "zbot://keys";
 
 /** Ctrl+C / Ctrl+D 防误退确认窗口（ms）：窗口内再按一次退出键才真正退出。 */
 export const EXIT_CONFIRM_MS = 2_000;
