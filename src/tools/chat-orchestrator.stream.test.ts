@@ -101,6 +101,50 @@ describe("executeWithChat 流式聚合", () => {
         expect(saved[0].tool_calls).toBeUndefined();
     });
 
+    it("只发 done 事件时补上正文、思维链与工具参数", async () => {
+        const saved: any[] = [];
+        const argsDeltas: any[] = [];
+        let round = 0;
+        const client: ChatClient = {
+            baseURL: "http://test.local/v1",
+            protocol: "responses",
+            create: async () => undefined,
+            createResponse: async () => ({
+                [Symbol.asyncIterator]: async function* () {
+                    round += 1;
+                    if (round === 1) {
+                        yield { type: "response.output_item.added", output_index: 0, item: {
+                            type: "function_call", id: "item-1", call_id: "call-1", name: "search", arguments: "",
+                        } };
+                        yield { type: "response.function_call_arguments.done", item_id: "item-1", arguments: '{"q":"x"}' };
+                        yield { type: "response.output_text.done", text: "合并后的正文" };
+                        yield { type: "response.reasoning_text.done", text: "合并后的思考" };
+                    } else {
+                        yield { type: "response.output_text.delta", delta: "完成" };
+                    }
+                    yield { type: "response.completed", response: { status: "completed", output: [] } };
+                },
+            }),
+        };
+
+        await executeWithChat({
+            query: "查询",
+            client,
+            model: "test-model",
+            stream: true,
+            executeTool: async () => "ok",
+            onTurnMessage: message => { saved.push(message); },
+            onEvent: event => {
+                if (event.type === "toolcall_args_delta") argsDeltas.push(event);
+            },
+        });
+
+        expect(argsDeltas).toEqual([{ type: "toolcall_args_delta", index: 0, delta: '{"q":"x"}' }]);
+        expect(saved[0]?.content).toBe("合并后的正文");
+        expect(saved[0]?.reasoning_content).toBe("合并后的思考");
+        expect(saved[0]?.tool_calls?.[0]?.function?.arguments).toBe('{"q":"x"}');
+    });
+
     it("Responses 流断线后保留已收到的文字", async () => {
         const saved: any[] = [];
         const client: ChatClient = {

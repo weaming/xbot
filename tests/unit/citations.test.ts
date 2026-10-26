@@ -61,6 +61,34 @@ describe("extractCitations", () => {
         expect(extractCitations({ annotations: [{ type: "file_citation", file_id: "f_1" }] })).toEqual([]);
     });
 
+    test("web_search_call 的来源：兼容 action.sources 与 results，仍按 URL 去重", () => {
+        expect(extractCitations({
+            role: "assistant",
+            content: "正文",
+            response_output: [
+                {
+                    type: "web_search_call",
+                    id: "ws_1",
+                    action: {
+                        type: "search",
+                        sources: [
+                            { type: "url", url: "https://a.example/1?utm_source=openai", title: "A" },
+                            { url: "https://a.example/1" },
+                        ],
+                        results: [{ url: "https://b.example/2", title: "B" }],
+                    },
+                },
+                {
+                    type: "message",
+                    content: [{ type: "output_text", text: "正文", annotations: [{ url: "https://b.example/2" }] }],
+                },
+            ],
+        })).toEqual([
+            { url: "https://a.example/1", title: "A" },
+            { url: "https://b.example/2", title: "B" },
+        ]);
+    });
+
     test("超过上限时截断", () => {
         const many = {
             annotations: Array.from({ length: 20 }, (_, index) => ({

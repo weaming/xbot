@@ -450,6 +450,30 @@ async function collectResponsesResponse(
         call.arguments += event.delta;
         functionCalls.set(key, call);
         emit({ type: "toolcall_args_delta", index: call.index, delta: event.delta });
+      } else if (event.type === "response.output_text.done") {
+        // 网关把增量合并成单个 done 事件时补上正文，已有 delta 时不重复追加
+        const text = typeof event.text === "string" ? event.text : "";
+        if (partialText.length === 0 && text) {
+          await persistDelta?.({ text });
+          partialText = text;
+          emit({ type: "text_delta", delta: text });
+        }
+      } else if (event.type === "response.reasoning_text.done") {
+        const text = typeof event.text === "string" ? event.text : "";
+        if (partialReasoning.length === 0 && text) {
+          await persistDelta?.({ reasoning: text });
+          partialReasoning = text;
+          emit({ type: "reasoning_delta", delta: text });
+        }
+      } else if (event.type === "response.function_call_arguments.done") {
+        const key = event.item_id;
+        const args = typeof event.arguments === "string" ? event.arguments : "";
+        const call = functionCalls.get(key);
+        if (call && call.arguments.length === 0 && args) {
+          await persistDelta?.({ toolCalls: [{ index: call.index, arguments: args }] });
+          call.arguments = args;
+          emit({ type: "toolcall_args_delta", index: call.index, delta: args });
+        }
       } else if (event.type === "response.output_item.done") {
         if (event.item && event.output_index !== undefined) {
           outputItems[event.output_index] = event.item;
@@ -505,11 +529,17 @@ async function collectResponsesResponse(
   const output = fallbackText && !hasOutputText
     ? [...suppliedItems, { type: "message", content: [{ type: "output_text", text: fallbackText }] }]
     : suppliedItems;
-  if (completedResponse) completedResponse.output = output;
+  // 流里出现过、但 output_item.done 与 completed.output 都缺的调用：用累积的名字与参数补齐
+  const knownCallIds = new Set(output.map((item: any) => item?.call_id ?? item?.id).filter(Boolean));
+  const missingCalls = [...functionCalls.values()]
+    .filter(call => call.name && !knownCallIds.has(call.id))
+    .map(call => ({ type: "function_call", id: call.id, call_id: call.id, name: call.name, arguments: call.arguments }));
+  const mergedOutput = missingCalls.length > 0 ? [...output, ...missingCalls] : output;
+  if (completedResponse) completedResponse.output = mergedOutput;
   if (completedResponse && partialReasoning) completedResponse.reasoning_content = partialReasoning;
   return completedResponse ?? {
     model,
-    output,
+    output: mergedOutput,
     ...(partialReasoning ? { reasoning_content: partialReasoning } : {}),
     usage,
   };

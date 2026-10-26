@@ -38,8 +38,23 @@ export function extractCitations(message: any): Citation[] {
         });
     };
 
+    // 托管搜索的来源：OpenAI 挂在 web_search_call.action.sources，部分兼容端用 results
+    const pushSearchItem = (item: any) => {
+        for (const list of [item?.action?.sources, item?.action?.results, item?.results]) {
+            if (!Array.isArray(list)) continue;
+            for (const entry of list) {
+                if (typeof entry === "string") push({ url: entry });
+                else if (entry && typeof entry === "object") push(entry);
+            }
+        }
+    };
+
     const output = Array.isArray(message?.response_output) ? message.response_output : [];
     for (const item of output) {
+        if (item?.type === "web_search_call") {
+            pushSearchItem(item);
+            continue;
+        }
         if (item?.type !== "message") continue;
         for (const part of item.content ?? []) {
             for (const annotation of part?.annotations ?? []) push(annotation);
