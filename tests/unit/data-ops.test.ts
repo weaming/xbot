@@ -20,9 +20,9 @@ let stateDir: TmpStateDir;
 beforeEach(() => {
     stateDir = useTmpStateDir("xbot-data-ops-test-");
     tmpDir = stateDir.dir;
-    // getToolCwd 优先 TUI_CWD；宿主环境注入时会导致相对路径解析到外部目录，须清除。
+    // 相对路径只允许落在本测试的临时目录中。
     savedTuiCwd = process.env.TUI_CWD;
-    delete process.env.TUI_CWD;
+    process.env.TUI_CWD = tmpDir;
 });
 
 afterEach(() => {
