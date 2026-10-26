@@ -22,6 +22,8 @@ const outbound: PeerMessage[] = [];
 const busy = new Set<string>();
 const spawned: string[] = [];
 const closed: Array<{ sessionId: string; automatic: boolean }> = [];
+const cancelled: Array<{ sessionId: string; close: boolean }> = [];
+const woken: string[] = [];
 /** 目标会话受理后自动回传的结果文本：设了才回，模拟对方跑完一轮。 */
 const replies = new Map<string, string>();
 /** 各会话历史收到的会话间结果：模拟事件日志里的 peer_result。 */
@@ -32,6 +34,7 @@ const SESSIONS = [
     { sessionId: "01JAAAAAAAAAAAAAAAAAAAAAA2", title: "写测试" },
     { sessionId: "01JAAAAAAAAAAAAAAAAAAAAAA3" },
 ];
+const ARCHIVED_SESSION = { sessionId: "01JAAAAAAAAAAAAAAAAAAAAAA4", title: "已归档 review" };
 
 function makeHost(): SessionControlHost {
     return {
@@ -45,6 +48,16 @@ function makeHost(): SessionControlHost {
         archiveSpawnedSession: async (sessionId, automatic) => {
             closed.push({ sessionId, automatic });
             control.release(sessionId);
+        },
+        cancelSpawnedSession: async (sessionId, close) => {
+            if (!busy.has(sessionId)) return false;
+            busy.delete(sessionId);
+            cancelled.push({ sessionId, close });
+            if (close) {
+                closed.push({ sessionId, automatic: false });
+                control.release(sessionId);
+            }
+            return true;
         },
         accept: (message) => {
             if (busy.has(message.to)) return false;
@@ -85,12 +98,26 @@ beforeEach(() => {
     busy.clear();
     spawned.length = 0;
     closed.length = 0;
+    cancelled.length = 0;
+    woken.length = 0;
     replies.clear();
     peerResults.clear();
 
     control = new SessionControl(makeHost(), { probeTimeoutMs: 100, negotiateTimeoutMs: 200 });
     setSessionControl(control);
-    setSessionDirectory({ list: async () => SESSIONS });
+    setSessionDirectory({
+        list: async options => options?.includeArchived ? [...SESSIONS, ARCHIVED_SESSION] : SESSIONS,
+        wake: async sessionId => {
+            if (sessionId !== ARCHIVED_SESSION.sessionId) throw new Error("目标会话未归档");
+            const claimed = await control.claim(sessionId);
+            if (!claimed.ok) throw new Error(claimed.error ?? "认领失败");
+            if (!control.adoptSpawnedSession(sessionId)) {
+                control.release(sessionId);
+                throw new Error("子会话名额已满");
+            }
+            woken.push(sessionId);
+        },
+    });
     setPeerResultHistory({
         recentResults: async (sessionId, limit) => (peerResults.get(sessionId) ?? []).slice(-limit),
     });
@@ -116,6 +143,8 @@ describe("下发条件", () => {
             "session_send",
             "session_status",
             "session_close",
+            "session_cancel",
+            "session_wake",
         ]);
     });
 
@@ -261,6 +290,148 @@ describe("session_spawn", () => {
 
         control.release(sessionId);
         expect(control.spawnedCount).toBe(0);
+    });
+});
+
+describe("session_cancel", () => {
+    test("取消本实例派生子会话并保持打开", async () => {
+        const spawn = await tool("session_spawn").execute({ __sessionId: SESSIONS[0]!.sessionId });
+        const sessionId = /完整 id：(\S+)/.exec(spawn.content[0]?.text ?? "")?.[1] ?? "";
+        busy.add(sessionId);
+
+        const result = await tool("session_cancel").execute({
+            session: sessionId,
+            __sessionId: SESSIONS[0]!.sessionId,
+        });
+
+        expect(result.isError).toBeUndefined();
+        expect(result.content[0]?.text).toContain("仍保持打开");
+        expect(cancelled).toEqual([{ sessionId, close: false }]);
+        expect(closed).toEqual([]);
+        expect(control.spawnedCount).toBe(1);
+    });
+
+    test("close=true 取消后归档并释放子会话", async () => {
+        const spawn = await tool("session_spawn").execute({ __sessionId: SESSIONS[0]!.sessionId });
+        const sessionId = /完整 id：(\S+)/.exec(spawn.content[0]?.text ?? "")?.[1] ?? "";
+        busy.add(sessionId);
+
+        const result = await tool("session_cancel").execute({
+            session: sessionId,
+            close: true,
+            __sessionId: SESSIONS[0]!.sessionId,
+        });
+
+        expect(result.isError).toBeUndefined();
+        expect(result.content[0]?.text).toContain("归档");
+        expect(cancelled).toEqual([{ sessionId, close: true }]);
+        expect(closed).toEqual([{ sessionId, automatic: false }]);
+        expect(control.spawnedCount).toBe(0);
+    });
+
+    test("空闲、非子会话与缺上下文时拒绝取消", async () => {
+        const idle = await tool("session_spawn").execute({ __sessionId: SESSIONS[0]!.sessionId });
+        const childId = /完整 id：(\S+)/.exec(idle.content[0]?.text ?? "")?.[1] ?? "";
+        const idleResult = await tool("session_cancel").execute({ session: childId, __sessionId: SESSIONS[0]!.sessionId });
+        const ordinaryResult = await tool("session_cancel").execute({
+            session: SESSIONS[1]!.sessionId,
+            __sessionId: SESSIONS[0]!.sessionId,
+        });
+        const noContextResult = await tool("session_cancel").execute({ session: childId });
+
+        expect(idleResult.isError).toBe(true);
+        expect(ordinaryResult.content[0]?.text).toContain("只能取消");
+        expect(noContextResult.isError).toBe(true);
+        expect(cancelled).toEqual([]);
+    });
+});
+
+describe("session_wake", () => {
+    test("按短 id 唤醒归档会话", async () => {
+        const result = await tool("session_wake").execute({
+            session: ARCHIVED_SESSION.sessionId.slice(-8),
+            __sessionId: SESSIONS[0]!.sessionId,
+        });
+
+        expect(result.isError).toBeUndefined();
+        expect(result.content[0]?.text).toContain("已唤醒并认领");
+        expect(woken).toEqual([ARCHIVED_SESSION.sessionId]);
+    });
+
+    test("带 text 唤醒后派发输入，并在结果回传后默认重新归档", async () => {
+        replies.set(ARCHIVED_SESSION.sessionId, "继续任务已完成");
+
+        const result = await tool("session_wake").execute({
+            session: ARCHIVED_SESSION.sessionId,
+            text: "继续上次的 review",
+            __sessionId: SESSIONS[0]!.sessionId,
+        });
+        await new Promise(resolve => setTimeout(resolve, 0));
+
+        expect(result.isError).toBeUndefined();
+        expect(result.content[0]?.text).toContain("发送输入");
+        expect(result.content[0]?.text).toContain("自动重新归档");
+        expect(outbound.at(-1)?.expectResult).toBe(true);
+        expect(outbound.at(-1)?.closeOnResult).toBe(true);
+        expect(closed).toEqual([{ sessionId: ARCHIVED_SESSION.sessionId, automatic: true }]);
+    });
+
+    test("close=false 带 text 唤醒后保留会话", async () => {
+        replies.set(ARCHIVED_SESSION.sessionId, "继续任务已完成");
+
+        const result = await tool("session_wake").execute({
+            session: ARCHIVED_SESSION.sessionId,
+            text: "继续工作",
+            close: false,
+            __sessionId: SESSIONS[0]!.sessionId,
+        });
+        await new Promise(resolve => setTimeout(resolve, 0));
+
+        expect(result.isError).toBeUndefined();
+        expect(result.content[0]?.text).toContain("保持打开");
+        expect(outbound.at(-1)?.closeOnResult).toBeUndefined();
+        expect(closed).toEqual([]);
+        expect(control.spawnedCount).toBe(1);
+    });
+
+    test("唤醒输入发送失败不会遗留自动归档标记", async () => {
+        busy.add(ARCHIVED_SESSION.sessionId);
+        const wakeResult = await tool("session_wake").execute({
+            session: ARCHIVED_SESSION.sessionId,
+            text: "继续工作",
+            __sessionId: SESSIONS[0]!.sessionId,
+        });
+        expect(wakeResult.isError).toBe(true);
+        busy.delete(ARCHIVED_SESSION.sessionId);
+
+        replies.set(ARCHIVED_SESSION.sessionId, "后续任务结果");
+        await control.send(SESSIONS[0]!.sessionId, ARCHIVED_SESSION.sessionId, "另一个普通任务", { expectResult: true });
+        await new Promise(resolve => setTimeout(resolve, 0));
+
+        expect(closed).toEqual([]);
+        expect(control.spawnedCount).toBe(1);
+    });
+
+    test("非归档会话的唤醒请求被宿主拒绝", async () => {
+        const result = await tool("session_wake").execute({
+            session: SESSIONS[0]!.sessionId,
+            __sessionId: SESSIONS[1]!.sessionId,
+        });
+
+        expect(result.isError).toBe(true);
+        expect(result.content[0]?.text).toContain("目标会话未归档");
+        expect(woken).toEqual([]);
+    });
+
+    test("缺少 TUI 恢复能力时返回明确错误", async () => {
+        setSessionDirectory({ list: async () => [...SESSIONS, ARCHIVED_SESSION] });
+        const result = await tool("session_wake").execute({
+            session: ARCHIVED_SESSION.sessionId,
+            __sessionId: SESSIONS[0]!.sessionId,
+        });
+
+        expect(result.isError).toBe(true);
+        expect(result.content[0]?.text).toContain("仅在 TUI 内可用");
     });
 });
 

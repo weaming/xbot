@@ -20,7 +20,9 @@ import { getTuiStartupCwd } from "./runtime-context.js";
 import { DEFAULT_MEMORY_USER_ID, getSessionsDir, getSessionTodosFile, getToolCwd } from "../utils/runtime-paths.js";
 import { planResume } from "../services/resume-plan.js";
 import {
+    describeClaimFailure,
     formatInboundPrompt,
+    MAX_SPAWNED_SESSIONS,
     SessionControl,
     type ClaimResult,
     type SessionControlHost,
@@ -62,6 +64,8 @@ export { summarizeEvents } from "./agent-summary.js";
 
 /** 退出时等待进行中的 turn 落盘的上限，超时后放弃等待直接退出。 */
 const CLOSE_FLUSH_TIMEOUT_MS = 3_000;
+/** 取消会话后等待模型/工具回合完成中止收尾的上限。 */
+const CANCEL_TURN_TIMEOUT_MS = 30_000;
 /** 回查会话间结果时扫描的日志尾部窗口：结果事件稀疏，多读一点免得漏。 */
 const PEER_RESULT_SCAN_EVENTS = 2_000;
 
@@ -90,6 +94,10 @@ export class LocalTuiAgent implements TuiAgent {
     private readonly instanceUsage = new Map<string, UsageInfo>();
     /** 进行中的 turn（sendMessage 全流程），退出时用于等待中断落盘。 */
     private readonly inflightTurns = new Set<Promise<unknown>>();
+    /** 按会话索引的 turn，用于取消后等待收尾与释放锁。 */
+    private readonly turnsBySession = new Map<string, Set<Promise<unknown>>>();
+    /** 正在取消的会话：阻止回合收尾回调立即再启动新 turn。 */
+    private readonly cancellingSessions = new Set<string>();
     /** 已进入退出流程：不再接受新的驱动回合（结果留在队列里即可）。 */
     private isClosing = false;
     private nextRequestId = 1;
@@ -116,6 +124,8 @@ export class LocalTuiAgent implements TuiAgent {
     onSessionReleased?: (sessionId: string, cause: SessionReleaseCause) => void;
     /** 模型派生新子会话时的回调（见 TuiAgent.onSessionSpawned）。 */
     onSessionSpawned?: (sessionId: string, title?: string) => void;
+    /** 已归档会话恢复并被本实例认领后回调宿主。 */
+    onSessionWoken?: (sessionId: string) => void;
 
     /**
      * 会话间控制通道：归属（本进程 bind socket）、消息投递、结果回传。
@@ -134,6 +144,7 @@ export class LocalTuiAgent implements TuiAgent {
                 await this.closeSession(sessionId);
                 this.releaseSession(sessionId, { cause: automatic ? "auto" : "tool" });
             },
+            cancelSpawnedSession: (sessionId, close) => this.cancelSpawnedSession(sessionId, close),
             accept: (message) => this.acceptPeerMessage(message),
             onOutbound: (from, message) => {
                 void this.recordPeerMessage(from, message, "out").catch((error) => {
@@ -163,15 +174,17 @@ export class LocalTuiAgent implements TuiAgent {
         // 会话间工具通过进程级单例取通道与目录，必须在任何请求前就位
         setSessionControl(this.control);
         setSessionDirectory({
-            list: async () => {
+            list: async (options = {}) => {
                 const sessions = await this.listSessions();
                 return sessions
-                    .filter(session => !session.archived)
+                    .filter(session => options.includeArchived || !session.archived)
                     .map(session => ({
                         sessionId: session.sessionId,
                         ...(session.title ? { title: session.title } : {}),
+                        ...(session.archived ? { archived: true } : {}),
                     }));
             },
+            wake: sessionId => this.wakeArchivedSession(sessionId),
         });
         setPeerResultHistory({
             recentResults: (sessionId, limit) => this.recentPeerResults(sessionId, limit),
@@ -212,6 +225,38 @@ export class LocalTuiAgent implements TuiAgent {
 
     async claimSession(sessionId: string): Promise<ClaimResult> {
         return this.control.claim(sessionId);
+    }
+
+    /** 唤醒已归档会话并由当前实例认领，以便后续 session_send 继续工作。 */
+    private async wakeArchivedSession(sessionId: string): Promise<void> {
+        const summary = (await this.listSessions()).find(session => session.sessionId === sessionId);
+        if (!summary) throw new Error(`会话不存在：${sessionId}`);
+        if (!summary.archived) throw new Error("目标会话未归档；直接使用 session_send 即可");
+        if (this.isSessionBusy(sessionId)) throw new Error("目标会话正在执行，暂不能唤醒");
+        if (!this.control.beginSessionWake(sessionId)) throw new Error("目标会话正在切换状态，请稍后重试");
+
+        const wasClaimed = this.control.isClaimed(sessionId);
+        const wasManaged = this.control.isSpawnedSession(sessionId);
+        let didClaim = false;
+        let didAdopt = false;
+        try {
+            const claim = await this.claimSession(sessionId);
+            if (!claim.ok) throw new Error(describeClaimFailure(claim));
+            didClaim = !wasClaimed;
+            if (!this.control.adoptSpawnedSession(sessionId)) {
+                throw new Error(`本实例管理的子会话已达上限（${MAX_SPAWNED_SESSIONS} 个）`);
+            }
+            didAdopt = !wasManaged;
+
+            await this.unarchiveSession(sessionId);
+            this.onSessionWoken?.(sessionId);
+        } catch (error) {
+            if (didAdopt) this.control.forgetSpawnedSession(sessionId);
+            if (didClaim) this.releaseSession(sessionId, { cause: "tool" });
+            throw error;
+        } finally {
+            this.control.endSessionWake(sessionId);
+        }
     }
 
     releaseSession(sessionId: string, options: { cause?: SessionReleaseCause } = {}): void {
@@ -717,6 +762,59 @@ export class LocalTuiAgent implements TuiAgent {
         return true;
     }
 
+    private async cancelSpawnedSession(sessionId: string, closeAfterCancel: boolean): Promise<boolean> {
+        if (this.cancellingSessions.has(sessionId)) return false;
+        this.cancellingSessions.add(sessionId);
+        let didCancel = false;
+        let turnSettled = false;
+
+        try {
+            if (!await this.abortSession(sessionId)) return false;
+            didCancel = true;
+            await this.waitForSessionTurns(sessionId);
+            turnSettled = true;
+
+            if (closeAfterCancel) {
+                // 同一事件循环内清标记并调用 closeSession；它同步占锁后才会让出执行权。
+                this.cancellingSessions.delete(sessionId);
+                await this.closeSession(sessionId);
+                this.releaseSession(sessionId, { cause: "tool" });
+                return true;
+            }
+
+            return true;
+        } finally {
+            this.cancellingSessions.delete(sessionId);
+            if (!closeAfterCancel && didCancel && turnSettled) {
+                this.onTurnFinished?.(sessionId);
+                this.driveQueuedResults(sessionId);
+            }
+        }
+    }
+
+    private async waitForSessionTurns(sessionId: string): Promise<void> {
+        const deadline = Date.now() + CANCEL_TURN_TIMEOUT_MS;
+        while (true) {
+            const turns = [...(this.turnsBySession.get(sessionId) ?? [])];
+            if (turns.length === 0) return;
+
+            const remainingMs = deadline - Date.now();
+            if (remainingMs <= 0) throw new Error("等待取消收尾超时；会话仍保持打开");
+
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            try {
+                await Promise.race([
+                    Promise.allSettled(turns),
+                    new Promise<never>((_, reject) => {
+                        timer = setTimeout(() => reject(new Error("等待取消收尾超时；会话仍保持打开")), remainingMs);
+                    }),
+                ]);
+            } finally {
+                if (timer) clearTimeout(timer);
+            }
+        }
+    }
+
     /** 取走等待附加的会话间结果，作为本轮请求前置的 user 消息。 */
     private pendingPeerUserMessages(sessionId: string): TurnUserMessage[] {
         return this.control.takeResults(sessionId).map(text => ({ text, trigger: "peer" as const }));
@@ -729,6 +827,7 @@ export class LocalTuiAgent implements TuiAgent {
      */
     private driveQueuedResults(sessionId: string): void {
         if (this.isClosing) return;
+        if (this.cancellingSessions.has(sessionId)) return;
         if (!this.activeSessions.has(sessionId)) return;
         if (this.control.queuedResults(sessionId) === 0) return;
         // 别的实例正在跑：不要取走结果，等它收尾或用户下次说话时再附加
@@ -834,18 +933,25 @@ export class LocalTuiAgent implements TuiAgent {
 
     private async trackTurn<T>(sessionId: string, turn: Promise<T>): Promise<T> {
         this.inflightTurns.add(turn);
+        const turns = this.turnsBySession.get(sessionId) ?? new Set<Promise<unknown>>();
+        turns.add(turn);
+        this.turnsBySession.set(sessionId, turns);
         try {
             return await turn;
         } finally {
             this.inflightTurns.delete(turn);
+            turns.delete(turn);
+            if (turns.size === 0) this.turnsBySession.delete(sessionId);
             // 回合结束后通知宿主：群消息驱动等非用户回合也要放行排队的输入
-            try {
-                this.onTurnFinished?.(sessionId);
-            } catch {
-                // 宿主回调异常不影响回合结果
+            if (!this.cancellingSessions.has(sessionId)) {
+                try {
+                    this.onTurnFinished?.(sessionId);
+                } catch {
+                    // 宿主回调异常不影响回合结果
+                }
+                // 回合执行期间到达、当时没能驱动的结果，在这里补一次
+                this.driveQueuedResults(sessionId);
             }
-            // 回合执行期间到达、当时没能驱动的结果，在这里补一次
-            this.driveQueuedResults(sessionId);
         }
     }
 
@@ -886,6 +992,9 @@ export class LocalTuiAgent implements TuiAgent {
     }
 
     private beginSessionOperation(sessionId: string): void {
+        if (this.cancellingSessions.has(sessionId)) {
+            throw new Error("busy: 会话正在取消，请稍后重试");
+        }
         if (this.sessionOperations.has(sessionId) || this.activeSessions.get(sessionId)?.abortController !== undefined) {
             throw new Error("busy: 有请求处理中，请先中止当前请求");
         }

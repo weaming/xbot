@@ -455,6 +455,9 @@ export class ChatApp {
         this.agent.onSessionSpawned = (sessionId, title) => {
             void this.handleSessionSpawned(sessionId, title);
         };
+        this.agent.onSessionWoken = sessionId => {
+            void this.handleSessionWoken(sessionId);
+        };
 
         if (startupMessage) {
             this.store.pushSystemMessage(startupMessage);
@@ -1868,6 +1871,13 @@ export class ChatApp {
         this.store.setSessions(this.store.sessions);
         void this.refreshOwnership(true);
         this.tui.flash(cleanTitle ? `✚ 子会话：${truncateInline(cleanTitle, 20)}` : "✚ 已派生新的子会话");
+    }
+
+    private async handleSessionWoken(sessionId: string): Promise<void> {
+        this.store.setSessions(await this.agent.listSessions());
+        void this.refreshOwnership(true);
+        this.renderTabBar();
+        this.tui.flash(`已唤醒会话 ${sessionId.slice(-8)}，可继续派活`);
     }
 
     private async newSession(): Promise<void> {

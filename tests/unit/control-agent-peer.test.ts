@@ -16,12 +16,18 @@ let turnGate: Promise<void> | null = null;
 let turnGateSession: string | null = null;
 /** 记录每次真实请求的参数，用于断言结果如何注入到驱动轮。 */
 const queries: Array<{ sessionId?: string; query?: string; history: any[] }> = [];
+const startedSessions: string[] = [];
 
 const realChatRuntime = await import("../../src/services/chat-runtime.js");
 mock.module("../../src/services/chat-runtime.js", () => ({
     ...realChatRuntime,
     runChatQuery: async (options: any) => {
+        startedSessions.push(options.sessionId);
         if (turnGate && (!turnGateSession || options.sessionId === turnGateSession)) await turnGate;
+        if (options.signal?.aborted) {
+            options.onEvent?.({ type: "aborted", stopReason: "aborted" });
+            return { content: "", toolCalls: 0, messages: [] };
+        }
         queries.push({ sessionId: options.sessionId, query: options.query, history: options.history ?? [] });
         options.onEvent?.({ type: "message_end", content: turnContent, stopReason: "stop" });
         return {
@@ -33,7 +39,7 @@ mock.module("../../src/services/chat-runtime.js", () => ({
 }));
 
 const { LocalTuiAgent } = await import("../../src/tui/agent.js");
-const { setSessionControl } = await import("../../src/control/runtime.js");
+const { getSessionDirectory, setSessionControl, setSessionDirectory } = await import("../../src/control/runtime.js");
 const { getSocketPath } = await import("../../src/control/paths.js");
 
 let tmpDir: string;
@@ -54,12 +60,14 @@ beforeEach(async () => {
     turnGate = null;
     turnGateSession = null;
     queries.length = 0;
+    startedSessions.length = 0;
 });
 
 afterEach(async () => {
     turnGate = null;
     await agent.close();
     setSessionControl(undefined);
+    setSessionDirectory(undefined);
     if (originalStateDir === undefined) delete process.env.XBOT_STATE_DIR;
     else process.env.XBOT_STATE_DIR = originalStateDir;
     fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -352,5 +360,75 @@ describe("结果到达即驱动请求方", () => {
         const followUp = queries.find(item => item.sessionId === sessionA);
         expect(followUp?.query).toBe("继续");
         expect(followUp?.history.some(message => String(message.content).includes("子会话的结论"))).toBe(true);
+    });
+
+    test("唤醒已归档子会话后可继续派活", async () => {
+        const spawned = await agent.sessionControl.spawnSession(sessionA, "可恢复子会话");
+        expect(spawned.ok).toBe(true);
+        if (!spawned.ok) return;
+        await agent.renameSession(spawned.sessionId, "可恢复子会话");
+        await agent.closeSession(spawned.sessionId);
+        agent.releaseSession(spawned.sessionId);
+        expect((await agent.listSessions()).find(item => item.sessionId === spawned.sessionId)?.archived).toBe(true);
+
+        let wokenSession = "";
+        agent.onSessionWoken = sessionId => { wokenSession = sessionId; };
+        const directory = getSessionDirectory();
+        expect(directory?.wake).toBeDefined();
+        await directory!.wake!(spawned.sessionId);
+
+        expect(wokenSession).toBe(spawned.sessionId);
+        expect(agent.isSessionClaimed(spawned.sessionId)).toBe(true);
+        expect((await agent.listSessions()).find(item => item.sessionId === spawned.sessionId)?.archived).toBe(false);
+
+        turnContent = "恢复后的结果";
+        await agent.sessionControl.send(sessionA, spawned.sessionId, "继续上次工作", { expectResult: true });
+        await waitFor(() => queries.some(item => item.sessionId === spawned.sessionId));
+        expect(queries.find(item => item.sessionId === spawned.sessionId)?.query).toContain("继续上次工作");
+
+        await waitFor(() => !agent.isSessionBusy(spawned.sessionId));
+        await agent.closeSession(spawned.sessionId);
+        agent.releaseSession(spawned.sessionId);
+        await directory!.wake!(spawned.sessionId);
+        turnContent = "归档前的最终结果";
+        await agent.sessionControl.send(sessionA, spawned.sessionId, "最后继续一次", {
+            expectResult: true,
+            closeOnResult: true,
+        });
+        await waitFor(() => !agent.isSessionClaimed(spawned.sessionId));
+        expect((await agent.listSessions()).find(item => item.sessionId === spawned.sessionId)?.archived).toBe(true);
+    });
+
+    test("session_cancel 可中止当前子任务并选择是否归档", async () => {
+        for (const close of [false, true]) {
+            await agent.claimSession(sessionA);
+            const spawned = await agent.sessionControl.spawnSession(sessionA, `取消任务 ${close}`);
+            expect(spawned.ok).toBe(true);
+            if (!spawned.ok) continue;
+
+            let releaseTurn: (() => void) | undefined;
+            turnGate = new Promise<void>(resolve => { releaseTurn = resolve; });
+            turnGateSession = spawned.sessionId;
+            const sent = await agent.sessionControl.send(sessionA, spawned.sessionId, "运行可取消任务", {
+                expectResult: true,
+            });
+            await waitFor(() => startedSessions.includes(spawned.sessionId));
+
+            const cancelPromise = agent.sessionControl.cancelSpawnedSession(spawned.sessionId, { close });
+            await new Promise(resolve => setTimeout(resolve, 0));
+            await expect(agent.sessionControl.send(sessionA, spawned.sessionId, "取消期间不应插入新任务"))
+                .rejects.toThrow(/取消\/关闭|正在执行中/);
+            releaseTurn?.();
+            const cancelled = await cancelPromise;
+            turnGate = null;
+            turnGateSession = null;
+
+            expect(cancelled).toEqual({ ok: true, closed: close });
+            expect(readEvents(sessionA).some(event => event.type === "peer_message"
+                && event.payload.msgId === sent.id)).toBe(true);
+            expect(agent.isSessionBusy(spawned.sessionId)).toBe(false);
+            expect(agent.isSessionClaimed(spawned.sessionId)).toBe(!close);
+            expect((await agent.listSessions()).find(item => item.sessionId === spawned.sessionId)?.archived).toBe(close);
+        }
     });
 });

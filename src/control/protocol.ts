@@ -19,6 +19,8 @@ export interface PeerMessage {
     replyTo?: string;
     /** 期望结果：对方本回合结束后自动回传最终输出。 */
     expectResult?: boolean;
+    /** 本地一次性唤醒任务：结果回传后自动归档接收会话。 */
+    closeOnResult?: boolean;
     createdAt: string;
 }
 
@@ -74,6 +76,7 @@ export interface CreatePeerMessageInput {
     text: string;
     replyTo?: string;
     expectResult?: boolean;
+    closeOnResult?: boolean;
 }
 
 /** 构造一条消息信封。 */
@@ -85,6 +88,7 @@ export function createPeerMessage(input: CreatePeerMessageInput): PeerMessage {
         text: input.text,
         ...(input.replyTo ? { replyTo: input.replyTo } : {}),
         ...(input.expectResult ? { expectResult: true } : {}),
+        ...(input.closeOnResult ? { closeOnResult: true } : {}),
         createdAt: getShanghaiISOString(),
     };
 }

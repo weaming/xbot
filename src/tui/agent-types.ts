@@ -133,6 +133,8 @@ export interface TuiAgent {
      * 与 onSessionReleased 同理，非用户主动发起的状态变化也要让宿主知情。
      */
     onSessionSpawned?: (sessionId: string, title?: string) => void;
+    /** 归档会话被 session_wake 恢复并认领后回调宿主刷新会话列表。 */
+    onSessionWoken?: (sessionId: string) => void;
     /**
      * 回合真正结束（会话锁已释放）时回调，宿主据此放行排队的用户输入。
      * 非用户发起的回合（群消息驱动、回写追问、续跑）不会经过 ChatApp.send，

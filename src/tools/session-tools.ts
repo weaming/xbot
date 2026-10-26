@@ -20,7 +20,7 @@ import { getPeerResultHistory, getSessionControl, getSessionDirectory } from "..
 import { err, ok, type ExecutableTool, type ToolExecutionResult } from "./tool-interface.js";
 import { toolCatalog } from "./tool-catalog.js";
 
-const SESSION_TOOL_NAMES = ["session_spawn", "session_send", "session_status", "session_close"];
+const SESSION_TOOL_NAMES = ["session_spawn", "session_send", "session_status", "session_close", "session_cancel", "session_wake"];
 
 /** `wait_seconds` 的上限：别让一次工具调用把回合占死太久。 */
 const MAX_WAIT_SECONDS = 600;
@@ -51,6 +51,19 @@ interface SessionCloseArgs {
     __sessionId?: string;
 }
 
+interface SessionCancelArgs {
+    session?: string;
+    close?: boolean;
+    __sessionId?: string;
+}
+
+interface SessionWakeArgs {
+    session?: string;
+    text?: string;
+    close?: boolean;
+    __sessionId?: string;
+}
+
 const sessionSpawnTool: ExecutableTool = {
     name: "session_spawn",
     description: [
@@ -58,7 +71,7 @@ const sessionSpawnTool: ExecutableTool = {
         "返回的 sessionId 用 session_send 派活（expect_result=true 时结果会自动回传）。",
         "auto_close=true 时，本实例内 session_send 派发的首个 expect_result=true 任务完成并回传后自动归档；历史保留。",
         "跨进程 session_send 暂不自动关闭（结果推送尚无可靠 ACK），需用 session_close 手动归档。",
-        `派生的子会话数有上限（${MAX_SPAWNED_SESSIONS} 个），到上限后要先让用户清理。`,
+        `本实例管理的子会话数有上限（${MAX_SPAWNED_SESSIONS} 个），到上限后要先关闭不再需要的会话。`,
         "默认不自动回收；用完可用 session_close 归档（保留历史），或提示用户删除（⌃X）。",
     ].join(""),
     tags: ["chat"],
@@ -225,7 +238,7 @@ const sessionStatusTool: ExecutableTool = {
 const sessionCloseTool: ExecutableTool = {
     name: "session_close",
     description: [
-        "关闭本实例用 session_spawn 派生且仍由本实例持有的空闲子会话。",
+        "关闭本实例用 session_spawn 派生或 session_wake 恢复并接管的空闲子会话。",
         "关闭会归档并释放会话，不删除历史；不能关闭普通用户会话、其他实例持有的会话或正在执行的会话。",
         "若 session_spawn 使用 auto_close=true，本实例内 session_send 的首个 expect_result=true 任务回传后会自动完成此操作；跨进程任务需手动关闭。",
     ].join(""),
@@ -234,7 +247,7 @@ const sessionCloseTool: ExecutableTool = {
     inputSchema: {
         type: "object",
         properties: {
-            session: { type: "string", description: "session_spawn 返回的完整 id 或末几位 id" },
+            session: { type: "string", description: "session_spawn/session_wake 返回的完整 id 或末几位 id" },
         },
         required: ["session"],
     },
@@ -251,6 +264,100 @@ const sessionCloseTool: ExecutableTool = {
         const result = await control.closeSpawnedSession(resolved.sessionId);
         if (!result.ok) return err(result.error);
         return ok(`已归档并关闭子会话 ${shortId(resolved.sessionId)}；历史保留，可从会话面板重新打开。`);
+    },
+};
+
+const sessionCancelTool: ExecutableTool = {
+    name: "session_cancel",
+    description: [
+        "向本实例派生或唤醒后接管的子会话发送取消信号，并等待当前 turn 完成收尾。",
+        "close=true 时，收尾后归档并释放会话（保留历史）；默认只取消当前任务，子会话继续保持打开。",
+        "只能取消本实例持有且正在运行的子会话；其他实例的会话不能被本地强制中止。",
+    ].join(""),
+    tags: ["chat"],
+    sessionScoped: true,
+    inputSchema: {
+        type: "object",
+        properties: {
+            session: { type: "string", description: "session_spawn/session_wake 返回的完整 id 或末几位 id" },
+            close: { type: "boolean", description: "中止并等待收尾后归档、释放子会话；默认 false" },
+        },
+        required: ["session"],
+    },
+    execute: async (args: SessionCancelArgs) => {
+        const control = getSessionControl();
+        if (!control) return err("会话间通信未启用");
+        if (!args.__sessionId) return err("session_cancel 需要会话上下文（缺少 __sessionId）");
+
+        const target = (args.session ?? "").trim();
+        if (!target) return err("session 必填：填子会话 id");
+        const resolved = await resolveSessionId(target);
+        if (!resolved.ok) return err(resolved.error);
+
+        const result = await control.cancelSpawnedSession(resolved.sessionId, { close: args.close === true });
+        if (!result.ok) return err(result.error);
+        return ok(result.closed
+            ? `已取消并归档子会话 ${shortId(resolved.sessionId)}；历史保留。`
+            : `已取消子会话 ${shortId(resolved.sessionId)} 的当前任务；会话仍保持打开，可继续用 session_send。`);
+    },
+};
+
+const sessionWakeTool: ExecutableTool = {
+    name: "session_wake",
+    description: [
+        "唤醒已归档的会话：取消归档并由本实例认领，使其可以继续接收 session_send。",
+        "可选提供 text，唤醒后立即发送为新的用户输入并期望结果回传；任务完成后默认重新归档。",
+        "close=false 时任务完成后保持打开；不提供 text 时只恢复会话并保持打开，后续可用 session_send。",
+        "仅限本地 TUI 会话目录中的归档会话；其他实例仍持有或正在运行时不会强行接管。",
+    ].join(""),
+    tags: ["chat"],
+    sessionScoped: true,
+    inputSchema: {
+        type: "object",
+        properties: {
+            session: { type: "string", description: "归档会话的完整 id 或末几位 id" },
+            text: { type: "string", description: "可选：恢复后立即作为新的用户输入发送" },
+            close: {
+                type: "boolean",
+                description: "有 text 时，收到任务结果后是否自动重新归档（默认 true）",
+            },
+        },
+        required: ["session"],
+    },
+    execute: async (args: SessionWakeArgs) => {
+        const control = getSessionControl();
+        if (!args.__sessionId) return err("session_wake 需要会话上下文（缺少 __sessionId）");
+        if (!control) return err("会话间通信未启用");
+        const target = (args.session ?? "").trim();
+        if (!target) return err("session 必填：填要恢复的归档会话 id");
+
+        const directory = getSessionDirectory();
+        if (!directory?.wake) return err("当前环境未提供唤醒归档会话的能力（仅在 TUI 内可用）");
+        const resolved = await resolveSessionId(target, { includeArchived: true });
+        if (!resolved.ok) return err(resolved.error);
+
+        try {
+            await directory.wake(resolved.sessionId);
+        } catch (error) {
+            return err(`唤醒会话失败：${(error as Error)?.message ?? error}`);
+        }
+
+        const text = (args.text ?? "").trim();
+        if (!text) return ok(`已唤醒并认领会话 ${shortId(resolved.sessionId)}；用 session_send 继续工作。`);
+
+        try {
+            const message = await control.send(args.__sessionId, resolved.sessionId, text, {
+                expectResult: true,
+                ...(args.close !== false ? { closeOnResult: true } : {}),
+            });
+            return ok([
+                `已唤醒会话 ${shortId(resolved.sessionId)} 并发送输入（msgId=${message.id}）。`,
+                "任务结果稍后会自动回传。",
+                ...(args.close === false ? ["收到结果后会话保持打开。"] : ["收到结果后会自动重新归档。"]),
+            ].join("\n"));
+        } catch (error) {
+            return err(`会话已唤醒，但发送输入失败：${(error as Error)?.message ?? error}`);
+        }
     },
 };
 
@@ -282,7 +389,7 @@ async function describeAll(
         summary.push(
             "",
             `等待别人回传的结果：${awaiting} 条 · 已就绪待附加：${queued} 条`,
-            `本实例派生的子会话：${control.spawnedCount}/${MAX_SPAWNED_SESSIONS}`,
+            `本实例管理的子会话：${control.spawnedCount}/${MAX_SPAWNED_SESSIONS}`,
         );
         if (includeResult) summary.push(...(await recentResultLines(caller)));
     }
@@ -334,11 +441,12 @@ async function recentResultLines(sessionId: string): Promise<string[]> {
 /** 把末几位 id 补全为完整会话 id；匹配不到时用原文（可能是尚未列入目录的会话）。 */
 async function resolveSessionId(
     input: string,
+    options: { includeArchived?: boolean } = {},
 ): Promise<{ ok: true; sessionId: string } | { ok: false; error: string }> {
     const directory = getSessionDirectory();
     if (!directory) return { ok: true, sessionId: input };
 
-    const entries = await directory.list();
+    const entries = await directory.list({ includeArchived: options.includeArchived === true });
     const exact = entries.find(entry => entry.sessionId === input);
     if (exact) return { ok: true, sessionId: exact.sessionId };
 
@@ -357,7 +465,14 @@ function shortId(sessionId: string): string {
     return sessionId.length > 8 ? sessionId.slice(-8) : sessionId;
 }
 
-export const SESSION_TOOLS: ExecutableTool[] = [sessionSpawnTool, sessionSendTool, sessionStatusTool, sessionCloseTool];
+export const SESSION_TOOLS: ExecutableTool[] = [
+    sessionSpawnTool,
+    sessionSendTool,
+    sessionStatusTool,
+    sessionCloseTool,
+    sessionCancelTool,
+    sessionWakeTool,
+];
 
 // 注册到工具目录供 executeMcpTool 查找；sessionScoped 保证默认不下发
 toolCatalog.registerLocalTools(SESSION_TOOLS);

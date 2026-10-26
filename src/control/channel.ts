@@ -60,6 +60,8 @@ export interface SessionControlHost {
     onSessionSpawned(sessionId: string, title?: string): void;
     /** 归档并释放本实例派生的子会话；归档保留历史，不执行删除。 */
     archiveSpawnedSession?(sessionId: string, automatic: boolean): Promise<void>;
+    /** 中止本实例管理的子会话；close=true 时等待当前 turn 收尾后归档并释放。 */
+    cancelSpawnedSession?(sessionId: string, close: boolean): Promise<boolean>;
     /**
      * 原子受理一条入站消息：抢不到互斥则返回 false（通道据此回 busy，且不落任何事实）。
      * 实现方负责落盘与启动回合；回合结束后调用 completeInbound 回传结果。
@@ -93,15 +95,17 @@ const DEFAULT_MAX_RESULTS_PER_SESSION = 50;
 /** 结果暂存上限：对端一直不来取时避免内存无限增长。 */
 const MAX_RESULT_STASH = 200;
 
-/** 本实例同时派生的子会话上限：避免模型无限开子会话把进程压垮。 */
+/** 本实例同时管理的子会话上限：避免模型无限打开子会话把进程压垮。 */
 export const MAX_SPAWNED_SESSIONS = 8;
 
 export class SessionControl {
     private readonly servers = new Map<string, PeerServer>();
-    /** 本实例派生的子会话（含已被别的实例接管或已删除的会在此处随 release 移除）。 */
+    /** 本实例派生或唤醒后接管的子会话；释放后移除。 */
     private readonly spawned = new Set<string>();
     /** 用户选择 auto_close 的子会话：首个期望结果的回合完成后归档。 */
     private readonly autoCloseSpawned = new Set<string>();
+    /** 正在取消后关闭的子会话：拒绝新投递，避免归档与新 turn 竞态。 */
+    private readonly closingSpawned = new Set<string>();
     /** 走本进程内存投递的入站消息 id：完成后直接回给本地请求者，不走 socket。 */
     private readonly localInbound = new Set<string>();
     /** 出站消息台账：一条消息一个状态，替代原先散落的三个容器。 */
@@ -149,13 +153,14 @@ export class SessionControl {
             sessionId,
             {
                 title: () => this.host.title(sessionId),
-                isBusy: () => this.host.isBusy(sessionId),
-                accept: (message) => this.host.accept(message),
+                isBusy: () => this.closingSpawned.has(sessionId) || this.host.isBusy(sessionId),
+                accept: (message) => this.closingSpawned.has(sessionId) ? false : this.host.accept(message),
                 release: () => {
                     if (this.host.isBusy(sessionId)) return false;
                     this.servers.delete(sessionId);
                     this.spawned.delete(sessionId);
                     this.autoCloseSpawned.delete(sessionId);
+                    this.closingSpawned.delete(sessionId);
                     this.host.onReleased(sessionId);
                     return true;
                 },
@@ -194,6 +199,7 @@ export class SessionControl {
     release(sessionId: string): void {
         this.spawned.delete(sessionId);
         this.autoCloseSpawned.delete(sessionId);
+        this.closingSpawned.delete(sessionId);
         const server = this.servers.get(sessionId);
         if (!server) return;
 
@@ -208,6 +214,15 @@ export class SessionControl {
         return this.spawned.size;
     }
 
+    isSpawnedSession(sessionId: string): boolean {
+        return this.spawned.has(sessionId);
+    }
+
+    forgetSpawnedSession(sessionId: string): void {
+        this.spawned.delete(sessionId);
+        this.autoCloseSpawned.delete(sessionId);
+    }
+
     /**
      * 派生一个子会话并立即认领：只负责建会话，派活由调用方随后 send。
      * 子会话继承父会话的工作目录；数量受 MAX_SPAWNED_SESSIONS 限制。
@@ -220,7 +235,7 @@ export class SessionControl {
         if (this.spawned.size >= MAX_SPAWNED_SESSIONS) {
             return {
                 ok: false,
-                error: `本实例派生的子会话已达上限（${MAX_SPAWNED_SESSIONS} 个），请先让用户清理不再需要的子会话`,
+                    error: `本实例管理的子会话已达上限（${MAX_SPAWNED_SESSIONS} 个），请先关闭不再需要的子会话`,
             };
         }
 
@@ -246,7 +261,7 @@ export class SessionControl {
         options: { automatic?: boolean } = {},
     ): Promise<{ ok: true } | { ok: false; error: string }> {
         if (!this.spawned.has(sessionId)) {
-            return { ok: false, error: "只能关闭本实例派生且仍由本实例持有的子会话" };
+            return { ok: false, error: "只能关闭本实例派生或唤醒后接管且仍由本实例持有的子会话" };
         }
         if (this.host.isBusy(sessionId)) {
             return { ok: false, error: `子会话 ${sessionId} 正在执行，完成后再关闭` };
@@ -255,14 +270,67 @@ export class SessionControl {
             return { ok: false, error: "当前宿主未提供子会话归档能力" };
         }
 
+        this.closingSpawned.add(sessionId);
         try {
             await this.host.archiveSpawnedSession(sessionId, options.automatic === true);
             this.spawned.delete(sessionId);
             this.autoCloseSpawned.delete(sessionId);
             return { ok: true };
         } catch (error) {
+            this.closingSpawned.delete(sessionId);
             return { ok: false, error: `归档子会话失败：${(error as Error)?.message ?? error}` };
         }
+    }
+
+    /** 中止本实例管理的子会话；可选等 turn 收尾后归档。 */
+    async cancelSpawnedSession(
+        sessionId: string,
+        options: { close?: boolean } = {},
+    ): Promise<{ ok: true; closed: boolean } | { ok: false; error: string }> {
+        if (!this.spawned.has(sessionId)) {
+            return { ok: false, error: "只能取消本实例派生或唤醒后接管的子会话" };
+        }
+        if (!this.host.cancelSpawnedSession) {
+            return { ok: false, error: "当前宿主未提供子会话取消能力" };
+        }
+
+        const shouldClose = options.close === true;
+        if (shouldClose) this.closingSpawned.add(sessionId);
+        try {
+            const cancelled = await this.host.cancelSpawnedSession(sessionId, shouldClose);
+            if (!cancelled) {
+                if (shouldClose) this.closingSpawned.delete(sessionId);
+                return { ok: false, error: `子会话 ${sessionId} 当前没有可取消的运行中任务` };
+            }
+            if (shouldClose) {
+                this.spawned.delete(sessionId);
+                this.autoCloseSpawned.delete(sessionId);
+            }
+            return { ok: true, closed: shouldClose };
+        } catch (error) {
+            if (shouldClose) this.closingSpawned.delete(sessionId);
+            return { ok: false, error: `取消子会话失败：${(error as Error)?.message ?? error}` };
+        }
+    }
+
+    /** 唤醒已归档会话后，将其纳入本实例可安全关闭的子会话集合。 */
+    adoptSpawnedSession(sessionId: string): boolean {
+        if (!this.servers.has(sessionId)) return false;
+        if (this.spawned.has(sessionId)) return true;
+        if (this.spawned.size >= MAX_SPAWNED_SESSIONS) return false;
+        this.spawned.add(sessionId);
+        return true;
+    }
+
+    /** 唤醒事务期间暂时拒绝消息，直到认领与取消归档都完成。 */
+    beginSessionWake(sessionId: string): boolean {
+        if (this.closingSpawned.has(sessionId)) return false;
+        this.closingSpawned.add(sessionId);
+        return true;
+    }
+
+    endSessionWake(sessionId: string): void {
+        this.closingSpawned.delete(sessionId);
     }
 
     probe(sessionId: string): Promise<PeerOwnership> {
@@ -283,9 +351,12 @@ export class SessionControl {
         from: string,
         to: string,
         text: string,
-        options: { expectResult?: boolean; replyTo?: string } = {},
+        options: { expectResult?: boolean; replyTo?: string; closeOnResult?: boolean } = {},
     ): Promise<PeerMessage> {
         if (from === to) throw new PeerSendFailure("internal", "不能给自己发消息");
+        if (this.closingSpawned.has(to)) {
+            throw new PeerSendFailure("busy", `会话 ${to} 正在取消/关闭，请稍后重试`);
+        }
 
         const message = createPeerMessage({
             from,
@@ -293,6 +364,7 @@ export class SessionControl {
             text,
             ...(options.replyTo ? { replyTo: options.replyTo } : {}),
             ...(options.expectResult ? { expectResult: true } : {}),
+            ...(options.closeOnResult ? { closeOnResult: true } : {}),
         });
 
         if (message.expectResult) {
@@ -337,7 +409,7 @@ export class SessionControl {
         if (this.localInbound.delete(message.id)) {
             if (!message.expectResult) return;
             const delivered = this.handleRemoteResult(sessionId, result);
-            if (delivered) this.autoCloseAfterResult(sessionId, message);
+            if (delivered) this.autoCloseAfterResult(sessionId, message, result);
             return;
         }
 
@@ -424,6 +496,7 @@ export class SessionControl {
         this.servers.clear();
         this.spawned.clear();
         this.autoCloseSpawned.clear();
+        this.closingSpawned.clear();
         // 未兑现的等待一律以 aborted 结束，避免悬挂 Promise
         for (const entry of this.outbox.awaitingEntries()) {
             const waiter = entry.waiter;
@@ -515,8 +588,9 @@ export class SessionControl {
     }
 
     /** 仅对本进程内存投递的期望结果自动归档；跨进程推送没有 ACK，不可据 write 成功关闭。 */
-    private autoCloseAfterResult(sessionId: string, message: PeerMessage): void {
-        if (!message.expectResult || !this.autoCloseSpawned.has(sessionId)) return;
+    private autoCloseAfterResult(sessionId: string, message: PeerMessage, result: PeerResult): void {
+        if (!message.expectResult || (!message.closeOnResult && !this.autoCloseSpawned.has(sessionId))
+            || ["aborted", "interrupted", "cancelled"].includes(result.stopReason)) return;
         void this.closeSpawnedSession(sessionId, { automatic: true }).then(result => {
             if (!result.ok) console.warn(`⚠️ [SessionControl] 自动归档子会话失败: ${result.error}`);
         });

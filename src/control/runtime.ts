@@ -20,11 +20,14 @@ export function getSessionControl(): SessionControl | undefined {
 interface SessionDirectoryEntry {
     sessionId: string;
     title?: string;
+    archived?: boolean;
 }
 
 /** 会话目录：由宿主注入，避免控制层反向依赖 TUI 的会话管理。 */
 export interface SessionDirectory {
-    list(): Promise<SessionDirectoryEntry[]>;
+    list(options?: { includeArchived?: boolean }): Promise<SessionDirectoryEntry[]>;
+    /** 重新认领并取消归档一个已关闭会话。 */
+    wake?(sessionId: string): Promise<void>;
 }
 
 let activeDirectory: SessionDirectory | undefined;

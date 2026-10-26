@@ -354,6 +354,7 @@ export function buildExtraToolsSection(preface?: string): string {
         parts.push(preface);
     }
     parts.push(`共有 ${allTools.length} 个可用工具，所有非会话工具都已在 tools 参数中声明，可直接调用。${lines ? `\n${lines}` : ""}`);
+    parts.push("需要发现工具时调用 search_tools，传入独立的 keywords 列表（例如 [\"hello\", \"world\"]），不要写成 [\"hello world\"]。");
     return parts.join("\n\n");
 }
 
