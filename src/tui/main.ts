@@ -8,6 +8,7 @@ import path from "path";
 import { configureTuiHostEnvironment, redirectTuiLogsToFile } from "./runtime-context.js";
 import { herdrReporter } from "./herdr-reporter.js";
 import { officialDeepSeekCostYuan } from "../pricing/deepseek.js";
+import { isPrintCliInvocation } from "../cli/print.js";
 import type { ChatApp } from "./app.js";
 
 const DEFAULT_ENV_FILE = path.join(os.homedir(), ".zbot", "env");
@@ -121,8 +122,21 @@ async function startChatApp(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-    installGlobalErrorGuards();
     const cliArgs = process.argv.slice(2);
+    if (isPrintCliInvocation(cliArgs)) {
+        try {
+            const { runPrintCli } = await import("../cli/print.js");
+            await runPrintCli(cliArgs);
+        } catch (error: any) {
+            process.stderr.write(`${error?.message ?? error}\n`);
+            process.exitCode = error?.name === "AbortError"
+                ? (process.exitCode === 143 ? 143 : 130)
+                : (process.exitCode === 143 ? 143 : 1);
+        }
+        return;
+    }
+
+    installGlobalErrorGuards();
     if (cliArgs[0] === "mcp") {
         try {
             const { runMcpCli } = await import("../mcp/cli.js");

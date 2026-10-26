@@ -221,6 +221,7 @@ export interface ChatRunOptions {
     userId: number;
     sessionId?: string;
     modelSelection?: ChatModelSelection;
+    modelOverride?: string;
     contextEpochId?: string;
     initialRequestKind?: Exclude<LLMRequestKind, 'tool_response'>;
     signal?: AbortSignal;
@@ -475,6 +476,7 @@ export function buildConversationHistory(
 
 export async function runChatQuery(options: ChatRunOptions) {
     const settings = getChatApiSettings(options.modelSelection);
+    if (options.modelOverride?.trim()) settings.model = options.modelOverride.trim();
     const settingsError = validateChatApiSettings(settings);
     if (settingsError) {
         throw new Error(`LLM provider 配置无效：${settingsError}`);
