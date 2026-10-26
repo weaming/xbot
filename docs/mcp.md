@@ -45,6 +45,8 @@ mcpServers:
 
 每个服务还可设置 `disabled`、`includeTools`、`excludeTools`、`prefix`、`rename` 和 `tags` 来控制启用状态、工具筛选、命名和分组。`defer: true` 会在 `OPENAI_RESPONSES_HOSTED_TOOLS` 含 `tool_search` 时，把该 MCP 服务的 Responses 工具定义标记为 `defer_loading: true`，由上游托管的 `tool_search` 按需发现；本地 MCP 执行器仍负责执行实际工具调用。需要 OAuth 的 HTTP 服务可设置 `oauth: true`；授权凭据会写入 `~/.xbot/mcp-auth/`。
 
+工具名默认加 `<服务名>__` 前缀（如服务 `LongPort` 的 `quote` → `LongPort__quote`），因为不同服务的同名工具在目录里会互相顶掉：同名的那一个会被跳过并在日志里提示 `Skipped conflicting tools`，而不是覆盖。`prefix` 可改前缀，`rename` 优先级最高；显式设置 `prefix: ""` 可关闭默认前缀。
+
 托管工具只在 Responses 协议声明，形状保持 OpenAI 官方最小写法（`{"type":"web_search"}`、`{"type":"tool_search"}`）。DeepSeek 兼容端只托管 `web_search`；模型名同时含 `deepseek` 与 `flash` 时（上游会忽略联网搜索）以及其他类型本地直接丢弃，`defer: true` 随之失效。
 
 运行 TUI 后，可使用 `/mcp` 查看 MCP 连接状态。

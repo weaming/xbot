@@ -192,7 +192,8 @@ describe("mcp oauth 端到端", () => {
             await new Promise((resolve) => setTimeout(resolve, 100));
         }
 
-        expect(toolCatalog.listRemoteTools().filter((tool) => tool.fromServer === "mock-oauth").map((tool) => tool.name)).toEqual(["echo"]);
+        expect(toolCatalog.listRemoteTools().filter((tool) => tool.fromServer === "mock-oauth").map((tool) => tool.name))
+            .toEqual(["mock-oauth__echo"]);
         expect(notices.some((notice) => notice.level === "info" && /授权成功/.test(notice.text))).toBe(true);
         expect(getMcpServersStatus().find((item) => item.name === "mock-oauth")?.status).toBe("connected");
 

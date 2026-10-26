@@ -208,8 +208,8 @@ async function syncServerToolsInternal(ctx: McpClientContext): Promise<void> {
     const result = await client.listTools();
     const rawTools = result.tools || [];
 
-    // 应用过滤器 (includeTools, excludeTools, prefix, rename)
-    const filteredTools = filterAndTransformTools(rawTools, serverConfig);
+    // 应用过滤器 (includeTools, excludeTools, prefix, rename)，未配 prefix 时加 `<server>__` 前缀
+    const filteredTools = filterAndTransformTools(rawTools, serverConfig, serverName);
 
     const proxyTools = filteredTools.map(({ rawName, toolDef }) =>
         buildProxyToolFromRemoteDefinition({

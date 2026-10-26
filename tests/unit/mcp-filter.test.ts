@@ -34,6 +34,25 @@ describe("mcp filter", () => {
         ]);
     });
 
+    test("传 serverName 时默认加 `<server>__` 前缀，避免不同 server 同名工具互顶", () => {
+        const tools: RawRemoteToolDef[] = [{ name: "quote", inputSchema: {} }];
+
+        expect(filterAndTransformTools(tools, undefined, "LongPort")[0])
+            .toEqual({ rawName: "quote", toolDef: { name: "LongPort__quote", inputSchema: {} } });
+        // 已带同名前缀不重复添加
+        expect(filterAndTransformTools(
+            [{ name: "LongPort__quote", inputSchema: {} }],
+            undefined,
+            "LongPort",
+        )[0].toolDef.name).toBe("LongPort__quote");
+        // server 名里的非法字符替换为下划线
+        expect(filterAndTransformTools(tools, undefined, "my.server")[0].toolDef.name).toBe("my_server__quote");
+        // 显式 prefix 覆盖默认前缀，rename 优先级最高
+        expect(filterAndTransformTools(tools, { prefix: "lp_" }, "LongPort")[0].toolDef.name).toBe("lp_quote");
+        expect(filterAndTransformTools(tools, { rename: { quote: "get_quote" } }, "LongPort")[0].toolDef.name)
+            .toBe("get_quote");
+    });
+
     test("filterAndTransformTools 支持白名单 includeTools", () => {
         const tools: RawRemoteToolDef[] = [
             { name: "take_screenshot", inputSchema: {} },

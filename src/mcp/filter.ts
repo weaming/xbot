@@ -28,6 +28,16 @@ export interface FilteredToolDef {
 }
 
 /**
+ * 默认前缀 `<serverName>__`：不同 server 的同名工具在 catalog 里会互相顶掉（后来者被跳过），
+ * 加前缀让每个 server 独占自己的命名空间。名字只保留 OpenAI function 允许的字符。
+ */
+function defaultToolPrefix(serverName?: string): string {
+    const name = (serverName ?? "").trim();
+    if (!name) return "";
+    return `${name.replace(/[^a-zA-Z0-9_-]/g, "_")}__`;
+}
+
+/**
  * 匹配工具名称与 pattern
  * 支持:
  * 1. 精确匹配: "quote"
@@ -74,12 +84,11 @@ export function matchToolPattern(pattern: string, toolName: string): boolean {
 export function filterAndTransformTools(
     tools: RawRemoteToolDef[],
     filterConfig?: ToolFilterConfig,
+    serverName?: string,
 ): FilteredToolDef[] {
-    if (!filterConfig) {
-        return tools.map((tool) => ({ rawName: tool.name, toolDef: tool }));
-    }
-
-    const { includeTools, excludeTools, prefix, rename } = filterConfig;
+    const { includeTools, excludeTools, prefix, rename } = filterConfig ?? {};
+    // 显式 prefix 覆盖默认前缀；两者都没有（未传 serverName）时保持原名。
+    const effectivePrefix = prefix ?? defaultToolPrefix(serverName);
     const results: FilteredToolDef[] = [];
 
     for (const tool of tools) {
@@ -101,8 +110,8 @@ export function filterAndTransformTools(
         let newName = rawName;
         if (rename && rename[rawName]) {
             newName = rename[rawName];
-        } else if (prefix && !newName.startsWith(prefix)) {
-            newName = `${prefix}${newName}`;
+        } else if (effectivePrefix && !newName.startsWith(effectivePrefix)) {
+            newName = `${effectivePrefix}${newName}`;
         }
 
         results.push({

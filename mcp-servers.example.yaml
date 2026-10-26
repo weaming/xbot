@@ -12,7 +12,8 @@ mcpServers:
   remote-tools:
     type: http
     url: '${MCP_REMOTE_URL}'
-    # With OPENAI_HOSTED_TOOLS=tool_search, expose these MCP tools as deferred.
+    # Tool names default to "<serverName>__<toolName>"; set prefix: "" to opt out.
+    # With OPENAI_RESPONSES_HOSTED_TOOLS=tool_search, expose these MCP tools as deferred.
     defer: true
     headers:
       Authorization: 'Bearer ${MCP_REMOTE_TOKEN}'
