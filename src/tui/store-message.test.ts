@@ -5,8 +5,6 @@ import {
     createMessage,
     findLastTextItem,
     insertMessage,
-    isEmptyArgs,
-    renderToolBlock,
     syncTimelineFinalText,
 } from "./store-message.js";
 import type { AssistantTimelineItem, ToolBlock, UiMessage } from "./store-types.js";
@@ -216,42 +214,3 @@ describe("syncTimelineFinalText", () => {
     });
 });
 
-describe("renderToolBlock", () => {
-    test("折叠态显示结果状态图标，参数分行", () => {
-        const block = blockOf({ args: '{"path":"a.ts"}', result: "ok" });
-        renderToolBlock(block);
-
-        expect(block.text.split("\n")).toEqual(["🔧 read ✅", '{"path":"a.ts"}']);
-    });
-
-    test("折叠态错误结果用 ❌，空参数不占行", () => {
-        const block = blockOf({ args: "{}", result: "boom", isError: true });
-        renderToolBlock(block);
-
-        expect(block.text).toBe("🔧 read ❌");
-    });
-
-    test("折叠态未出结果时不带图标", () => {
-        const block = blockOf();
-        renderToolBlock(block);
-
-        expect(block.text).toBe("🔧 read");
-    });
-
-    test("展开态标题内联参数，结果换行", () => {
-        const block = blockOf({ args: '{"path":"a.ts"}', result: "ok", expanded: true });
-        renderToolBlock(block);
-
-        expect(block.text.split("\n")).toEqual(["🔧 read {\"path\":\"a.ts\"}", "ok"]);
-    });
-});
-
-describe("isEmptyArgs", () => {
-    test("未设置 / 空串 / 空对象 / 空数组视为空", () => {
-        expect(isEmptyArgs()).toBe(true);
-        expect(isEmptyArgs("")).toBe(true);
-        expect(isEmptyArgs("{}")).toBe(true);
-        expect(isEmptyArgs("[]")).toBe(true);
-        expect(isEmptyArgs("null")).toBe(false);
-    });
-});

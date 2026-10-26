@@ -74,6 +74,8 @@ export const isTimestampInRange = (value: string | undefined, range: ShanghaiDat
 };
 
 /**
+ * 格式化「人类可读的近似耗时」，服务于状态栏等需要稳定宽度的场景
+ * （工具块的精确耗时用下面的 formatGoDuration）：
  * 格式化耗时（进位为时分秒，>=60s 时秒取整）：
  * - < 60s: 保留一位小数秒（如 "0.5s", "12.3s", "59.9s"）
  * - >= 60s 且 < 3600s: 进位分秒，秒取整（如 "1m 0s", "1m 23s"）
@@ -93,6 +95,34 @@ export const formatElapsedDuration = (durationMs: number): string => {
         return `${hours}h${minutes}m${seconds}s`;
     }
     return `${minutes}m${seconds}s`;
+};
+
+/**
+ * Go time.Duration 风格的单段耗时（最小单位毫秒，按需进位到天）：
+ * - < 1s: "850ms"
+ * - < 1m: "1.234s" / "1s"（小数部分去掉尾随 0）
+ * - < 1h: "1m1.234s" / "1m1s"
+ * - < 24h: "2h3m4s"
+ * - 及以上: "1d2h3m4s"
+ */
+export const formatGoDuration = (durationMs: number): string => {
+    const ms = Number.isFinite(durationMs) ? Math.max(0, Math.round(durationMs)) : 0;
+    if (ms < 1000) return `${ms}ms`;
+
+    const totalSeconds = Math.floor(ms / 1000);
+    const fractionMs = ms - totalSeconds * 1000;
+    const secondsText = fractionMs === 0
+        ? String(totalSeconds % 60)
+        : `${totalSeconds % 60}.${String(fractionMs).padStart(3, '0').replace(/0+$/, '')}`;
+
+    if (totalSeconds < 60) return `${secondsText}s`;
+
+    const minutes = Math.floor(totalSeconds / 60) % 60;
+    const hours = Math.floor(totalSeconds / 3600) % 24;
+    const days = Math.floor(totalSeconds / 86400);
+    if (days > 0) return `${days}d${hours}h${minutes}m${secondsText}s`;
+    if (hours > 0) return `${hours}h${minutes}m${secondsText}s`;
+    return `${minutes}m${secondsText}s`;
 };
 
 /** 返回香港时区的时间字符串，格式 HH:mm:ss */

@@ -68,8 +68,13 @@ export interface ToolBlock {
     args?: string;
     result?: string;
     isError?: boolean;
+    /** 执行耗时（ms）：来自 tool_result 事件或落盘的工具消息，重放旧数据时可能缺失。 */
+    durationMs?: number;
+    /** 执行起始时刻（ms epoch）：仅实时运行中的块有值，用于取消时结算已运行时间。 */
+    startedAt?: number;
+    /** 用户在工具执行期间中止了回合：块没有结果，状态显示为已取消。 */
+    cancelled?: boolean;
     expanded: boolean;
-    text: string;
 }
 
 export interface SessionView {

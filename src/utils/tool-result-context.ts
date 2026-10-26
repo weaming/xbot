@@ -36,10 +36,12 @@ function getMaxCharacterCount(characters: string[], tokenLimit: number): number 
     return lower;
 }
 
-function stripContextPolicy(message: ChatMessage): ChatMessage {
-    if (message.role !== 'tool' || !message.contextPolicy) return message;
-    const { contextPolicy: _contextPolicy, ...apiMessage } = message;
-    return apiMessage;
+/** 剥离工具消息的本地元数据（contextPolicy / durationMs），只留上行需要的字段。 */
+function stripToolLocalMetadata(message: ChatMessage): ChatMessage {
+    if (message.role !== 'tool') return message;
+    if (message.contextPolicy === undefined && message.durationMs === undefined) return message;
+    const { contextPolicy: _contextPolicy, durationMs: _durationMs, ...apiMessage } = message;
+    return apiMessage as ChatMessage;
 }
 
 /** 仅对超大工具结果做稳定的头尾投影，不改变原始消息。 */
@@ -48,17 +50,17 @@ export function projectToolMessageForPrompt(
     options: ToolResultProjectionOptions = {},
 ): ChatMessage {
     if (message.role !== 'tool' || message.contextPolicy?.mode === 'full') {
-        return stripContextPolicy(message);
+        return stripToolLocalMetadata(message);
     }
     // 已投影过的内容不再重复投影（防御 threshold < head+tail 等极端配置下的嵌套省略）
     if (message.content.startsWith(PROJECTION_BANNER_PREFIX)) {
-        return stripContextPolicy(message);
+        return stripToolLocalMetadata(message);
     }
 
     const originalTokens = estimateTextTokens(message.content);
     const thresholdTokens = getPositiveLimit(options.thresholdTokens, TOOL_RESULT_SUMMARY_THRESHOLD_TOKENS);
     if (originalTokens <= thresholdTokens) {
-        return stripContextPolicy(message);
+        return stripToolLocalMetadata(message);
     }
 
     const headTokens = getPositiveLimit(options.headTokens, TOOL_RESULT_SUMMARY_HEAD_TOKENS);
@@ -68,7 +70,7 @@ export function projectToolMessageForPrompt(
     const tailLength = getMaxCharacterCount([...characters].reverse(), tailTokens);
     // 头尾已覆盖全部内容时无需截取，直接返回原文
     if (headLength + tailLength >= characters.length) {
-        return stripContextPolicy(message);
+        return stripToolLocalMetadata(message);
     }
     const tailStart = Math.max(headLength, characters.length - tailLength);
     const head = characters.slice(0, headLength).join('');
@@ -81,8 +83,7 @@ export function projectToolMessageForPrompt(
         tailStart > headLength ? tail : '',
     ].filter(Boolean).join('\n');
 
-    const { contextPolicy: _contextPolicy, ...apiMessage } = message;
-    return { ...apiMessage, content };
+    return { ...stripToolLocalMetadata(message), content } as ChatMessage;
 }
 
 /** 将模型请求中的工具消息统一投影，保留原始数组不变。 */

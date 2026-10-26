@@ -9,6 +9,10 @@ export interface CollapsedToolBlock {
     args?: string;
     result?: string;
     isError?: boolean;
+    /** 执行耗时（ms）：缺失时不显示耗时。 */
+    durationMs?: number;
+    /** 执行中被中止：状态显示为黄色已取消。 */
+    cancelled?: boolean;
 }
 
 /** 单个文件的变更摘要。 */

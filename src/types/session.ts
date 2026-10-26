@@ -27,6 +27,8 @@ export type ChatMessage =
         content: string;
         name?: string;
         contextPolicy?: ToolResultPolicy;
+        /** 执行耗时（ms）：本地渲染元数据，上行前剥离。 */
+        durationMs?: number;
         [key: string]: any;
     }
     | { role: 'system'; content: string };

@@ -69,7 +69,7 @@ describe("ChatStore DeepSeek 费用统计", () => {
 });
 
 describe("ChatStore 工具块", () => {
-    test("展开时保留压缩 JSON，并把工具标题与结果分行", () => {
+    test("展开状态与压缩 JSON 结果都留在块上（渲染由 tool-block-display 负责）", () => {
         const store = new ChatStore();
         store.setCurrentSession("session-1");
 
@@ -94,12 +94,15 @@ describe("ChatStore 工具块", () => {
 
         store.setAllToolBlocksExpanded(true);
 
-        expect(store.getToolBlock(1)?.text).toBe(
-            '🔧 yfinance__quote {"symbols":["TSM"]}\n{"data":{"TSM":{"longName":"Taiwan Semiconductor Manufacturing Company Limited"}}}',
-        );
+        expect(store.getToolBlock(1)).toMatchObject({
+            expanded: true,
+            args: '{"symbols":["TSM"]}',
+            result: '{"data":{"TSM":{"longName":"Taiwan Semiconductor Manufacturing Company Limited"}}}',
+            durationMs: 10,
+        });
     });
 
-    test("展开时保留非 JSON 工具输出", () => {
+    test("展开时块上保留非 JSON 工具输出原文", () => {
         const store = new ChatStore();
         store.setCurrentSession("session-1");
 
@@ -122,7 +125,11 @@ describe("ChatStore 工具块", () => {
 
         store.setAllToolBlocksExpanded(true);
 
-        expect(store.getToolBlock(1)?.text).toBe("🔧 bash\nline 1\nline 2");
+        expect(store.getToolBlock(1)).toMatchObject({
+            expanded: true,
+            result: "line 1\nline 2",
+            durationMs: 1,
+        });
     });
 
     test("同一 turn 的思考、工具和文本按时间线保留顺序", () => {
@@ -231,6 +238,53 @@ describe("ChatStore 工具块", () => {
         const block = store.messages[1]?.toolBlocks?.[0];
         expect(block?.name).toBe("bash");
         expect(block?.result).toBe("结果");
+    });
+
+    test("重放工具块带回耗时，没有结果消息的工具标为取消", () => {
+        const store = new ChatStore();
+        store.setCurrentSession("session-1");
+        store.loadHistory([
+            {
+                seq: 1,
+                ts: "2026-09-08T10:00:00+08:00",
+                sessionId: "session-1",
+                type: "user_message",
+                payload: { text: "跑两个工具", turnId: "T1", trigger: "user" },
+            },
+            {
+                seq: 2,
+                ts: "2026-09-08T10:00:01+08:00",
+                sessionId: "session-1",
+                type: "turn_message",
+                payload: {
+                    turnId: "T1",
+                    message: {
+                        role: "assistant",
+                        content: null,
+                        tool_calls: [
+                            { id: "c1", function: { name: "bash", arguments: '{"command":"ls"}' } },
+                            { id: "c2", function: { name: "bash", arguments: '{"command":"sleep 99"}' } },
+                        ],
+                    },
+                },
+            },
+            {
+                seq: 3,
+                ts: "2026-09-08T10:00:02+08:00",
+                sessionId: "session-1",
+                type: "turn_message",
+                payload: {
+                    turnId: "T1",
+                    message: { role: "tool", tool_call_id: "c1", name: "bash", content: "结果", durationMs: 1234 },
+                },
+            },
+        ] as any);
+
+        const [done, cancelled] = store.messages[1]?.toolBlocks ?? [];
+        expect(done?.durationMs).toBe(1234);
+        expect(done?.cancelled).toBeUndefined();
+        expect(cancelled?.result).toBeUndefined();
+        expect(cancelled?.cancelled).toBe(true);
     });
 
     test("多个未闭合回合都能从时间线恢复", () => {

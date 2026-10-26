@@ -28,7 +28,7 @@ export function openExternalUrl(rawUrl: string): void {
 export function collectCollapsedFileBlocks(
     timeline: AssistantTimelineItem[],
     startIndex: number,
-): Array<{ name?: string; args?: string; result?: string; isError?: boolean }> {
+): Array<{ name?: string; args?: string; result?: string; isError?: boolean; durationMs?: number }> {
     const first = timeline[startIndex];
     if (
         first?.type !== "tool"
@@ -37,7 +37,13 @@ export function collectCollapsedFileBlocks(
         || first.block.isError
     ) return [];
 
-    const blocks = [{ name: first.block.name, args: first.block.args, result: first.block.result, isError: first.block.isError }];
+    const blocks = [{
+        name: first.block.name,
+        args: first.block.args,
+        result: first.block.result,
+        isError: first.block.isError,
+        ...(first.block.durationMs === undefined ? {} : { durationMs: first.block.durationMs }),
+    }];
     for (let index = startIndex + 1; index < timeline.length; index++) {
         const item = timeline[index];
         if (
@@ -46,7 +52,13 @@ export function collectCollapsedFileBlocks(
             || item.block.result === undefined
             || item.block.isError
         ) break;
-        blocks.push({ name: item.block.name, args: item.block.args, result: item.block.result, isError: item.block.isError });
+        blocks.push({
+            name: item.block.name,
+            args: item.block.args,
+            result: item.block.result,
+            isError: item.block.isError,
+            ...(item.block.durationMs === undefined ? {} : { durationMs: item.block.durationMs }),
+        });
     }
     return blocks;
 }

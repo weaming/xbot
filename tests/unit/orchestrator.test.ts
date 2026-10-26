@@ -154,6 +154,8 @@ describe("Chat Orchestrator", () => {
       name: "unavailable_tool",
       content: "executed",
     });
+    // 耗时只是本地渲染元数据，不随请求上行
+    expect(requests[1].messages.at(-1)).not.toHaveProperty("durationMs");
     expect(result.messages).toEqual([
       {
         role: "assistant",
@@ -168,6 +170,7 @@ describe("Chat Orchestrator", () => {
         tool_call_id: "call_unavailable",
         name: "unavailable_tool",
         content: "executed",
+        durationMs: expect.any(Number),
       },
       { role: "assistant", content: "done" },
     ]);
@@ -577,6 +580,7 @@ describe("Chat Orchestrator", () => {
         tool_call_id: "call_compact",
         name: "large_tool",
         content: "很大的工具结果",
+        durationMs: expect.any(Number),
       },
       { role: "assistant", content: "done" },
     ]);

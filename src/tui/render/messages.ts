@@ -72,9 +72,15 @@ export function messageRenderKey(message: UiMessage, ctx: RenderContext): string
         const waiting = message.streaming && timeline.length === 0
             ? `|s${ctx.spinnerIndex % SPINNER_FRAMES.length}`
             : "";
-        // 工具块状态：result/expanded 就绪后 timeline 长度不变，须单列指纹
+        // 工具块状态：result/expanded/耗时/取消就绪后 timeline 长度不变，须单列指纹
         const tools = (message.toolBlocks ?? [])
-            .map(block => `${block.id}:${block.expanded ? 1 : 0}:${block.result === undefined ? 0 : block.result.length}`)
+            .map(block => [
+                block.id,
+                block.expanded ? 1 : 0,
+                block.result === undefined ? 0 : block.result.length,
+                block.durationMs ?? -1,
+                block.cancelled ? 1 : 0,
+            ].join(":"))
             .join(",");
         // 来源清单只随事件一次性到达，但长度变化要能触发重绘
         const sources = timeline.reduce((count, item) => item.type === "sources" ? count + item.items.length : count, 0);

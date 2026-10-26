@@ -75,11 +75,14 @@ async function processToolCall(
         toolOutput = compactJsonToolOutput(toolOutput, toolCall.name);
     }
 
+    // 耗时随工具消息落盘（本地渲染元数据，上行前会被剥离），会话重开后仍能显示
+    const durationMs = Date.now() - toolStartedAt;
     const toolMessage: ChatMessage = {
         role: "tool",
         tool_call_id: toolCall.id,
         name: toolCall.name,
         content: toolOutput,
+        durationMs,
         ...(toolContextPolicy ? { contextPolicy: toolContextPolicy } : {}),
         ...(toolImageContent && toolImageContent.length > 0 ? { imageContent: toolImageContent } : {}),
     };
@@ -94,7 +97,7 @@ async function processToolCall(
         name: toolCall.name,
         summary: toolOutput,
         isError: toolFailed,
-        durationMs: Date.now() - toolStartedAt,
+        durationMs,
     });
 }
 

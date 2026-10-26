@@ -1,6 +1,7 @@
 import * as path from "path";
 import { formatToolArguments } from "../utils/tool-progress.js";
 import { getToolCwd } from "../utils/runtime-paths.js";
+import { formatGoDuration } from "../utils/time.js";
 import { CUSTOM_ANSWER_PREFIX, questionLabel } from "../utils/user-question.js";
 import { theme } from "./theme.js";
 import {
@@ -66,6 +67,12 @@ export function formatToolBlockArgs(toolName: string, args?: string): string {
     return [prefix, command.trim()].filter(Boolean).join(" ");
 }
 
+/** 状态后缀只看这些字段：单个工具块与合并的文件变更块都适用。 */
+type BlockStatusInput = Pick<CollapsedToolBlock, "result" | "isError" | "durationMs" | "cancelled">;
+
+/** 文件变更块的最小输入：合并展示时首个块可能没有 name。 */
+type CollapsedFileBlock = Omit<CollapsedToolBlock, "name"> & { name?: string };
+
 /** 折叠态正文占位符。 */
 const COLLAPSED_TEXT_PLACEHOLDER = "...";
 
@@ -73,7 +80,7 @@ const COLLAPSED_TEXT_PLACEHOLDER = "...";
 const COLLAPSED_LONG_TEXT_TOOLS = new Set(["session_send"]);
 
 /** 折叠态参数行：普通工具走常规格式化，正文类工具只把 text 换成占位符。 */
-export function formatCollapsedToolArgs(toolName: string, args?: string): string {
+function formatCollapsedToolArgs(toolName: string, args?: string): string {
     const rawArgs = args ?? "";
     if (COLLAPSED_LONG_TEXT_TOOLS.has(toolName)) {
         const collapsedArgs = shortenTextArg(rawArgs);
@@ -110,15 +117,36 @@ export function renderCollapsedToolBlock(block: CollapsedToolBlock): string {
         return renderCollapsedFileBlocks([block]);
     }
 
-    const status = block.result === undefined
-        ? ""
-        : block.isError
-            ? ` ${theme.statusBad("❌")}`
-            : ` ${theme.statusOk("✅")}`;
-    const lines = [theme.tool(`🔧 ${block.name}`) + status];
+    const lines = [theme.tool(`🔧 ${block.name}`) + renderToolBlockStatus([block])];
     const argsText = formatCollapsedToolArgs(block.name, block.args);
     if (argsText) lines.push(theme.toolArgs(argsText));
     return lines.join("\n");
+}
+
+/**
+ * 工具块状态后缀：成功绿 / 失败红 / 取消黄，只靠颜色区分，不额外放符号。
+ * 传入多个块时（合并展示的文件变更）耗时取合计，任一块取消或失败即按该状态着色。
+ */
+function renderToolBlockStatus(blocks: BlockStatusInput[]): string {
+    const durations = blocks
+        .map((block) => block.durationMs)
+        .filter((value): value is number => typeof value === "number");
+    const duration = durations.length > 0
+        ? formatGoDuration(durations.reduce((total, value) => total + value, 0))
+        : "";
+    const isCancelled = blocks.some((block) => block.cancelled);
+    const isFailed = blocks.some((block) => block.result !== undefined && block.isError);
+
+    if (isCancelled) return ` ${theme.statusWarn(duration || "已取消")}`;
+    if (isFailed) return ` ${theme.statusBad(duration || "失败")}`;
+    return duration ? ` ${theme.statusOk(duration)}` : "";
+}
+
+/** 把状态后缀贴到首行行尾（文件变更摘要首行是标题）。 */
+function appendStatusToFirstLine(text: string, status: string): string {
+    if (!status) return text;
+    const [firstLine, ...rest] = text.split("\n");
+    return [firstLine + status, ...rest].join("\n");
 }
 
 /** 渲染展开模式的工具块；文件变更工具（edit_file / write_file）无需显示参数。 */
@@ -130,7 +158,7 @@ export function renderExpandedToolBlock(block: CollapsedToolBlock): string {
         return renderCollapsedFileBlocks([block]);
     }
 
-    const lines = [theme.tool(`🔧 ${block.name}`)];
+    const lines = [theme.tool(`🔧 ${block.name}`) + renderToolBlockStatus([block])];
     const formattedArgs = formatToolBlockArgs(block.name, block.args);
     if (formattedArgs) {
         lines.push(theme.toolArgs(formattedArgs));
@@ -212,30 +240,22 @@ export function renderToolBlockResult(toolName: string, result: string, isError 
 }
 
 /** 将多个已完成的文件变更工具块（edit_file/write_file）合并为统一的变更摘要。 */
-export function renderCollapsedFileBlocks(
-    blocks: Array<{ name?: string; args?: string; result?: string; isError?: boolean }>,
-): string {
+export function renderCollapsedFileBlocks(blocks: CollapsedFileBlock[]): string {
     const files = blocks.flatMap((block) => parseFileBlock(block));
     const errors = blocks.filter((block) => block.result !== undefined && block.isError);
+    const status = renderToolBlockStatus(blocks);
 
     if (files.length === 0 && errors.length > 0) {
-        return `${theme.tool("🔧")} ${theme.toolError(errors[0].result ?? "")}`;
+        return appendStatusToFirstLine(`${theme.tool("🔧")} ${theme.toolError(errors[0].result ?? "")}`, status);
     }
     if (files.length === 0) {
         const toolName = blocks[0]?.name ?? "edit_file";
-        return theme.tool(`🔧 ${toolName}`);
+        return theme.tool(`🔧 ${toolName}`) + status;
     }
 
     const isPatch = blocks.length > 0 && blocks.every((b) => isApplyPatchTool(b.name ?? ""));
     const toolTag = isPatch ? getPatchToolTag(blocks[0]?.name ?? "apply_patch") : undefined;
-    return renderEditFileOutput(files, true, toolTag);
-}
-
-/** 保持向后兼容的别名，转调 renderCollapsedFileBlocks。 */
-export function renderCollapsedEditFileBlocks(
-    blocks: Array<{ name?: string; args?: string; result?: string; isError?: boolean }>,
-): string {
-    return renderCollapsedFileBlocks(blocks);
+    return appendStatusToFirstLine(renderEditFileOutput(files, true, toolTag), status);
 }
 
 /** 渲染多文件变更：摘要行 + 每文件的子标题与 diff 行。 */

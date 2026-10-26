@@ -203,6 +203,29 @@ describe("applyAgentEvent 工具块", () => {
         expect(state.messages[0]!.timeline!.some(item => item.type === "tool")).toBe(true);
     });
 
+    test("tool_result 回填耗时；中止时未完成的工具按已运行时间记为取消", () => {
+        const state = createSessionUiState();
+        const { deps } = makeDeps();
+
+        apply(state, deps, 1, { type: "turn_start", iteration: 0 });
+        apply(state, deps, 1, { type: "tool_start", toolId: 1, name: "read", args: {}, mode: "serial" });
+        apply(state, deps, 1, {
+            type: "tool_result", toolId: 1, name: "read", summary: "内容", isError: false, durationMs: 7,
+        });
+        apply(state, deps, 1, { type: "tool_start", toolId: 2, name: "bash", args: { command: "sleep 9" }, mode: "serial" });
+
+        // 模拟第二个工具跑了 2s 后被用户中止
+        const running = state.messages[0]!.toolBlocks![1]!;
+        running.startedAt = Date.now() - 2000;
+        apply(state, deps, 1, { type: "aborted", stopReason: "aborted" });
+
+        const [done, cancelled] = state.messages[0]!.toolBlocks!;
+        expect(done).toMatchObject({ durationMs: 7, cancelled: false });
+        expect(cancelled).toMatchObject({ cancelled: true });
+        expect(cancelled!.durationMs).toBeGreaterThanOrEqual(2000);
+        expect(cancelled!.result).toBeUndefined();
+    });
+
     test("toolId 相同但 requestId 不同时不串块", () => {
         const state = createSessionUiState();
         const { deps } = makeDeps();

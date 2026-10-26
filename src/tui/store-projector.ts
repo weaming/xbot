@@ -13,7 +13,6 @@ import {
     insertMessage,
     composeAbortText,
     interruptLabel,
-    renderToolBlock,
     sortTimelineToolBlocks,
     syncTimelineFinalReasoning,
     syncTimelineFinalText,
@@ -163,9 +162,8 @@ export function applyAgentEvent(
                     name: event.name,
                     args: JSON.stringify(event.args),
                     expanded: false,
-                    text: "",
+                    startedAt: Date.now(),
                 };
-                renderToolBlock(block);
                 assistant.toolBlocks.push(block);
                 assistant.timeline ??= [];
                 assistant.timeline.push({ type: "tool", block });
@@ -186,7 +184,8 @@ export function applyAgentEvent(
             if (block) {
                 block.result = event.summary;
                 block.isError = event.isError;
-                renderToolBlock(block);
+                block.durationMs = event.durationMs;
+                block.cancelled = false;
             }
             if (assistant) {
                 touchAssistant(assistant);
@@ -230,6 +229,12 @@ export function applyAgentEvent(
         case "aborted": {
             const assistant = state.activeAssistant;
             if (assistant) {
+                // 执行中被中止的工具没有结果事件：按其起始时刻结算已运行时间并标为取消
+                for (const block of assistant.toolBlocks ?? []) {
+                    if (block.result !== undefined || block.cancelled) continue;
+                    block.cancelled = true;
+                    if (block.startedAt !== undefined) block.durationMs = Date.now() - block.startedAt;
+                }
                 // 与重放侧同源：按 stopReason 选措辞、按 composeAbortText 拼接，
                 // 避免同一回合中止后实时与重放屏幕上换词或多空行。缺省按中断处理。
                 const label = interruptLabel(event.stopReason);

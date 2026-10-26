@@ -15,7 +15,7 @@ import type { UIEvent } from "../events/ui-events.js";
 import type { AgentEvent } from "../events/agent-events.js";
 import type { UsageInfo } from "../types/chat.js";
 import { sortSessions } from "../utils/session-order.js";
-import { createMessage, insertMessage, renderToolBlock } from "./store-message.js";
+import { createMessage, insertMessage } from "./store-message.js";
 import { applyAgentEvent, type ProjectionDeps } from "./store-projector.js";
 import { projectHistory } from "./store-history.js";
 import {
@@ -236,7 +236,6 @@ export class ChatStore {
         const block = this.findToolBlock(blockId);
         if (!block) return;
         block.expanded = !block.expanded;
-        renderToolBlock(block);
         this.notifyMessages();
     }
 
@@ -247,7 +246,6 @@ export class ChatStore {
         for (const block of this.blocksById.values()) {
             if (block.expanded !== expanded) {
                 block.expanded = expanded;
-                renderToolBlock(block);
                 changed = true;
             }
         }

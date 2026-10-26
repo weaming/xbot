@@ -1,10 +1,9 @@
 /**
- * 消息与工具块原语：id 分配、时间线片段追加、工具块折叠文本渲染。
+ * 消息与工具块原语：id 分配、时间线片段追加。
  * 全部为无状态纯函数，id 由调用方注入的自增序列器提供。
  */
 
-import { formatToolBlockArgs } from "./tool-block-display.js";
-import type { AssistantTimelineItem, ToolBlock, UiMessage } from "./store-types.js";
+import type { AssistantTimelineItem, UiMessage } from "./store-types.js";
 
 /**
  * 回合被中途打断时的收尾措辞：实时投影（store-projector 的 aborted 事件）与重放投影
@@ -71,11 +70,6 @@ export function insertMessage(messages: UiMessage[], message: UiMessage): void {
         else low = mid + 1;
     }
     messages.splice(low, 0, message);
-}
-
-/** 参数为空（未设置 / 空串 / 空对象 {} / 空数组 []）时不展示参数部分。 */
-export function isEmptyArgs(args?: string): boolean {
-    return !args || args === "{}" || args === "[]";
 }
 
 export function appendTimelineText(message: UiMessage, type: "reasoning" | "text", text: string): void {
@@ -188,28 +182,6 @@ export function appendTimelineTextToList(
         return;
     }
     timeline.push(type === "reasoning" ? { type, text, renderedOffset: 0 } : { type, text });
-}
-
-/** 按折叠态构建工具块显示文本。 */
-export function renderToolBlock(block: ToolBlock): void {
-    const formattedArgs = formatToolBlockArgs(block.name, block.args);
-    if (block.expanded) {
-        const argsPart = !isEmptyArgs(formattedArgs) ? ` ${formattedArgs}` : "";
-        const header = `🔧 ${block.name}${argsPart}`;
-        const lines: string[] = [header];
-        if (block.result !== undefined) {
-            lines.push(block.result);
-        }
-        block.text = lines.join("\n");
-        return;
-    }
-
-    const header = `🔧 ${block.name}${block.result !== undefined ? (block.isError ? " ❌" : " ✅") : ""}`;
-    const lines: string[] = [header];
-    if (!isEmptyArgs(formattedArgs)) {
-        lines.push(formattedArgs);
-    }
-    block.text = lines.join("\n");
 }
 
 /** 从历史原始消息中收集 tool_call id → {name, args} 映射。 */

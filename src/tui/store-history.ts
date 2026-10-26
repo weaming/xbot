@@ -23,7 +23,6 @@ import {
     extractToolCalls,
     INTERRUPT_LABEL,
     interruptLabel,
-    renderToolBlock,
 } from "./store-message.js";
 import { addTokenUsage, resetTokenUsage } from "./store-usage.js";
 import type { ProjectionDeps } from "./store-projector.js";
@@ -158,9 +157,7 @@ function buildHistoryTimeline(
                     name: call?.name ?? toolCall?.function?.name ?? toolCall?.name ?? id,
                     args: call?.args,
                     expanded: false,
-                    text: "",
                 };
-                renderToolBlock(block);
                 toolBlocks.push(block);
                 blocksByCallId.set(id, block);
                 timeline.push({ type: "tool", block });
@@ -173,7 +170,7 @@ function buildHistoryTimeline(
             if (block) {
                 block.result = String(message.content);
                 block.isError = message.isError === true;
-                renderToolBlock(block);
+                if (typeof message.durationMs === "number") block.durationMs = message.durationMs;
             } else {
                 const call = toolCalls.get(message.tool_call_id);
                 const fallbackBlock: ToolBlock = {
@@ -184,12 +181,19 @@ function buildHistoryTimeline(
                     args: call?.args,
                     result: String(message.content),
                     expanded: false,
-                    text: "",
+                    ...(typeof message.durationMs === "number" ? { durationMs: message.durationMs } : {}),
                 };
-                renderToolBlock(fallbackBlock);
                 toolBlocks.push(fallbackBlock);
                 timeline.push({ type: "tool", block: fallbackBlock });
             }
+        }
+    }
+
+    // 只有被中止/中断的回合才把「没有结果消息」判为取消：正常收尾的回合缺结果
+    // 更像是落盘异常，标成黄色「已取消」会误导；耗时未落盘，这里只能显示取消状态。
+    if (interruptMark) {
+        for (const block of toolBlocks) {
+            if (block.result === undefined) block.cancelled = true;
         }
     }
 

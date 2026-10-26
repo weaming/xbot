@@ -9,7 +9,6 @@ import {
     renderCollapsedToolBlock,
     renderExpandedToolBlock,
     renderCollapsedFileBlocks,
-    renderCollapsedEditFileBlocks,
     renderToolBlockResult,
 } from "./tool-block-display.js";
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
@@ -65,19 +64,41 @@ describe("工具块参数转换", () => {
         expect(formatToolBlockArgs("some_tool", " [] ")).toBe("");
     });
 
-    test("普通工具折叠时显示参数和完成标记，不显示结果", () => {
+    test("普通工具折叠时显示参数和耗时，不显示结果", () => {
         const rendered = renderCollapsedToolBlock({
             name: "yfinance__quote",
             args: '{"symbols":["TSM"]}',
             result: '{"price":422.95}',
+            durationMs: 1234,
         });
 
         expect(stripTerminalSequences(rendered)).toBe(
-            '🔧 yfinance__quote ✅\n{"symbols":["TSM"]}',
+            '🔧 yfinance__quote 1.234s\n{"symbols":["TSM"]}',
         );
-        expect(rendered).toContain("\x1b[32m✅");
+        expect(rendered).toContain("\x1b[32m1.234s");
         expect(rendered).toContain("\x1b[90m");
         expect(rendered).not.toContain("422.95");
+    });
+
+    test("成功绿 / 失败红 / 取消黄：靠颜色区分状态，无耗时数据时只保留必要文字", () => {
+        const success = renderCollapsedToolBlock({ name: "bash", result: "ok", durationMs: 850 });
+        expect(stripTerminalSequences(success)).toBe("🔧 bash 850ms");
+        expect(success).toContain("\x1b[32m850ms");
+
+        const failed = renderCollapsedToolBlock({ name: "bash", result: "boom", isError: true, durationMs: 65000 });
+        expect(stripTerminalSequences(failed)).toBe("🔧 bash 1m5s");
+        expect(failed).toContain("\x1b[31m1m5s");
+
+        const cancelled = renderCollapsedToolBlock({ name: "bash", cancelled: true, durationMs: 2000 });
+        expect(stripTerminalSequences(cancelled)).toBe("🔧 bash 2s");
+        expect(cancelled).toContain("\x1b[1m\x1b[33m2s");
+
+        // 旧落盘数据没有耗时时，状态只用文字兜底
+        expect(stripTerminalSequences(renderCollapsedToolBlock({ name: "bash", result: "ok" }))).toBe("🔧 bash");
+        expect(stripTerminalSequences(renderCollapsedToolBlock({ name: "bash", result: "x", isError: true })))
+            .toBe("🔧 bash 失败");
+        expect(stripTerminalSequences(renderCollapsedToolBlock({ name: "bash", cancelled: true })))
+            .toBe("🔧 bash 已取消");
     });
 
     test("session_send 折叠时只有 text 换成占位符，展开时仍是完整参数", () => {
@@ -90,7 +111,7 @@ describe("工具块参数转换", () => {
         const collapsed = renderCollapsedToolBlock(block);
 
         expect(stripTerminalSequences(collapsed)).toBe(
-            "🔧 session_send ✅\nsession=a1b2c3d4 text=... expect_result=true",
+            "🔧 session_send\nsession=a1b2c3d4 text=... expect_result=true",
         );
         expect(collapsed).not.toContain("README");
 
@@ -169,7 +190,7 @@ describe("工具块参数转换", () => {
             "```",
         ].join("\n");
 
-        const rendered = renderCollapsedEditFileBlocks([{ result }]);
+        const rendered = renderCollapsedFileBlocks([{ result }]);
 
         expect(rendered).toContain("Edited 2 files");
         expect(rendered).toContain("  └ first.ts");
@@ -179,6 +200,44 @@ describe("工具块参数转换", () => {
         expect(rendered).toContain("20");
         expect(rendered).toContain("\x1b[32m");
         expect(rendered).toContain("\x1b[31m");
+    });
+
+    test("文件变更摘要带耗时并合并且多块耗时", () => {
+        const single = renderCollapsedToolBlock({
+            name: "write_file",
+            args: JSON.stringify({ path: "src/new-file.ts", content: "const a = 1;\n" }),
+            result: "Successfully wrote to src/new-file.ts",
+            durationMs: 940,
+        });
+
+        expect(stripTerminalSequences(single).split("\n")[0]).toBe("🔧 Wrote src/new-file.ts (+2 -0) 940ms");
+        expect(single).toContain("\x1b[32m940ms");
+
+        const merged = renderCollapsedFileBlocks([
+            {
+                name: "write_file",
+                args: JSON.stringify({ path: "src/a.ts", content: "const a = 1;\n" }),
+                result: "Successfully wrote to src/a.ts",
+                durationMs: 500,
+            },
+            {
+                name: "write_file",
+                args: JSON.stringify({ path: "src/b.ts", content: "const b = 2;\n" }),
+                result: "Successfully wrote to src/b.ts",
+                durationMs: 1500,
+            },
+        ]);
+
+        expect(stripTerminalSequences(merged).split("\n")[0]).toBe("🔧 Wrote 2 files (+4 -0) 2s");
+    });
+
+    test("文件变更失败时摘要行按红色显示耗时", () => {
+        const rendered = renderCollapsedFileBlocks([
+            { name: "edit_file", result: "Could not find exact match", isError: true, durationMs: 30 },
+        ]);
+
+        expect(stripTerminalSequences(rendered)).toContain("30ms");
+        expect(rendered).toContain("\x1b[31m30ms");
     });
 
     test("edit_file 错误结果保持错误色，不误判为 diff", () => {
@@ -705,7 +764,7 @@ describe("ask_user 问答块", () => {
             isError: true,
         });
 
-        expect(rendered).toContain("❌");
+        expect(rendered).toContain("失败");
         expect(rendered).not.toContain("❓");
         // 展开态仍保留错误原文（问答块不接管错误）
         expect(renderExpandedToolBlock({

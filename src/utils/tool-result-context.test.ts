@@ -53,6 +53,27 @@ describe("projectToolMessageForPrompt", () => {
         expect(projected).not.toHaveProperty("contextPolicy");
     });
 
+    it("durationMs 是本地渲染元数据，投影时连同 contextPolicy 一起剥离", () => {
+        const withDuration: ChatMessage = {
+            ...toolMessage("short", { mode: "adaptive" }),
+            durationMs: 1234,
+        };
+        expect(projectToolMessageForPrompt(withDuration, tinyOptions)).not.toHaveProperty("durationMs");
+
+        // mode=full 的早返回分支同样要剥离
+        const fullMessage: ChatMessage = {
+            ...toolMessage("x".repeat(200), { mode: "full" }),
+            durationMs: 9,
+        };
+        const projectedFull = projectToolMessageForPrompt(fullMessage, tinyOptions);
+        expect(projectedFull).not.toHaveProperty("durationMs");
+        expect(projectedFull).not.toHaveProperty("contextPolicy");
+
+        // 两个字段都没有时原样返回同一个对象引用，避免每条消息都新分配
+        const plain = toolMessage("short");
+        expect(projectToolMessageForPrompt(plain, tinyOptions)).toBe(plain);
+    });
+
     it("非 tool 消息原样返回", () => {
         const message: ChatMessage = { role: "user", content: "hello" };
         expect(projectToolMessageForPrompt(message, tinyOptions)).toBe(message);
