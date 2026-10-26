@@ -29,6 +29,7 @@ export type AgentEventType =
     | "session_archived"
     | "session_unarchived"
     | "session_renamed"
+    | "session_cwd_changed"
     | "model_selected";
 
 /** 用户消息附带的图片引用。 */
@@ -131,6 +132,8 @@ export interface AgentEventPayloads {
     session_unarchived: {};
     /** 用户双击 tab 重命名会话标题（tab 显示优先于首条用户消息）。 */
     session_renamed: { title: string };
+    /** 会话工作目录被改写（cwd 工具 / /cwd 命令）：最后一条决定当前目录。 */
+    session_cwd_changed: { cwd: string };
     /** 会话固定使用的协议与模型。 */
     model_selected: ChatModelSelection;
 }

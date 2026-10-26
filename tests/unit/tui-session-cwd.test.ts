@@ -57,6 +57,43 @@ describe("新会话初始 cwd", () => {
         }
     });
 
+    test("切换 cwd 会落盘：另一个实例只读事件日志也能取回新目录", async () => {
+        const agent = new LocalTuiAgent();
+        try {
+            const { sessionId } = await agent.createSession();
+            await agent.setSessionCwd(sessionId, otherDir);
+            expect(await agent.getSessionCwd(sessionId)).toBe(otherDir);
+
+            // 新实例没有内存态：命中"恢复"分支，只能倒扫事件日志重建
+            const restored = new LocalTuiAgent();
+            try {
+                expect(await restored.getSessionCwd(sessionId)).toBe(otherDir);
+            } finally {
+                restored.close();
+            }
+        } finally {
+            agent.close();
+        }
+    });
+
+    test("回合进行中（会话忙）也能切换 cwd：不能被 busy 判据挡住", async () => {
+        const agent = new LocalTuiAgent();
+        try {
+            const { sessionId } = await agent.createSession();
+            // 模拟回合进行中：abortController 已挂上，cwd 工具正是在这种时刻被调用
+            const active = (agent as unknown as {
+                activeSessions: Map<string, { abortController?: AbortController }>;
+            }).activeSessions.get(sessionId);
+            expect(active).toBeDefined();
+            active!.abortController = new AbortController();
+
+            await expect(agent.setSessionCwd(sessionId, otherDir)).resolves.toBeUndefined();
+            expect(await agent.getSessionCwd(sessionId)).toBe(otherDir);
+        } finally {
+            agent.close();
+        }
+    });
+
 });
 
 // mock.module 是进程级全局：本文件跑完必须恢复，否则同 worker 的后续文件会拿到假实现

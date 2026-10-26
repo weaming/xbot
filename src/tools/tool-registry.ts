@@ -4,6 +4,7 @@ import { executeShellTool } from "./execute-shell.js";
 import { backgroundTaskTool } from "./background-task-tool.js";
 import { ghTool } from "./gh-tool.js";
 import { url2mdTool } from "./url2md-tool.js";
+import { cwdTool } from "./cwd-tool.js";
 import { FILE_OPS_TOOLS } from "./file-ops.js";
 import { DATA_OPS_TOOLS } from "./data-ops.js";
 import { toolResultToText } from "./tool-interface.js";
@@ -33,6 +34,7 @@ const getUseSkillToolDef = () => getUseSkillToolWithFreshSchema();
 const localRegisteredTools: ExecutableTool[] = [
     ...coreTools,
     executeShellTool,
+    cwdTool,
     ghTool,
     url2mdTool,
 ];

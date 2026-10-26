@@ -10,14 +10,15 @@
  */
 
 import fs from "fs";
+import path from "node:path";
 import { getOrCreateSessionSystemPrompt } from "../services/chat-runtime.js";
-import { createEmptySession, SessionReplay } from "../events/session-replay.js";
+import { createEmptySession, eventCwd, SessionReplay } from "../events/session-replay.js";
 import { EventLog } from "../events/event-log.js";
 import { getSessionExchangeLogFile } from "../utils/logger.js";
 import { appendInputHistory, loadInputHistory } from "./input-history.js";
 import { getTuiSessionLogFile } from "../utils/tui-state-paths.js";
 import { getTuiStartupCwd } from "./runtime-context.js";
-import { DEFAULT_MEMORY_USER_ID, getSessionsDir, getSessionTodosFile, getToolCwd } from "../utils/runtime-paths.js";
+import { DEFAULT_MEMORY_USER_ID, getSessionsDir, getSessionTodosFile, getStartupToolCwd, getToolCwd } from "../utils/runtime-paths.js";
 import { planResume } from "../services/resume-plan.js";
 import {
     describeClaimFailure,
@@ -124,6 +125,8 @@ export class LocalTuiAgent implements TuiAgent {
     onSessionReleased?: (sessionId: string, cause: SessionReleaseCause) => void;
     /** 模型派生新子会话时的回调（见 TuiAgent.onSessionSpawned）。 */
     onSessionSpawned?: (sessionId: string, title?: string) => void;
+    /** 会话工作目录被改写（cwd 工具 / /cwd）时回调宿主：状态栏与工具基准要跟着换。 */
+    onSessionCwdChanged?: (sessionId: string, cwd: string) => void;
     /** 已归档会话恢复并被本实例认领后回调宿主。 */
     onSessionWoken?: (sessionId: string) => void;
 
@@ -506,12 +509,40 @@ export class LocalTuiAgent implements TuiAgent {
     async getSessionCwd(sessionId: string): Promise<string> {
         const active = this.activeSessions.get(sessionId);
         if (active) return active.session.cwd;
-        const first = await this.eventLog.read(sessionId, 1, 1);
-        if (first[0]?.type === "session_created") {
-            // 旧事件无 cwd 字段时归一到当前工具目录。
-            return first[0].payload.cwd || getToolCwd();
+
+        // 恢复会话：当前目录由 session_created 与后续 session_cwd_changed 决定（判定与重放共用 eventCwd）。
+        // cwd 变更可能落在日志任意位置（改完目录又聊了很久），倒序扫描全量才能取到最后一条；
+        // 恢复会话本来就要读整份日志，这里的重复读取不引入额外量级。
+        const events = await this.eventLog.read(sessionId);
+        for (let index = events.length - 1; index >= 0; index -= 1) {
+            const cwd = eventCwd(events[index]);
+            if (cwd) return cwd;
         }
-        return getToolCwd();
+        // 旧事件没有 cwd：回退启动目录，不能继承当前选中会话的目录
+        return getStartupToolCwd();
+    }
+
+    /**
+     * 改写会话工作目录：落盘 session_cwd_changed，更新内存 session 并通知宿主。
+     * 空会话先补 session_created，否则重放时它会把新的 cwd 覆盖回去。
+     *
+     * 不加 beginSessionOperation / 会话锁：cwd 工具正是在回合中调用（abortController 已挂上），
+     * 那两把锁会把它判成"有请求处理中"直接失败；事件写入本身由 eventLog 的按会话串行保证。
+     */
+    async setSessionCwd(sessionId: string, cwd: string): Promise<void> {
+        const resolved = path.resolve(cwd);
+        const session = await this.requireActiveSession(sessionId);
+        if (session.cwd === resolved) return;
+
+        if ((await this.eventLog.lastSeq(sessionId, { forceRefresh: true })) === 0) {
+            const created = await this.eventLog.append(sessionId, "session_created", { cwd: resolved });
+            this.updateActiveSeq(sessionId, created.seq);
+        }
+
+        const event = await this.eventLog.append(sessionId, "session_cwd_changed", { cwd: resolved });
+        session.cwd = resolved;
+        this.updateActiveSeq(sessionId, event.seq);
+        this.onSessionCwdChanged?.(sessionId, resolved);
     }
 
     async clearSession(sessionId: string): Promise<void> {
@@ -556,7 +587,7 @@ export class LocalTuiAgent implements TuiAgent {
             if (lastSeq === 0) {
                 // 空临时会话未落盘：先补 session_created（cwd 取绑定目录），让改名后的会话可持久化
                 const created = await this.eventLog.append(sessionId, "session_created", {
-                    cwd: active?.session.cwd ?? getToolCwd(),
+                    cwd: active?.session.cwd ?? getStartupToolCwd(),
                 });
                 lastSeq = created.seq;
             }

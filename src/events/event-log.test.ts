@@ -19,7 +19,8 @@ beforeAll(() => {
         TUI_CWD: process.env.TUI_CWD,
     };
     process.env.ZBOT_STATE_DIR = tmpDir;
-    delete process.env.TUI_CWD;
+    // 工具目录同样指向临时目录：会话 cwd 缺失时 getToolCwd() 的回退值才可预期
+    process.env.TUI_CWD = tmpDir;
 });
 
 afterAll(() => {

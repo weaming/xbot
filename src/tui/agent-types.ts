@@ -95,6 +95,8 @@ export interface TuiAgent {
     appendInputHistory(sessionId: string, text: string, ts?: string): Promise<void>;
     /** 会话绑定的工作目录（无持久化记录时回退当前工具目录）。 */
     getSessionCwd(sessionId: string): Promise<string>;
+    /** 改写会话工作目录（落盘 session_cwd_changed 事件）：之后的工具都在新目录执行。 */
+    setSessionCwd(sessionId: string, cwd: string): Promise<void>;
     /** 重命名会话标题：空会话先落盘再记录，标题为空时不生效。 */
     renameSession(sessionId: string, title: string): Promise<void>;
     getSessionModelSelection(sessionId: string): Promise<ChatModelSelection | undefined>;
@@ -136,6 +138,8 @@ export interface TuiAgent {
      * 与 onSessionReleased 同理，非用户主动发起的状态变化也要让宿主知情。
      */
     onSessionSpawned?: (sessionId: string, title?: string) => void;
+    /** 会话工作目录被改写后的回调（见 TuiAgent.setSessionCwd）。 */
+    onSessionCwdChanged?: (sessionId: string, cwd: string) => void;
     /** 归档会话被 session_wake 恢复并认领后回调宿主刷新会话列表。 */
     onSessionWoken?: (sessionId: string) => void;
     /**

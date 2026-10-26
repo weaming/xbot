@@ -36,6 +36,8 @@ export interface TurnSpec {
     buildHistory: () => ChatMessage[];
     signal: AbortSignal;
     cwd?: string;
+    /** 实时解析会话 cwd：cwd 工具改过目录后，同回合的后续工具也要用新基准。 */
+    resolveCwd?: () => string | undefined;
     userId: number;
     skipUserQuery?: boolean;
     pendingToolCalls?: ToolCall[];
@@ -165,6 +167,7 @@ export async function runTurnCore(spec: TurnSpec, hooks: TurnHooks): Promise<Tur
             sessionId: session.sessionId,
             modelSelection: session.modelSelection,
             cwd: spec.cwd,
+            resolveCwd: spec.resolveCwd,
             contextEpochId: session.contextEpochId,
             initialRequestKind: spec.initialRequestKind ?? "user_request",
             autoCompactActiveTurn: spec.autoCompactActiveTurn,

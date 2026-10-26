@@ -17,6 +17,22 @@ export function getToolCwd(): string {
     return path.resolve(expandEnv(tuiCwd));
 }
 
+let startupToolCwd: string | null = null;
+
+/** 登记进程启动目录（TUI 启动时调用）：旧会话缺 cwd 时回退到这里。 */
+export function setStartupToolCwd(cwd: string): void {
+    startupToolCwd = path.resolve(expandEnv(cwd));
+}
+
+/**
+ * 启动目录：旧会话没有 cwd 时的回退基准。
+ * 不能用 getToolCwd()——它随会话切换变化，会把上一个会话的目录当成默认值。
+ */
+export function getStartupToolCwd(): string {
+    if (startupToolCwd) return startupToolCwd;
+    return path.resolve(expandEnv(process.env.TUI_CWD || process.cwd()));
+}
+
 export function getUserSkillsDir(...parts: string[]): string {
     return getStateDir("skills", ...parts);
 }

@@ -131,7 +131,7 @@ function formatDetachedTask(task: BackgroundTaskSummary): string {
 
 export const executeShellTool: ExecutableTool = {
   name: "bash",
-  description: "Execute a shell command inside the container (where zbot runs). Uses /bin/bash when available, otherwise /bin/sh. The default 120-second timeout moves long-running commands to the background; use background_task to inspect or stop them.",
+  description: "Execute a shell command inside the container (where zbot runs). Uses /bin/bash when available, otherwise /bin/sh. Relative paths resolve against the current session cwd (see the cwd tool to inspect or change it). The default 120-second timeout moves long-running commands to the background; use background_task to inspect or stop them.",
   tags: ["core", "code"],
   inputSchema: {
     type: "object",

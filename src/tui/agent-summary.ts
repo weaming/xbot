@@ -32,6 +32,7 @@ export function summarizeEvents(sessionId: string, events: AgentEvent[]): TuiSes
         if (event.type === "session_renamed") renamedTitle = event.payload.title;
         if (event.type === "model_selected") modelSelection = event.payload;
         if (event.type === "session_created") cwd = event.payload.cwd;
+        if (event.type === "session_cwd_changed") cwd = event.payload.cwd;
     }
 
     return {

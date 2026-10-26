@@ -6,7 +6,7 @@
 
 import fs from "fs";
 import path from "path";
-import { getSessionsDir, getToolCwd } from "../utils/runtime-paths.js";
+import { getSessionsDir, getStartupToolCwd, getToolCwd } from "../utils/runtime-paths.js";
 import { createUlid } from "../utils/ulid.js";
 import { appendCompletedTurn, appendInterruptedTurn, appendStandaloneTurn, repairEmptyAssistantHistory, replaceWithCompactedContext } from "../utils/conversation-history.js";
 import type { ChatMessage, Session } from "../types/session.js";
@@ -33,6 +33,8 @@ const SNAPSHOT_SAFE_EVENT_TYPES = new Set<AgentEvent["type"]>([
     "peer_message",
     "peer_result",
     "session_renamed",
+    // cwd 变更只是元信息，落在快照边界上也不会丢上下文。
+    "session_cwd_changed",
     "session_archived",
     "session_unarchived",
 ]);
@@ -78,7 +80,7 @@ export class SessionReplay {
             : events;
 
         const session = snapshotUsable && snapshot
-            ? { ...snapshot.session, cwd: snapshot.session.cwd ?? getToolCwd() }
+            ? { ...snapshot.session, cwd: snapshot.session.cwd ?? getStartupToolCwd() }
             : createEmptySession(sessionId);
 
         // turn_message 让回合进行中的完整消息即时落盘；重放时按 turnId 归组，
@@ -295,12 +297,24 @@ function getUserMessageText(message: ChatMessage): string | undefined {
     return message.content.find(block => block.type === "text")?.text;
 }
 
+/**
+ * 从 cwd 相关事件里取出目录：session_created 与 session_cwd_changed。
+ * 旧事件可能没有 cwd 字段，此时返回 undefined，由调用方统一回退到启动目录。
+ */
+export function eventCwd(event: AgentEvent): string | undefined {
+    if (event.type === "session_created" || event.type === "session_cwd_changed") {
+        return event.payload.cwd || undefined;
+    }
+    return undefined;
+}
+
 /** 事件投影：context_compacted / standalone_turn 等驱动状态变化，其余事件仅作展示记录。 */
 function applyEvent(session: Session, event: AgentEvent): void {
     switch (event.type) {
         case "session_created":
-            // 事件为事实源；旧事件无 cwd 字段时归一到当前工具目录（工厂/快照已保证非空）。
-            session.cwd = event.payload.cwd ?? getToolCwd();
+        case "session_cwd_changed":
+            // 事件为事实源；旧事件无 cwd 字段时归一到启动目录（不能继承当前选中会话的 cwd）
+            session.cwd = eventCwd(event) ?? getStartupToolCwd();
             break;
         case "context_compacted":
             const position = event.payload.keepFromPosition;

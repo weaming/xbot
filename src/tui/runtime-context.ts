@@ -5,6 +5,7 @@ import embeddedTuiIdentity from "./AGENTS.md" with { type: "text" };
 import { setEmbeddedIdentity } from "../skills/base-skill.js";
 import { getTuiSessionLogFile, getTuiStartupLogFile } from "../utils/tui-state-paths.js";
 import { CONSOLE_TIMESTAMP_MARK } from "../utils/logger.js";
+import { setStartupToolCwd } from "../utils/runtime-paths.js";
 
 const DEFAULT_HOST_STATE_DIR = path.join(os.homedir(), ".zbot");
 const DEFAULT_HOST_SRC_ROOT = "src";
@@ -120,6 +121,8 @@ export function configureTuiHostEnvironment(): void {
     process.env.TUI_CWD = process.cwd();
     // 固化启动目录：TUI_CWD 之后会随会话切换被改写，新建会话仍须以启动目录为初始值。
     tuiStartupCwd = process.cwd();
+    // 同一份固化值也交给工具层：旧会话缺 cwd 时不能继承当前选中会话的目录。
+    setStartupToolCwd(process.cwd());
     process.env.TUI_SRC_ROOT = srcRoot;
     rewriteContainerServicesForHost();
 }

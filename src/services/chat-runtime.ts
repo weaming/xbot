@@ -213,6 +213,11 @@ export interface ChatRunOptions {
     history?: any[];
     /** 会话绑定的工作目录：工具调用在该目录下执行（缺省时回退进程级 TUI_CWD）。 */
     cwd?: string;
+    /**
+     * 实时解析工具执行目录：命中时优先于 cwd。
+     * 会话 cwd 可能在回合中间被 cwd 工具改写，后续工具应立即用新目录。
+     */
+    resolveCwd?: () => string | undefined;
     userId: number;
     sessionId?: string;
     modelSelection?: ChatModelSelection;
@@ -496,8 +501,9 @@ export async function runChatQuery(options: ChatRunOptions) {
                 finalArgs.__userId = options.userId;
                 if (options.sessionId !== undefined) finalArgs.__sessionId = options.sessionId;
                 const execute = () => executeMcpTool(name, finalArgs, options.signal);
-                const result = options.cwd
-                    ? await runWithToolCwd(options.cwd, execute)
+                const toolCwd = options.resolveCwd?.() ?? options.cwd;
+                const result = toolCwd
+                    ? await runWithToolCwd(toolCwd, execute)
                     : await execute();
                 return {
                     content: toolResultToText(result),

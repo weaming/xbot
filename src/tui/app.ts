@@ -97,6 +97,7 @@ import { readSessionTodos, type TodoItem } from "../tools/todo-tool.js";
 import { deepSeekPhaseInfo, endpointHost, normalizeDeepSeekModel, resolvePricingMode } from "../pricing/deepseek.js";
 import { getContextWindowForModel } from "../utils/token-budget.js";
 import { buildMcpStatusHelpText, setMcpNoticeHandler, type McpNotice } from "../mcp/client-manager.js";
+import { formatDisplayPath, resolveExistingDir, setSessionCwdHandler } from "../tools/cwd-tool.js";
 import {
     createMessageComponent,
     messageRenderKey,
@@ -124,7 +125,7 @@ interface PendingQuestion {
 
 
 /** 需要当前会话才能执行的命令（无会话时直接提示，不静默失败）。 */
-const SESSION_REQUIRED_COMMANDS = new Set(["/clear", "/archive", "/unarchive", "/delete", "/close", "/compact", "/continue", "/system", "/model"]);
+const SESSION_REQUIRED_COMMANDS = new Set(["/clear", "/archive", "/unarchive", "/delete", "/close", "/compact", "/continue", "/system", "/model", "/cwd"]);
 
 /**
  * 释放会话后的提示：按发起方区分，避免把本实例的主动操作说成"被其他实例拿走"。
@@ -468,6 +469,11 @@ export class ChatApp {
         this.agent.onSessionSpawned = (sessionId, title) => {
             void this.handleSessionSpawned(sessionId, title);
         };
+        // cwd 工具 / /cwd 改写会话目录：状态栏与工具基准一起换，会话面板的目录列也跟着刷新
+        this.agent.onSessionCwdChanged = (sessionId, cwd) => {
+            this.handleSessionCwdChanged(sessionId, cwd);
+        };
+        setSessionCwdHandler((sessionId, cwd) => this.agent.setSessionCwd(sessionId, cwd));
         this.agent.onSessionWoken = sessionId => {
             void this.handleSessionWoken(sessionId);
         };
@@ -653,6 +659,9 @@ export class ChatApp {
                 break;
             case "/compact":
                 await this.compactCurrent();
+                break;
+            case "/cwd":
+                await this.changeCwd(rest.join(" ").trim());
                 break;
             case "/continue":
                 await this.continueCurrent();
@@ -1909,6 +1918,60 @@ export class ChatApp {
         process.env.TUI_CWD = cwd;
     }
 
+    /** 当前生效的工作目录：会话绑定的 cwd（状态栏右下角展示的就是它）。 */
+    private currentCwd(): string {
+        return process.env.TUI_CWD || process.cwd();
+    }
+
+    /**
+     * 会话工作目录被 cwd 工具 / /cwd 改写：
+     * 属主会话若不刷新基准，状态栏与工具执行目录会各说各话。
+     */
+    private handleSessionCwdChanged(sessionId: string, cwd: string): void {
+        const summary = this.store.sessions.find(session => session.sessionId === sessionId);
+        if (summary) {
+            summary.cwd = cwd;
+            // 走 setSessions：tab 条与面板目录列的刷新统一由 onSessionsChanged 触发
+            this.store.setSessions(this.store.sessions);
+        }
+        if (this.store.currentSessionId === sessionId) {
+            this.activateSessionCwd(cwd);
+            this.renderStatusBar();
+        }
+    }
+
+    /** /cwd：无参显示当前目录（~ 缩写），有参切换并落盘到会话。 */
+    private async changeCwd(raw: string): Promise<void> {
+        const sessionId = this.store.currentSessionId;
+        if (!sessionId) return;
+
+        const current = this.currentCwd();
+        if (!raw) {
+            this.store.pushSystemMessage(`当前工作目录：${formatDisplayPath(current)}`, sessionId);
+            return;
+        }
+
+        const resolved = resolveExistingDir(raw, current);
+        if ("error" in resolved) {
+            this.tui.flash(resolved.error);
+            return;
+        }
+        if (resolved.cwd === current) {
+            this.store.pushSystemMessage(`当前工作目录已经是 ${formatDisplayPath(current)}`, sessionId);
+            return;
+        }
+
+        try {
+            await this.agent.setSessionCwd(sessionId, resolved.cwd);
+        } catch (error: any) {
+            this.tui.flash(error?.message ?? String(error));
+            return;
+        }
+        this.activateSessionCwd(resolved.cwd);
+        this.renderStatusBar();
+        this.tui.flash(`工作目录已切换：${formatDisplayPath(resolved.cwd)}`);
+    }
+
     /** 归档会话：保留在列表（面板可见）但从会话条移除；归档当前会话时切到下一个。 */
     private async archiveSessionById(sessionId: string): Promise<void> {
         if (this.isSessionArchived(sessionId)) {
@@ -2688,7 +2751,7 @@ export class ChatApp {
             cacheMissTokens: this.store.cacheMissTokens,
             costYuan: this.store.costYuan,
             lastRate: this.store.lastRate,
-            cwd: process.cwd(),
+            cwd: this.currentCwd(),
             home: process.env.HOME,
             isDeepSeekPriced,
             deepSeek: isDeepSeekPriced ? deepSeekPhaseInfo() : undefined,

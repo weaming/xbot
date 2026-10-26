@@ -122,6 +122,15 @@ describe("summarizeEvents 会话更新时间", () => {
         expect(summary.cwd).toBeUndefined();
     });
 
+    test("cwd 变更事件覆盖 session_created 的目录（面板显示最新目录）", () => {
+        const summary = summarizeEvents("s", [
+            eventOf("session_created", at(0), { cwd: "/tmp" }),
+            eventOf("session_cwd_changed", at(10), { cwd: "/opt/work" }),
+        ]);
+
+        expect(summary.cwd).toBe("/opt/work");
+    });
+
     test("注水多但无用户活动的会话不会排到活跃会话前面", () => {
         const idle = summarizeEvents("idle", [created(0), injected(50), injected(55)]);
         const active = summarizeEvents("active", [created(0), eventOf("user_message", at(30), { text: "在跑", turnId: "t1", trigger: "user" })]);

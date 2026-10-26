@@ -84,6 +84,8 @@ export async function runSessionTurn(
             signal: abortController.signal,
             userId: DEFAULT_MEMORY_USER_ID,
             cwd: activeSession.cwd,
+            // 回合内 cwd 工具改过目录后，后续工具调用立即用新基准
+            resolveCwd: () => host.activeSessions.get(sessionId)?.session.cwd,
             skipUserQuery: spec.skipUserQuery,
             pendingToolCalls: spec.pendingToolCalls,
             initialRequestKind: spec.initialRequestKind,
@@ -235,6 +237,7 @@ export async function compactSessionContext(
             sessionId,
             modelSelection: session.modelSelection,
             cwd: session.cwd,
+            resolveCwd: () => host.activeSessions.get(sessionId)?.session.cwd,
             contextEpochId: session.contextEpochId,
             userId: DEFAULT_MEMORY_USER_ID,
             initialRequestKind: "context_compaction",
