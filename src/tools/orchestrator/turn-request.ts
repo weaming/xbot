@@ -112,12 +112,16 @@ export async function prepareRequest(options: PrepareRequestOptions): Promise<Pr
     const enableDeferredLoading = useResponses
         && (options.hostedTools?.includes("tool_search") ?? false)
         && normalizedTools.some(tool => tool.deferLoading === true);
+    // 托管工具只在 Responses 协议声明：Chat Completions 只接受 function 类型，
+    // 严格的上游会直接以 422 unknown variant 拒绝 web_search 等类型。
     // tool_search 依赖至少一个延迟加载的 Responses function 工具。
-    const hostedTools = toHostedToolDefinitions(options.hostedTools ?? [])
-        .filter(tool => tool.type !== "tool_search" || enableDeferredLoading);
+    const hostedTools = useResponses
+        ? toHostedToolDefinitions(options.hostedTools ?? [])
+            .filter(tool => tool.type !== "tool_search" || enableDeferredLoading)
+        : [];
     const requestTools = useResponses
         ? appendHostedTools(toResponsesToolDefinitions(normalizedTools, enableDeferredLoading), hostedTools)
-        : appendHostedTools(normalizedTools.map(({ deferLoading: _deferLoading, ...tool }) => tool), hostedTools);
+        : normalizedTools.map(({ deferLoading: _deferLoading, ...tool }) => tool);
 
     const isMiniMax = model.startsWith("MiniMax-");
     const requestBody = buildRequestBody({

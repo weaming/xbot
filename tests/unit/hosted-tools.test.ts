@@ -84,20 +84,23 @@ describe("Responses 请求体", () => {
 });
 
 describe("Chat Completions 请求体", () => {
-    test("托管工具同样追加在 function 定义之后", () => {
-        const tools = appendHostedTools(functionTools, toHostedToolDefinitions(["web_search"]));
-        const body = buildRequestBody({
-            protocol: "chat_completions",
+    test("只发送 function 工具，不携带 Responses 托管工具类型", async () => {
+        const prepared = await prepareRequest({
+            client: {
+                baseURL: "http://127.0.0.1:8787/provider/codex/v1",
+                protocol: "chat_completions",
+            },
             model: "gpt-5.6-luna",
-            baseURL: "http://127.0.0.1:8787/provider/codex/v1",
-            messages: [{ role: "user", content: "今天有什么 AI 新闻？" }],
-            tools,
+            messages: [{ role: "user", content: "今天有什么 AI 新闻？" }] as any,
+            tools: functionTools,
+            normalizedTools: tools => tools,
+            isFirstIteration: true,
             stream: true,
-            isMiniMax: false,
+            hostedTools: ["web_search", "tool_search"],
         });
 
-        expect(body.tools.map((tool: any) => tool.type)).toEqual(["function", "function", "web_search"]);
-        expect(body.stream_options).toEqual({ include_usage: true });
+        expect(prepared.requestBody.tools.map((tool: any) => tool.type)).toEqual(["function", "function"]);
+        expect(prepared.requestBody.stream_options).toEqual({ include_usage: true });
     });
 });
 
