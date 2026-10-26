@@ -312,7 +312,7 @@ describe("executeWithChat 流式聚合", () => {
 
     it("tool_calls 按 index 聚合增量并执行", async () => {
         const chunks = [
-            toolCallChunk({ index: 0, id: "call-1", function: { name: "search_tools", arguments: "" } }),
+            toolCallChunk({ index: 0, id: "call-1", function: { name: "lookup_tool", arguments: "" } }),
             toolCallChunk({ index: 0, function: { arguments: '{"q":' } }),
             toolCallChunk({ index: 0, function: { arguments: '"x"}' } }, "tool_calls"),
         ];
@@ -331,11 +331,11 @@ describe("executeWithChat 流式聚合", () => {
             onEvent: event => events.push(event),
         });
 
-        expect(calls).toEqual([{ name: "search_tools", args: { q: "x" } }]);
+        expect(calls).toEqual([{ name: "lookup_tool", args: { q: "x" } }]);
         expect(events.filter(event => event.type === "toolcall_start")).toHaveLength(1);
         expect(events.filter(event => event.type === "toolcall_args_delta")).toHaveLength(2);
-        expect(events.some(event => event.type === "tool_start" && event.name === "search_tools")).toBe(true);
-        expect(events.some(event => event.type === "tool_result" && event.name === "search_tools")).toBe(true);
+        expect(events.some(event => event.type === "tool_start" && event.name === "lookup_tool")).toBe(true);
+        expect(events.some(event => event.type === "tool_result" && event.name === "lookup_tool")).toBe(true);
         expect(result.toolCalls).toBeGreaterThan(1);
     });
 
@@ -345,7 +345,7 @@ describe("executeWithChat 流式聚合", () => {
                 index: 0,
                 id: "call-1",
                 thought_signature: "c2lnbmF0dXJl",
-                function: { name: "search_tools", arguments: "{}" },
+                function: { name: "lookup_tool", arguments: "{}" },
             }, "tool_calls"),
         ];
         const requests: any[] = [];

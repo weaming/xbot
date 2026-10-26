@@ -1,68 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import { filterToolsBySearch, serializeSearchToolResults } from '../../src/tools/tool-registry.js';
 import { toolCatalog } from '../../src/tools/tool-catalog.js';
 
-const tools = [
-    { name: 'LongPortPrivate__stock_positions', source: 'longport', tags: ['finance'], inputSchema: {}, execute: async () => ({ content: [] }) },
-    { name: 'LongPortPrivate__account_balance', source: 'longport', tags: ['finance'], inputSchema: {}, execute: async () => ({ content: [] }) },
-    { name: 'mcphub__qweather_weather', source: 'local', tags: ['travel'], inputSchema: {}, execute: async () => ({ content: [] }) },
-];
-
-describe('search_tools filtering', () => {
-    test('matches any name keyword', () => {
-        const matches = filterToolsBySearch(tools, {
-            keywords: ['stock_positions', 'account_balance'],
-        });
-
-        expect(matches.map((tool) => tool.name)).toEqual([
-            'LongPortPrivate__stock_positions',
-            'LongPortPrivate__account_balance',
-        ]);
-    });
-
-    test('searches source, tags, and descriptions with keywords', () => {
-        const matches = filterToolsBySearch([
-            ...tools,
-            {
-                name: 'special_tool',
-                source: 'custom',
-                tags: ['utility'],
-                description: '查询小红书点点会话',
-                inputSchema: {},
-                execute: async () => ({ content: [] }),
-            },
-        ], { keywords: ['点点会话'] });
-
-        expect(matches.map((tool) => tool.name)).toEqual(['special_tool']);
-    });
-
-    test('unions multiple keywords', () => {
-        const matches = filterToolsBySearch(tools, {
-            keywords: ['stock_positions', 'qweather'],
-        });
-
-        expect(matches.map((tool) => tool.name)).toEqual([
-            'LongPortPrivate__stock_positions',
-            'mcphub__qweather_weather',
-        ]);
-    });
-
-    test('serializes matching tools as callable schemas', () => {
-        const result = JSON.parse(serializeSearchToolResults(tools));
-
-        expect(result.count).toBe(3);
-        expect(result.tools).toHaveLength(3);
-        expect(result.tools[0]).toEqual({
-            type: 'function',
-            function: {
-                name: 'LongPortPrivate__stock_positions',
-                description: '',
-                parameters: {},
-            },
-        });
-        expect(result.extraTools).toBeUndefined();
-    });
-
+describe('tool registry', () => {
     test('executeMcpTool 回退到工具级 contextPolicy 声明', async () => {
         const { executeMcpTool } = await import('../../src/tools/tool-registry.js');
         const toolName = 'zz_test_full_context_tool';

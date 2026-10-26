@@ -15,7 +15,6 @@ import { McpOAuthClient } from "./oauth.js";
 
 import type { ExecutableTool } from "../tools/tool-interface.js";
 
-const SYNC_STALE_THRESHOLD_MS = 30 * 1000;
 const PERIODIC_SYNC_INTERVAL_MS = 15 * 1000;
 const RECONNECT_INITIAL_DELAY_MS = 5 * 1000;
 const RECONNECT_MAX_DELAY_MS = 60 * 1000;
@@ -438,24 +437,6 @@ function scheduleMaintenance(ctx: McpClientContext, delayMs: number = PERIODIC_S
             scheduleMaintenance(ctx, delay);
         }
     }, delayMs);
-}
-
-/**
- * 供外部调用：若超过阈值未同步则立即同步（search_tools 使用）
- */
-export async function syncToolsIfStale(): Promise<void> {
-    const syncPromises: Promise<void>[] = [];
-    const now = Date.now();
-
-    for (const ctx of activeContexts.values()) {
-        if (!ctx.client) continue;
-        if (now - ctx.lastSyncTime < SYNC_STALE_THRESHOLD_MS) continue;
-        syncPromises.push(syncServerTools(ctx));
-    }
-
-    if (syncPromises.length > 0) {
-        await Promise.allSettled(syncPromises);
-    }
 }
 
 /**

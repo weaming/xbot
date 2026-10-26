@@ -7,7 +7,6 @@
 import OpenAI from "openai";
 import { createHash } from "node:crypto";
 import { recordLLMExchange, type LLMRequestKind, type LLMUsageLogEntry } from "../utils/logger.js";
-import { getOpenAIToolDefinitionsByNames } from "./tool-registry.js";
 import { normalizeToolDefinitionsForDeepSeek } from "./tool-schema.js";
 import {
   compactJsonToolOutput,
@@ -148,6 +147,7 @@ export interface OrchestratorOptions {
   model: string;
   reasoningEffort?: string;
   reasoningEfforts?: string[];
+  toolChoice?: "auto" | "none";
   tools?: any[];
   /** 托管工具类型（Responses 专用）：声明给上游执行，本地没有对应实现。 */
   hostedTools?: string[];
@@ -210,6 +210,7 @@ export async function executeWithChat(
     model,
     tools = [],
     hostedTools,
+    toolChoice,
     executeTool,
     getSystemPrompt,
     getToolDefinitions,
@@ -275,7 +276,6 @@ export async function executeWithChat(
         ...(onToolCall ? { onToolCall } : {}),
         ...(onToolResult ? { onToolResult } : {}),
         emit,
-        recordDiscoveredTool: (name: string) => discoveredToolNames.add(name),
         nextToolId: () => ++toolIdCounter,
         assertNotAborted: () => {
           if (signal?.aborted) throw new DOMException("User terminated the request", "AbortError");
@@ -286,8 +286,6 @@ export async function executeWithChat(
     // 统一入列：并行只影响耗时，不影响消息顺序
     for (const message of results) appendTurnMessage(message);
   };
-
-  const discoveredToolNames = new Set<string>();
 
   const ctx: TurnContext = {
     client,
@@ -301,11 +299,11 @@ export async function executeWithChat(
     initialRequestKind,
     ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
     ...(options.reasoningEfforts ? { reasoningEfforts: options.reasoningEfforts } : {}),
+    ...(toolChoice ? { toolChoice } : {}),
     messages,
     turnMessages,
     counters: { emptyResponse: 0, lengthRetry: 0 },
     iteration: 0,
-    discoveredToolNames,
     ...(hostedTools?.length ? { hostedTools } : {}),
     emit,
     appendTurnMessage,

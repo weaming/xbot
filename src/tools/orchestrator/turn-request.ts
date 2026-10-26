@@ -28,7 +28,6 @@ import {
   resolveEffort,
   resolveProtocol,
   sortToolsByName,
-  appendDiscoveredTools,
   appendHostedTools,
   toResponsesToolDefinitions,
   toHostedToolDefinitions,
@@ -65,14 +64,12 @@ export interface PrepareRequestOptions {
     messages: ChatMessage[];
     /** 基础工具定义（未排序）。 */
     tools: any[];
-    /** 本轮后续发现的工具名。 */
-    discoveredToolNames: ReadonlySet<string>;
     getToolDefinitions?: () => any[];
-    getOpenAIToolDefinitionsByNames?: (names: string[]) => any[];
     /** 托管工具类型（上游执行，本地不执行）：调用方解析 OPENAI_HOSTED_TOOLS 后传入。 */
     hostedTools?: string[];
     getContextReminders?: () => string[] | undefined;
     normalizedTools: (tools: any[]) => any[];
+    toolChoice?: "auto" | "none";
     isFirstIteration: boolean;
     stream: boolean;
     reasoningEffort?: string;
@@ -91,15 +88,8 @@ export async function prepareRequest(options: PrepareRequestOptions): Promise<Pr
     const protocol = resolveProtocol(client);
     const useResponses = protocol === "responses";
 
-    // 工具：先按名称排序（前缀稳定），再把本轮新发现的追加到尾部
-    let currentTools = options.getToolDefinitions ? options.getToolDefinitions() : options.tools;
-    currentTools = sortToolsByName(currentTools);
-    if (options.discoveredToolNames.size > 0 && options.getOpenAIToolDefinitionsByNames) {
-        currentTools = appendDiscoveredTools(
-            currentTools,
-            options.getOpenAIToolDefinitionsByNames([...options.discoveredToolNames]),
-        );
-    }
+    // 全量工具始终按名称排序，确保不同请求使用稳定的工具前缀。
+    const currentTools = sortToolsByName(options.getToolDefinitions ? options.getToolDefinitions() : options.tools);
 
     // 提醒消息只追加在请求尾部：不进历史、不落盘，前缀不变仍可命中缓存
     const promptMessages = projectChatMessagesForPrompt(options.messages);
@@ -119,9 +109,12 @@ export async function prepareRequest(options: PrepareRequestOptions): Promise<Pr
             : await materializeImageMessages(requestMessages);
 
     const normalizedTools = options.normalizedTools(currentTools);
-    // 托管工具追加在尾部：两种协议都带上，能否执行由上游决定
-    const hostedTools = toHostedToolDefinitions(options.hostedTools ?? []);
-    const enableDeferredLoading = options.hostedTools?.includes("tool_search") ?? false;
+    const enableDeferredLoading = useResponses
+        && (options.hostedTools?.includes("tool_search") ?? false)
+        && normalizedTools.some(tool => tool.deferLoading === true);
+    // tool_search 依赖至少一个延迟加载的 Responses function 工具。
+    const hostedTools = toHostedToolDefinitions(options.hostedTools ?? [])
+        .filter(tool => tool.type !== "tool_search" || enableDeferredLoading);
     const requestTools = useResponses
         ? appendHostedTools(toResponsesToolDefinitions(normalizedTools, enableDeferredLoading), hostedTools)
         : appendHostedTools(normalizedTools.map(({ deferLoading: _deferLoading, ...tool }) => tool), hostedTools);
@@ -133,6 +126,7 @@ export async function prepareRequest(options: PrepareRequestOptions): Promise<Pr
         baseURL: client.baseURL,
         messages: materializedMessages,
         tools: requestTools,
+        ...(options.toolChoice ? { toolChoice: options.toolChoice } : {}),
         stream: options.stream,
         isMiniMax,
         reasoning: {

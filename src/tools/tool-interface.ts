@@ -45,8 +45,7 @@ export interface ExecutableTool {
     /** 工具级默认策略：结果要求完整保留时声明（如读文件、补丁、代码探索），执行结果可覆盖。 */
     contextPolicy?: ToolResultPolicy;
     /**
-     * 会话级工具：默认不下发给模型，也不出现在 search_tools 结果里，
-     * 只有调用方按会话显式请求时才注入（如会话间通信工具）。
+     * 会话级工具：默认不下发给模型，只有调用方按会话显式请求时才注入。
      */
     sessionScoped?: boolean;
 }
@@ -152,8 +151,7 @@ const JSON_COMPACTION_TOOL_KEYWORDS = [
 /** 仅压缩结构化数据查询工具的 JSON 输出，保留文件与命令工具的原始文本格式。 */
 export function canCompactJsonToolOutput(toolName: string): boolean {
     const normalizedToolName = toolName.toLowerCase();
-    return normalizedToolName === 'search_tools'
-        || JSON_COMPACTION_TOOL_KEYWORDS.some((keyword) => normalizedToolName.includes(keyword));
+    return JSON_COMPACTION_TOOL_KEYWORDS.some((keyword) => normalizedToolName.includes(keyword));
 }
 
 /** 对白名单工具的完整 JSON 对象或数组进行无损紧凑序列化，其他文本保持原样。 */

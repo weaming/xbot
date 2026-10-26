@@ -117,7 +117,6 @@ test("prepareRequest 仅在启用 tool_search 时发出 defer_loading MCP 定义
         messages: [{ role: "user", content: "find" }] as any,
         tools: [deferredMcpTool],
         getToolDefinitions: () => [deferredMcpTool],
-        discoveredToolNames: new Set<string>(),
         normalizedTools: tools => tools,
         isFirstIteration: true,
         stream: false,

@@ -193,7 +193,7 @@ function buildToolCallingRuleSection(): string {
         "## 工具调用规则",
         "只能调用当前 tools 参数中实际存在的工具，不得臆想或假设工具存在；认为某个工具可用前，先确认它的名字在 tools 列表中。",
         "可直接调用当前 tools 参数中声明的工具。",
-        "如果所需工具不在当前 tools 参数中，先调用 search_tools 搜索它，搜索到的工具会加入可用列表，之后直接调用。",
+        "tools 参数包含当前可用工具，直接调用匹配任务的已声明工具。",
         "也可以改用列表中的等价工具（如新闻用 mcphub__brave_web_search）。",
         "不要因为工具不在列表而停止回复，即使没有可用工具也要正常回复用户。",
         "todo 仅用于复杂、持续时间较长或需要跨多轮推进的任务；简单任务、步骤少且预计几次工具调用/对话往返即可完成的任务，不要调用 todo。复杂任务开始时用 todo write 建立清单，执行中保持同时只有 1 条 in_progress，并随任务状态变化及时更新；收尾前清零未完成项。",
@@ -221,7 +221,7 @@ export interface ChatRunOptions {
     signal?: AbortSignal;
     stream?: boolean;
     /** 禁止本次请求继续调用工具，仅根据已有历史生成文本。 */
-    disableTools?: boolean;
+    disableToolCalls?: boolean;
     consumePendingMessages?: () => Array<string | UserMessageInput> | undefined;
     onConsumePending?: (text: string, messages: Array<string | UserMessageInput>) => void | Promise<void>;
     onToolCall?: (name: string, args: any, mode: "serial" | "parallel") => void;
@@ -353,7 +353,7 @@ export function buildExtraToolsSection(preface?: string): string {
     if (preface) {
         parts.push(preface);
     }
-    parts.push(`共有 ${allTools.length} 个可用工具。需要时调用 search_tools 搜索；传入独立的 keywords 列表（例如 ["hello", "world"]，不要写成 ["hello world"]），关键词匹配工具名、来源、标签和描述，任一命中即返回完整工具 schema。${lines ? `\n${lines}` : ""}`);
+    parts.push(`共有 ${allTools.length} 个可用工具，所有非会话工具都已在 tools 参数中声明，可直接调用。${lines ? `\n${lines}` : ""}`);
     return parts.join("\n\n");
 }
 
@@ -506,12 +506,11 @@ export async function runChatQuery(options: ChatRunOptions) {
             },
             getSystemPrompt: () => options.systemPrompt,
             // 会话级工具按会话注入：会话间通信要控制通道、提问要有人能回答（见各自 getXxxToolNames）
-            getToolDefinitions: options.disableTools
-                ? () => []
-                : () => getOpenAIToolDefinitions(true, [
-                    ...getSessionToolNames(options.sessionId),
-                    ...getAskUserToolNames(options.sessionId),
-                ]),
+            getToolDefinitions: () => getOpenAIToolDefinitions([
+                ...getSessionToolNames(options.sessionId),
+                ...getAskUserToolNames(options.sessionId),
+            ]),
+            ...(options.disableToolCalls ? { toolChoice: "none" as const } : {}),
             history: options.history ?? [],
             sessionId: options.sessionId,
             contextEpochId: options.contextEpochId,

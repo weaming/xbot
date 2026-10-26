@@ -48,17 +48,16 @@ describe("tool catalog", () => {
 
     test("syncRemoteTools skips reserved names and local conflicts", () => {
         const catalog = new ToolCatalog();
-        catalog.reserveNames(["search_tools", "use_skill"]);
+        catalog.reserveNames(["use_skill"]);
         catalog.registerLocalTools([makeTool("bash")]);
 
         const result = catalog.syncRemoteTools("mcp-hub", [
-            makeTool("search_tools", { fromServer: "mcp-hub" }),
             makeTool("bash", { fromServer: "mcp-hub" }),
             makeTool("remote_ok", { fromServer: "mcp-hub" }),
         ]);
 
         expect(result.added).toEqual(["remote_ok"]);
-        expect(result.skipped).toEqual(["search_tools", "bash"]);
+        expect(result.skipped).toEqual(["bash"]);
         expect(catalog.getTool("bash")?.description).toBe("bash description");
         expect(catalog.getTool("remote_ok")?.description).toBe("remote_ok description");
     });

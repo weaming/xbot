@@ -12,7 +12,6 @@ import type { UsageInfo } from "../../types/chat.js";
 import type { ChatMessage } from "../../types/session.js";
 import type { ToolCall } from "../../types/tool-call.js";
 import { fromOpenAIToolCalls } from "../../types/tool-call.js";
-import { getOpenAIToolDefinitionsByNames } from "../tool-registry.js";
 import { normalizeToolDefinitionsForDeepSeek } from "../tool-schema.js";
 import { toUserContent, type UserMessageInput } from "../../types/image.js";
 import { normalizeResponsesResponse } from "./responses-shape.js";
@@ -46,6 +45,7 @@ export interface TurnContext {
   initialRequestKind: Exclude<LLMRequestKind, "tool_response">;
   reasoningEffort?: string;
   reasoningEfforts?: string[];
+  toolChoice?: "auto" | "none";
   /** 托管工具类型（Responses 专用，来自 OPENAI_RESPONSES_TOOLS）：上游执行，本地不执行。 */
   hostedTools?: string[];
 
@@ -54,7 +54,6 @@ export interface TurnContext {
   turnMessages: ChatMessage[];
   counters: { emptyResponse: number; lengthRetry: number };
   iteration: number;
-  discoveredToolNames: Set<string>;
 
   // 回调
   emit: EmitFn;
@@ -152,10 +151,9 @@ export async function runTurnLoop(ctx: TurnContext): Promise<TurnLoopResult> {
         model: ctx.model,
         messages: ctx.messages,
         tools: ctx.tools,
-        discoveredToolNames: ctx.discoveredToolNames,
         ...(ctx.getToolDefinitions ? { getToolDefinitions: ctx.getToolDefinitions } : {}),
         ...(ctx.hostedTools?.length ? { hostedTools: ctx.hostedTools } : {}),
-        getOpenAIToolDefinitionsByNames,
+        ...(ctx.toolChoice ? { toolChoice: ctx.toolChoice } : {}),
         ...(ctx.getContextReminders ? { getContextReminders: ctx.getContextReminders } : {}),
         normalizedTools: (list: any[]) => (isDeepSeekEndpoint(ctx.model, ctx.client.baseURL)
           ? normalizeToolDefinitionsForDeepSeek(list)

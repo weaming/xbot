@@ -8,6 +8,7 @@ import {
 } from "../utils/token-budget.js";
 import { countMessagesTokens, countTextTokens } from "../utils/tokenizer.js";
 import { buildCompactPrompt } from "../utils/compaction-prompt.js";
+import { projectChatMessagesForPrompt } from "../utils/tool-result-context.js";
 import { isAbortError } from "../tools/chat-orchestrator.js";
 import { emptyUsage, mergeUsage } from "../events/ui-events.js";
 import type { UsageInfo } from "../types/chat.js";
@@ -61,7 +62,7 @@ export async function compactActiveTurnMessagesIfNeeded(
 ): Promise<any[] | undefined> {
     if (options.providerMaxTokens === undefined) {
         // 工具结果这类内容启发式会低估，正常路径需用真实分词计数预判。
-        const currentTokens = await countMessagesTokens(messages, options.model);
+        const currentTokens = await countMessagesTokens(projectChatMessagesForPrompt(messages), options.model);
         const threshold = getAutoCompactThreshold(options.model);
         const checkTokens = Math.max(options.lastPromptTokens ?? 0, currentTokens);
         if (checkTokens < threshold) return undefined;
@@ -80,7 +81,7 @@ export async function compactActiveTurnMessagesIfNeeded(
             modelSelection: options.modelSelection,
             contextEpochId: options.contextEpochId,
             initialRequestKind: "context_compaction",
-            disableTools: true,
+            disableToolCalls: true,
             stream: true,
             signal: options.signal,
             onProgress: options.onProgress,
@@ -231,7 +232,7 @@ export async function autoCompactIfNeeded(
             modelSelection: session.modelSelection,
             contextEpochId: session.contextEpochId,
             initialRequestKind: "context_compaction",
-            disableTools: true,
+            disableToolCalls: true,
             stream: true,
             signal: options.signal,
             onEvent: event => {

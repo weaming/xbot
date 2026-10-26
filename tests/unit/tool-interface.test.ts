@@ -30,7 +30,6 @@ describe('tool output JSON compaction', () => {
     test('accepts configured structured-data tool keywords', () => {
         expect(canCompactJsonToolOutput('LongPortPrivate__stock_positions')).toBe(true);
         expect(canCompactJsonToolOutput('google_news_search')).toBe(true);
-        expect(canCompactJsonToolOutput('search_tools')).toBe(true);
         expect(canCompactJsonToolOutput('cat')).toBe(false);
     });
 });

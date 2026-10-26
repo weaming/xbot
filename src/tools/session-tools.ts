@@ -359,7 +359,7 @@ function shortId(sessionId: string): string {
 
 export const SESSION_TOOLS: ExecutableTool[] = [sessionSpawnTool, sessionSendTool, sessionStatusTool, sessionCloseTool];
 
-// 注册到工具目录供 executeMcpTool 查找；sessionScoped 保证默认不下发、不出现在 search_tools 结果里
+// 注册到工具目录供 executeMcpTool 查找；sessionScoped 保证默认不下发
 toolCatalog.registerLocalTools(SESSION_TOOLS);
 
 /**

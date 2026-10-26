@@ -83,10 +83,10 @@ describe("shouldAutoCompact 与 lastPromptTokens 的关系", () => {
 });
 
 describe("provider 超窗后的本轮原子压缩", () => {
-    test("主请求超窗后先尝试一次不带工具的完整摘要", async () => {
+    test("主请求超窗后先尝试一次禁止工具调用的完整摘要", async () => {
         const histories: string[] = [];
         runChatQueryImpl = async options => {
-            expect(options.disableTools).toBe(true);
+            expect(options.disableToolCalls).toBe(true);
             histories.push(JSON.stringify(options.history));
             return { content: `摘要 ${histories.length}`, toolCalls: 0, messages: [] };
         };
@@ -113,7 +113,7 @@ describe("provider 超窗后的本轮原子压缩", () => {
         let requests = 0;
         runChatQueryImpl = async options => {
             requests++;
-            expect(options.disableTools).toBe(true);
+            expect(options.disableToolCalls).toBe(true);
             throw new Error("LLM provider 请求失败（HTTP 400）：400 WorkBuddy AI: prompt is too long: 10001 tokens > 10000 maximum");
         };
 

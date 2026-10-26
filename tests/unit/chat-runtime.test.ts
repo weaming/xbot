@@ -175,12 +175,11 @@ Alpha prompt body`,
         }
     });
 
-    test("tool calling rule section enables discovered tool injection", () => {
+    test("tool calling rule section says all available tools are declared", () => {
         const result = buildSystemPrompt();
         expect(result.systemPrompt).toContain("不得臆想或假设工具存在");
         expect(result.systemPrompt).toContain("可直接调用当前 tools 参数中声明的工具");
-        expect(result.systemPrompt).toContain("先调用 search_tools 搜索它");
-        expect(result.systemPrompt).toContain("搜索到的工具会加入可用列表");
+        expect(result.systemPrompt).toContain("tools 参数包含当前可用工具");
     });
 
     test("buildSystemPrompt always includes the complete skill listing", async () => {

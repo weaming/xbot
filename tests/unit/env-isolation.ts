@@ -21,7 +21,6 @@ const testStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-test-state-"));
 process.env.XBOT_STATE_DIR = testStateDir;
 
 // WORKSPACE 同理：无 XBOT_STATE_DIR 时 getSessionsDir 回退到 WORKSPACE/sessions，
-// 而 tool-usage-store 等模块在 import 期就解析路径（早于各测试的 useTmpWorkspace），
 // 不隔离会写进宿主真实的 ~/.xbot/workspace。
 const testWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "xbot-test-workspace-"));
 process.env.WORKSPACE = testWorkspace;

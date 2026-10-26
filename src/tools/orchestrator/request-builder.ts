@@ -66,14 +66,6 @@ export function sortToolsByName<T extends { function?: { name?: string } }>(tool
  * 追加后续发现的工具：只在尾部追加，不参与重排。
  * 这样同一会话内前缀不变，每次最多 miss 新增那几个工具的定义。
  */
-export function appendDiscoveredTools<T extends { function?: { name?: string } }>(
-    base: T[],
-    discovered: T[],
-): T[] {
-    const existing = new Set(base.map(tool => tool.function?.name));
-    return [...base, ...discovered.filter(tool => !existing.has(tool.function?.name))];
-}
-
 export interface ReasoningParamsInput {
     protocol: ChatProtocol;
     model: string;
@@ -102,6 +94,7 @@ export interface BuildRequestBodyOptions {
     messages: any[];
     /** 已按协议转换好的工具定义。 */
     tools: any[];
+    toolChoice?: "auto" | "none";
     stream: boolean;
     reasoning?: ReasoningParamsInput;
     /** MiniMax：content 不含 <think>，reasoning_details 单独提供。 */
@@ -118,13 +111,13 @@ export function buildRequestBody(options: BuildRequestBodyOptions): Record<strin
             ...(options.model.trim() ? { model: options.model } : {}),
             input: options.messages,
             tools: options.tools,
-            tool_choice: hasTools ? "auto" : "none",
+            tool_choice: options.toolChoice ?? (hasTools ? "auto" : "none"),
         }
         : {
             ...(options.model.trim() ? { model: options.model } : {}),
             messages: options.messages,
             tools: options.tools,
-            tool_choice: hasTools ? "auto" : "none",
+            tool_choice: options.toolChoice ?? (hasTools ? "auto" : "none"),
         };
 
     if (options.stream) {
