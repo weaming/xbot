@@ -124,6 +124,18 @@ interface PendingQuestion {
 
 /** 需要当前会话才能执行的命令（无会话时直接提示，不静默失败）。 */
 const SESSION_REQUIRED_COMMANDS = new Set(["/clear", "/archive", "/unarchive", "/delete", "/close", "/compact", "/continue", "/system", "/model"]);
+
+/**
+ * 释放会话后的提示：按发起方区分，避免把本实例的主动操作说成"被其他实例拿走"。
+ * `delete` 不在表里 —— 删除由 deleteSessionById 自己提示，重复闪没有意义。
+ */
+const RELEASE_FLASH: Partial<Record<SessionReleaseCause, string>> = {
+    user: "已关闭会话（⌘P 可重新打开）",
+    archive: "已归档会话（⌘P → ⌃A 取消归档）",
+    tool: "子会话已归档（历史保留）",
+    auto: "子会话已自动归档（历史保留）",
+};
+
 const GLOBAL_RUNTIME_RELOAD_KEY = "__global__";
 const MAX_SHOWN_BACKGROUND_TASKS = 16;
 const MAX_TASK_TEXT_COLUMNS = 72;
@@ -875,7 +887,7 @@ export class ChatApp {
         }
         try {
             await this.agent.deleteSession(sessionId);
-            this.agent.releaseSession(sessionId);
+            this.agent.releaseSession(sessionId, { cause: "delete" });
             void this.refreshOwnership(true);
             this.store.removeSessionView(sessionId);
             this.store.sessions = this.store.sessions.filter(session => session.sessionId !== sessionId);
@@ -1695,15 +1707,12 @@ export class ChatApp {
         this.clearMessages();
         this.editor.disableSubmit = false;
         this.renderTabBar();
-        if (cause === "auto") {
-            this.tui.flash("子会话已自动归档（历史保留）");
-        } else if (cause === "tool") {
-            this.tui.flash("子会话已归档（历史保留）");
-        } else if (cause === "user") {
-            this.tui.flash("已关闭会话（⌘P 可重新打开）");
-        } else {
+        if (cause === "peer") {
             this.tui.flash("会话已被其他实例接管");
             this.store.pushSystemMessage("⚠️ 当前会话已被其他实例接管：⌘P 重新选择或选别的会话。");
+        } else {
+            const notice = RELEASE_FLASH[cause];
+            if (notice) this.tui.flash(notice);
         }
 
         const next = this.claimedSessions()[0];
@@ -1911,7 +1920,7 @@ export class ChatApp {
         try {
             await this.agent.closeSession(sessionId);
             // 归档即放弃持有：别的实例可以接管它（只读查看）
-            this.agent.releaseSession(sessionId);
+            this.agent.releaseSession(sessionId, { cause: "archive" });
             void this.refreshOwnership(true);
             // 归档后清理内存缓存，重新打开时从事件日志重建，避免残留瞬态 UI 状态。
             this.store.removeSessionView(sessionId);

@@ -39,10 +39,11 @@ export interface InstanceNetworkStats {
 }
 
 /**
- * 会话释放的发起方：`peer` 被其他实例协商拿走，`user` 本实例主动关闭（/close）。
- * 宿主据此区分收尾文案，但两者都要把会话从 tab 条与内存里摘掉。
+ * 会话释放的发起方：`peer` 被其他实例协商拿走，`user` 本实例主动关闭（/close），
+ * `archive`/`delete` 归档与删除前放弃持有，`tool`/`auto` 子会话被工具关闭或自动归档。
+ * 宿主据此区分收尾文案 —— 本实例的主动操作不能说成"被其他实例拿走"。
  */
-export type SessionReleaseCause = "peer" | "user" | "tool" | "auto";
+export type SessionReleaseCause = "peer" | "user" | "tool" | "auto" | "archive" | "delete";
 
 export interface TuiAgent {
     onEvent?: (requestId: number, sessionId: string, event: UIEvent) => void;

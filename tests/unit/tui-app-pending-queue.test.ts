@@ -5,6 +5,7 @@ import os from "os";
 import path from "path";
 import { getTuiWheelLogFile } from "../../src/utils/tui-state-paths.js";
 import { SPINNER_FRAMES } from "../../src/tui/session-marker.js";
+import type { SessionReleaseCause } from "../../src/tui/agent-types.js";
 
 /**
  * TUI Pending 队列测试：
@@ -92,8 +93,8 @@ interface FakeAgent {
     detachPeerWaits: (sessionId: string) => number;
     takePeerResults: (sessionId: string) => string[];
     claimSession: (sessionId: string) => Promise<{ ok: true }>;
-    releaseSession: (sessionId: string, options?: { cause?: "peer" | "user" }) => void;
-    onSessionReleased?: (sessionId: string, cause: "peer" | "user") => void;
+    releaseSession: (sessionId: string, options?: { cause?: SessionReleaseCause }) => void;
+    onSessionReleased?: (sessionId: string, cause: SessionReleaseCause) => void;
     isSessionClaimed: (sessionId: string) => boolean;
     claimedSessionIds: () => string[];
     probeSession: (sessionId: string) => Promise<{ state: "free" | "mine" | "other" }>;
@@ -116,7 +117,7 @@ function makeFakeAgent(): FakeAgent {
             return { ok: true as const };
         },
         // 与真实 LocalTuiAgent 一致：释放持有会同步通知宿主（本实例主动关闭 / 被接管）
-        releaseSession: (sessionId: string, options?: { cause?: "peer" | "user" }) => {
+        releaseSession: (sessionId: string, options?: { cause?: SessionReleaseCause }) => {
             claimed.delete(sessionId);
             agent.onSessionReleased?.(sessionId, options?.cause ?? "peer");
         },
@@ -1726,6 +1727,56 @@ describe("ChatApp 会话条", () => {
 
         expect((app as any).panels.find("session")?.panel).toBe(entry.panel);
         expect(store.sessions.find((session: any) => session.sessionId === "sess-arch")?.archived).toBe(true);
+    });
+});
+
+describe("ChatApp 主动释放的提示", () => {
+    test("/archive 归档当前会话：提示已归档，不误报被其他实例接管", async () => {
+        const agent = makeFakeAgent();
+        const store = new ChatStore();
+        const app = new ChatApp(agent as any, store);
+        await app.init();
+        store.setSessions([
+            { sessionId: "sess-arch-cur", title: "待归档", messageCount: 2 },
+            { sessionId: "sess-arch-stay", title: "留下的", messageCount: 1 },
+        ]);
+        await (app as any).selectSession("sess-arch-cur");
+        await (app as any).selectSession("sess-arch-stay");
+        await (app as any).selectSession("sess-arch-cur");
+
+        await (app as any).handleCommand("/archive");
+        await new Promise(resolve => setTimeout(resolve, 10));
+
+        // 归档即放弃持有，并切到另一个已持有会话
+        expect(agent.claimedSessionIds()).not.toContain("sess-arch-cur");
+        expect(store.currentSessionId).toBe("sess-arch-stay");
+        expect(store.sessions.find((session: any) => session.sessionId === "sess-arch-cur")?.archived).toBe(true);
+        const flashes: string[] = (app as any).tui.flashCalls;
+        expect(flashes).toContain("已归档会话（⌘P → ⌃A 取消归档）");
+        expect(flashes.join("\n")).not.toContain("其他实例");
+        expect(store.messages.some(message => message.text.includes("其他实例"))).toBe(false);
+    });
+
+    test("/delete 删除当前会话：只提示已删除，不误报被其他实例接管", async () => {
+        const agent = makeFakeAgent();
+        const store = new ChatStore();
+        const app = new ChatApp(agent as any, store);
+        await app.init();
+        store.setSessions([
+            { sessionId: "sess-del-cur", title: "待删除", messageCount: 2 },
+            { sessionId: "sess-del-stay", title: "留下的", messageCount: 1 },
+        ]);
+        await (app as any).selectSession("sess-del-cur");
+        await (app as any).selectSession("sess-del-stay");
+        await (app as any).selectSession("sess-del-cur");
+
+        await (app as any).handleCommand("/delete");
+        await new Promise(resolve => setTimeout(resolve, 10));
+
+        const flashes: string[] = (app as any).tui.flashCalls;
+        expect(flashes).toContain("🗑️ 已删除会话");
+        expect(flashes.join("\n")).not.toContain("其他实例");
+        expect(store.messages.some(message => message.text.includes("其他实例"))).toBe(false);
     });
 });
 
