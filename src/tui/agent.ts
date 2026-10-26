@@ -90,6 +90,7 @@ export class LocalTuiAgent implements TuiAgent {
     private readonly eventLog = new EventLog();
     private readonly replay = new SessionReplay(this.eventLog);
     private readonly activeSessions = new Map<string, ActiveSession>();
+    private readonly pendingModelSelections = new Map<string, ChatModelSelection>();
     private readonly sessionOperations = new Set<string>();
     /** 本进程内各会话真实网络请求的用量聚合（退出时展示）。 */
     private readonly instanceUsage = new Map<string, UsageInfo>();
@@ -113,6 +114,7 @@ export class LocalTuiAgent implements TuiAgent {
         updateActiveSeq: (sessionId, seq) => this.updateActiveSeq(sessionId, seq),
         accumulateInstanceUsage: (sessionId, usage) => this.accumulateInstanceUsage(sessionId, usage),
         finishAndPersist: session => this.finishAndPersist(session),
+        persistPendingModelSelection: (sessionId, session) => this.persistPendingModelSelection(sessionId, session),
         releaseSessionLockSafely: lock => this.releaseSessionLockSafely(lock),
         beginSessionOperation: sessionId => this.beginSessionOperation(sessionId),
         endSessionOperation: sessionId => this.endSessionOperation(sessionId),
@@ -427,6 +429,7 @@ export class LocalTuiAgent implements TuiAgent {
         const active = this.activeSessions.get(sessionId);
         active?.abortController?.abort();
         this.activeSessions.delete(sessionId);
+        this.pendingModelSelections.delete(sessionId);
         try {
             this.onSessionReleased?.(sessionId, cause);
         } catch {
@@ -607,27 +610,23 @@ export class LocalTuiAgent implements TuiAgent {
     }
 
     async setSessionModelSelection(sessionId: string, selection: ChatModelSelection): Promise<void> {
-        this.beginSessionOperation(sessionId);
-        let lock: SessionLockHandle | undefined;
-        try {
-            lock = await acquireSessionLock(sessionId);
-            const session = await this.requireActiveSession(sessionId);
-            const lastSeq = await this.eventLog.lastSeq(sessionId, { forceRefresh: true });
-            if (lastSeq === 0) {
-                const created = await this.eventLog.append(sessionId, "session_created", { cwd: session.cwd });
-                this.updateActiveSeq(sessionId, created.seq);
-            }
+        await this.requireActiveSession(sessionId);
+        this.pendingModelSelections.set(sessionId, selection);
+    }
 
-            const event = await this.eventLog.append(sessionId, "model_selected", selection);
-            session.modelSelection = selection;
-            this.updateActiveSeq(sessionId, event.seq);
-        } finally {
-            try {
-                await this.releaseSessionLockSafely(lock);
-            } finally {
-                this.endSessionOperation(sessionId);
-            }
+    private async persistPendingModelSelection(sessionId: string, session: Session): Promise<void> {
+        const selection = this.pendingModelSelections.get(sessionId);
+        if (!selection) return;
+
+        const lastSeq = await this.eventLog.lastSeq(sessionId, { forceRefresh: true });
+        if (lastSeq === 0) {
+            const created = await this.eventLog.append(sessionId, "session_created", { cwd: session.cwd });
+            this.updateActiveSeq(sessionId, created.seq);
         }
+        const event = await this.eventLog.append(sessionId, "model_selected", selection);
+        session.modelSelection = selection;
+        this.pendingModelSelections.delete(sessionId);
+        this.updateActiveSeq(sessionId, event.seq);
     }
 
     async deleteSession(sessionId: string): Promise<void> {

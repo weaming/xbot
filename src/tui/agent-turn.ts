@@ -35,6 +35,7 @@ export interface TurnHost {
     updateActiveSeq(sessionId: string, seq: number): void;
     accumulateInstanceUsage(sessionId: string, usage: UsageInfo): void;
     finishAndPersist(session: Session): Promise<void>;
+    persistPendingModelSelection?(sessionId: string, session: Session): Promise<void>;
     releaseSessionLockSafely(lock: SessionLockHandle | undefined): Promise<void>;
     beginSessionOperation(sessionId: string): void;
     endSessionOperation(sessionId: string): void;
@@ -65,6 +66,7 @@ export async function runSessionTurn(
     try {
         lock = await acquireSessionLock(sessionId);
         session = await host.requireActiveSession(sessionId);
+        await host.persistPendingModelSelection?.(sessionId, session);
         host.activeSessions.set(sessionId, {
             session,
             lastSeq: host.activeSessions.get(sessionId)?.lastSeq ?? 0,
