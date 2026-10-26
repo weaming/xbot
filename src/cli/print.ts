@@ -61,13 +61,14 @@ export async function runPrintCli(argv: string[]): Promise<void> {
 
     const restoreConsole = redirectTuiLogsToFile();
     try {
-        const [{ initializeTuiAgentRuntime }, runtime, mcp] = await Promise.all([
-            import("../tui/agent.js"),
+        const [skills, runtime, mcp] = await Promise.all([
+            import("../skills/skill-registry.js"),
             import("../services/chat-runtime.js"),
             import("../mcp/client-manager.js"),
         ]);
         try {
-            await initializeTuiAgentRuntime();
+            await skills.skillRegistry.load();
+            await mcp.initMcpClients({ mode: "tui" });
 
             const settings = runtime.getChatApiSettings();
             const settingsError = runtime.validateChatApiSettings(settings);
