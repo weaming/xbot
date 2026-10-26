@@ -197,7 +197,51 @@ describe("executeWithChat 流式聚合", () => {
             },
         });
 
-        expect(progress).toEqual(["🌐 查找可用工具中（第 1 次）..."]);
+        expect(progress).toEqual(["🌐 找工具中 1..."]);
+    });
+
+    it("Responses 联网搜索的三个阶段都解析为进度（含并行搜索与完成汇总）", async () => {
+        // 事件序列取样自 deepseek-v4-pro 开启 web_search 的真实流式响应
+        const progress: string[] = [];
+        const client: ChatClient = {
+            baseURL: "http://test.local/v1",
+            protocol: "responses",
+            create: async () => undefined,
+            createResponse: async () => ({
+                [Symbol.asyncIterator]: async function* () {
+                    yield { type: "response.web_search_call.in_progress", item_id: "call_00", output_index: 1 };
+                    yield { type: "response.web_search_call.searching", item_id: "call_00", output_index: 1 };
+                    yield { type: "response.web_search_call.completed", item_id: "call_00", output_index: 1 };
+                    yield { type: "response.web_search_call.in_progress", item_id: "call_01", output_index: 3 };
+                    yield { type: "response.web_search_call.in_progress", item_id: "call_02", output_index: 4 };
+                    yield { type: "response.web_search_call.searching", item_id: "call_01", output_index: 3 };
+                    yield { type: "response.web_search_call.searching", item_id: "call_02", output_index: 4 };
+                    yield { type: "response.web_search_call.completed", item_id: "call_01", output_index: 3 };
+                    yield { type: "response.web_search_call.completed", item_id: "call_02", output_index: 4 };
+                    yield { type: "response.output_text.delta", delta: "两条新闻……" };
+                    yield { type: "response.completed", response: { status: "completed", output: [] } };
+                },
+            }),
+        };
+
+        await executeWithChat({
+            query: "最近 24 小时的 AI 新闻",
+            client,
+            model: "test-model",
+            hostedTools: ["web_search"],
+            stream: true,
+            onEvent: event => {
+                if (event.type === "progress") progress.push(event.message);
+            },
+        });
+
+        expect(progress).toEqual([
+            "🌐 搜索中 1...",
+            "🌐 搜索完成 1",
+            "🌐 搜索中 2...",
+            "🌐 搜索中 3...",
+            "🌐 搜索完成 3",
+        ]);
     });
 
     it("Responses 以 failed 事件结束时保留增量文字", async () => {

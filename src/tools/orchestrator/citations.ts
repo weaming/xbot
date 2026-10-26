@@ -13,8 +13,12 @@ const MAX_CITATIONS = 12;
 function removeOpenAITracking(url: string): string {
     try {
         const parsed = new URL(url);
-        if (!parsed.searchParams.has("utm_source")) return url;
-        parsed.searchParams.delete("utm_source");
+        // DeepSeek 会给 open_page 的 URL 追加 #ws_call_id=<call_id> 作为回指，展示时去掉
+        const isDeepSeekMarker = parsed.hash.startsWith("#ws_call_id=");
+        const hasTracking = parsed.searchParams.has("utm_source");
+        if (!isDeepSeekMarker && !hasTracking) return url;
+        if (hasTracking) parsed.searchParams.delete("utm_source");
+        if (isDeepSeekMarker) parsed.hash = "";
         return parsed.toString();
     } catch {
         return url;
@@ -38,9 +42,16 @@ export function extractCitations(message: any): Citation[] {
         });
     };
 
-    // 托管搜索的来源：OpenAI 挂在 web_search_call.action.sources，部分兼容端用 results
+    /**
+     * 托管搜索的来源：OpenAI 挂在 web_search_call.action.sources（部分兼容端用 results），
+     * DeepSeek 则用 action.type=open_page 的 url 表示实际读过的页面。
+     */
     const pushSearchItem = (item: any) => {
-        for (const list of [item?.action?.sources, item?.action?.results, item?.results]) {
+        const action = item?.action;
+        if (action?.type === "open_page" && typeof action.url === "string") {
+            push({ url: action.url });
+        }
+        for (const list of [action?.sources, action?.results, item?.results]) {
             if (!Array.isArray(list)) continue;
             for (const entry of list) {
                 if (typeof entry === "string") push({ url: entry });
@@ -49,19 +60,18 @@ export function extractCitations(message: any): Citation[] {
         }
     };
 
+    // 正文注解优先：带标题与正文位置，展示顺序更贴近读者预期
     const output = Array.isArray(message?.response_output) ? message.response_output : [];
     for (const item of output) {
-        if (item?.type === "web_search_call") {
-            pushSearchItem(item);
-            continue;
-        }
         if (item?.type !== "message") continue;
         for (const part of item.content ?? []) {
             for (const annotation of part?.annotations ?? []) push(annotation);
         }
     }
-
     for (const annotation of Array.isArray(message?.annotations) ? message.annotations : []) push(annotation);
+    for (const item of output) {
+        if (item?.type === "web_search_call") pushSearchItem(item);
+    }
 
     return citations.slice(0, MAX_CITATIONS);
 }

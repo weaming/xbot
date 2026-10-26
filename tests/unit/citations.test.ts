@@ -84,8 +84,46 @@ describe("extractCitations", () => {
                 },
             ],
         })).toEqual([
+            // 正文注解先出现（带位置/标题），搜索来源补齐其余 URL
+            { url: "https://b.example/2" },
             { url: "https://a.example/1", title: "A" },
-            { url: "https://b.example/2", title: "B" },
+        ]);
+    });
+
+    test("DeepSeek 形态：annotations 为空，来源取 open_page 的 url 并去掉 ws_call_id 标记", () => {
+        // 结构取样自 deepseek-v4-pro 的真实流式响应
+        expect(extractCitations({
+            role: "assistant",
+            content: "最近 24 小时内两条重要 AI 新闻……",
+            response_output: [
+                { type: "reasoning", id: "rs_1" },
+                {
+                    type: "web_search_call",
+                    id: "call_00_abc",
+                    status: "completed",
+                    action: { type: "search", queries: ["AI news last 24 hours"] },
+                },
+                {
+                    type: "web_search_call",
+                    id: "call_01_abc",
+                    status: "completed",
+                    action: { type: "open_page", url: "https://www.yicai.com/news/103407983.html#ws_call_id=call_01_abc" },
+                },
+                {
+                    type: "web_search_call",
+                    id: "call_02_abc",
+                    status: "failed",
+                    action: { type: "open_page", url: "https://tv.cctv.com/2026/10/26/VIDE.shtml#ws_call_id=call_02_abc" },
+                },
+                {
+                    type: "message",
+                    role: "assistant",
+                    content: [{ type: "output_text", text: "最近 24 小时内两条重要 AI 新闻……", annotations: [] }],
+                },
+            ],
+        })).toEqual([
+            { url: "https://www.yicai.com/news/103407983.html" },
+            { url: "https://tv.cctv.com/2026/10/26/VIDE.shtml" },
         ]);
     });
 

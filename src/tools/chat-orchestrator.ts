@@ -388,6 +388,12 @@ async function collectStreamResponse(
   };
 }
 
+/** 托管搜索的事件族：web_search_call（联网）与 tool_search_call（工具发现）。 */
+function isManagedSearchEvent(type: unknown): boolean {
+  return typeof type === "string"
+    && (type.startsWith("response.web_search_call.") || type.startsWith("response.tool_search_call."));
+}
+
 async function collectResponsesResponse(
   client: ChatClient,
   requestBody: Record<string, any>,
@@ -407,8 +413,9 @@ async function collectResponsesResponse(
   let usage: any;
   let partialText = "";
   let partialReasoning = "";
-  // 托管搜索的进度块按 item_id 计次：同一轮可能连续搜多次
-  const searchItems = new Set<string>();
+  // 托管搜索的进度按 item_id 跟踪：同一轮可能连续搜多次，且会并行开多个
+  const activeSearches = new Set<string>();
+  let finishedSearches = 0;
 
   try {
     for await (const event of stream) {
@@ -478,18 +485,21 @@ async function collectResponsesResponse(
         if (event.item && event.output_index !== undefined) {
           outputItems[event.output_index] = event.item;
         }
-      } else if (event.type === "response.web_search_call.in_progress"
-        || event.type === "response.web_search_call.searching"
-        || event.type === "response.tool_search_call.in_progress"
-        || event.type === "response.tool_search_call.searching") {
-        // 托管搜索由上游执行，本地只转成进度提示；事件本身不带查询词
+      } else if (isManagedSearchEvent(event.type)) {
+        // 托管搜索由上游执行：in_progress / searching / completed 三个阶段都只转成进度提示，
+        // 事件本身不带查询词与来源，action 只在 output_item.done 的 item 里出现
+        const label = event.type.startsWith("response.tool_search_call.") ? "找工具" : "搜索";
         const key = typeof event.item_id === "string"
           ? event.item_id
-          : `search_${event.output_index ?? searchItems.size}`;
-        if (!searchItems.has(key)) {
-          searchItems.add(key);
-          const label = event.type.startsWith("response.tool_search_call.") ? "查找可用工具" : "联网搜索";
-          emit({ type: "progress", message: `🌐 ${label}中（第 ${searchItems.size} 次）...` });
+          : `search_${event.output_index ?? activeSearches.size}`;
+        if (event.type.endsWith(".completed")) {
+          if (activeSearches.delete(key)) finishedSearches += 1;
+          if (activeSearches.size === 0 && finishedSearches > 0) {
+            emit({ type: "progress", message: `🌐 ${label}完成 ${finishedSearches}` });
+          }
+        } else if (!activeSearches.has(key)) {
+          activeSearches.add(key);
+          emit({ type: "progress", message: `🌐 ${label}中 ${activeSearches.size + finishedSearches}...` });
         }
       } else if (event.type === "response.completed") {
         completedResponse = event.response;
