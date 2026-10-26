@@ -57,6 +57,23 @@ export function isDeepSeekEndpoint(model: string, baseURL: string): boolean {
     return model.toLowerCase().includes("deepseek") || endpointHost(baseURL) === DEEPSEEK_OFFICIAL_HOST;
 }
 
+/** DeepSeek 兼容端只托管服务端 web_search，且 flash 档上游会忽略，因此其余类型与 flash 档一律不发。 */
+const DEEPSEEK_HOSTED_TOOL_TYPES: ReadonlySet<string> = new Set(["web_search"]);
+
+const NO_HOSTED_TOOL_TYPES: ReadonlySet<string> = new Set();
+
+/** 模型名同时含 deepseek 与 flash 的档位不执行服务端 web_search。 */
+function isDeepSeekFlashModel(model: string): boolean {
+    const name = model.toLowerCase();
+    return name.includes("deepseek") && name.includes("flash");
+}
+
+/** 按接入端解析可声明的托管工具类型；不是 DeepSeek 时返回 undefined（不限制）。 */
+function resolveHostedToolTypes(model: string, baseURL: string): ReadonlySet<string> | undefined {
+    if (!isDeepSeekEndpoint(model, baseURL)) return undefined;
+    return isDeepSeekFlashModel(model) ? NO_HOSTED_TOOL_TYPES : DEEPSEEK_HOSTED_TOOL_TYPES;
+}
+
 export interface PrepareRequestOptions {
     client: ChatClient;
     model: string;
@@ -65,7 +82,7 @@ export interface PrepareRequestOptions {
     /** 基础工具定义（未排序）。 */
     tools: any[];
     getToolDefinitions?: () => any[];
-    /** 托管工具类型（上游执行，本地不执行）：调用方解析 OPENAI_HOSTED_TOOLS 后传入。 */
+    /** 托管工具类型（上游执行，本地不执行）：调用方解析 OPENAI_RESPONSES_HOSTED_TOOLS 后传入。 */
     hostedTools?: string[];
     getContextReminders?: () => string[] | undefined;
     normalizedTools: (tools: any[]) => any[];
@@ -109,16 +126,18 @@ export async function prepareRequest(options: PrepareRequestOptions): Promise<Pr
             : await materializeImageMessages(requestMessages);
 
     const normalizedTools = options.normalizedTools(currentTools);
-    const enableDeferredLoading = useResponses
-        && (options.hostedTools?.includes("tool_search") ?? false)
-        && normalizedTools.some(tool => tool.deferLoading === true);
     // 托管工具只在 Responses 协议声明：Chat Completions 只接受 function 类型，
     // 严格的上游会直接以 422 unknown variant 拒绝 web_search 等类型。
-    // tool_search 依赖至少一个延迟加载的 Responses function 工具。
-    const hostedTools = useResponses
-        ? toHostedToolDefinitions(options.hostedTools ?? [])
-            .filter(tool => tool.type !== "tool_search" || enableDeferredLoading)
+    // DeepSeek 兼容端只有 pro 档托管 web_search；flash 档与 tool_search 均由能力集合过滤掉。
+    const hostedToolTypes = resolveHostedToolTypes(model, client.baseURL);
+    const supportedHostedTools = useResponses
+        ? toHostedToolDefinitions(options.hostedTools ?? [], { supportedTypes: hostedToolTypes })
         : [];
+    // tool_search 依赖至少一个延迟加载的 Responses function 工具；按实际声明的托管工具判断。
+    const enableDeferredLoading = supportedHostedTools.some(tool => tool.type === "tool_search")
+        && normalizedTools.some(tool => tool.deferLoading === true);
+    const hostedTools = supportedHostedTools
+        .filter(tool => tool.type !== "tool_search" || enableDeferredLoading);
     const requestTools = useResponses
         ? appendHostedTools(toResponsesToolDefinitions(normalizedTools, enableDeferredLoading), hostedTools)
         : normalizedTools.map(({ deferLoading: _deferLoading, ...tool }) => tool);

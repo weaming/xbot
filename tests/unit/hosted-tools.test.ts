@@ -8,7 +8,7 @@ import {
 } from "../../src/tools/orchestrator/request-builder.js";
 import { prepareRequest } from "../../src/tools/orchestrator/turn-request.js";
 
-/** OPENAI_HOSTED_TOOLS 的托管工具声明：只声明，不执行，且不挤动 function 前缀。 */
+/** OPENAI_RESPONSES_HOSTED_TOOLS 的托管工具声明：只声明，不执行，且不挤动 function 前缀。 */
 
 const functionTools = [
     { type: "function", function: { name: "grep", parameters: { type: "object", properties: {} } } },
@@ -23,6 +23,15 @@ describe("toHostedToolDefinitions", () => {
 
     test("空列表不产生工具定义", () => {
         expect(toHostedToolDefinitions([])).toEqual([]);
+    });
+
+    test("按端能力集合过滤不支持的类型", () => {
+        expect(toHostedToolDefinitions(
+            ["web_search", "tool_search", "file_search"],
+            { supportedTypes: new Set(["web_search"]) },
+        ))
+            .toEqual([{ type: "web_search" }]);
+        expect(toHostedToolDefinitions(["tool_search"], { supportedTypes: new Set() })).toEqual([]);
     });
 });
 
@@ -139,4 +148,41 @@ test("prepareRequest 仅在启用 tool_search 时发出 defer_loading MCP 定义
     expect(disabled.requestBody.tools.find((tool: any) => tool.name === "remote__lookup"))
         .not.toHaveProperty("defer_loading");
     expect(disabled.requestBody.tools).toContainEqual({ type: "web_search" });
+});
+
+describe("DeepSeek Responses 端点的托管工具", () => {
+    const deferredMcpTool = {
+        type: "function",
+        deferLoading: true,
+        function: { name: "remote__lookup", description: "Lookup", parameters: { type: "object" } },
+    };
+    const prepare = (model: string, hostedTools: string[]) => prepareRequest({
+        client: {
+            baseURL: "https://api.deepseek.com",
+            protocol: "responses",
+            createResponse: async () => {},
+        },
+        model,
+        messages: [{ role: "user", content: "今天有什么 AI 新闻？" }] as any,
+        tools: [deferredMcpTool],
+        getToolDefinitions: () => [deferredMcpTool],
+        normalizedTools: tools => tools,
+        isFirstIteration: true,
+        stream: false,
+        hostedTools,
+    });
+
+    test("pro 档只声明 web_search，tool_search 与 defer_loading 丢弃", async () => {
+        const requested = await prepare("deepseek-v4-pro", ["web_search", "tool_search", "file_search"]);
+        expect(requested.requestBody.tools.map((tool: any) => tool.type)).toEqual(["function", "web_search"]);
+        expect(requested.requestBody.tools[0]).not.toHaveProperty("defer_loading");
+    });
+
+    test("flash 档连 web_search 也不声明（上游会忽略）", async () => {
+        for (const model of ["deepseek-flash", "deepseek-v4-flash", "gateway/deepseek-v4.1-flash-sg"]) {
+            const requested = await prepare(model, ["web_search", "tool_search"]);
+            expect(requested.requestBody.tools.map((tool: any) => tool.type)).toEqual(["function"]);
+            expect(requested.requestBody.tools[0]).not.toHaveProperty("defer_loading");
+        }
+    });
 });

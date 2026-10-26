@@ -65,6 +65,7 @@ OPENAI_RESPONSES_EFFORTS=low,high,max
 | --- | --- |
 | `OPENAI_CHAT_EFFORTS` | Chat Completions 可选思考强度，逗号分隔 |
 | `OPENAI_RESPONSES_EFFORTS` | Responses API 可选思考强度，逗号分隔 |
+| `OPENAI_RESPONSES_HOSTED_TOOLS` | Responses 可选托管工具（如 `web_search,tool_search`），上游执行；Chat Completions 无托管工具 |
 | `XBOT_MEMORY_USER_ID` | 记忆用户标识，默认 `0` |
 | `NETWORK_PROXY` | 网络和命令行工具使用的代理；TUI 会将容器默认代理地址调整为 `http://localhost:7890` |
 | `OPENAI_PROXY` | 模型 API 请求使用的代理 |

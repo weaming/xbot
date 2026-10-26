@@ -30,7 +30,7 @@ export interface ChatApiSettings {
     protocol?: ChatApiProtocol;
     reasoningEffort?: string;
     reasoningEfforts?: string[];
-    /** 托管工具类型（OPENAI_HOSTED_TOOLS）：由上游执行，本地不执行。 */
+    /** 托管工具类型（OPENAI_RESPONSES_HOSTED_TOOLS）：由上游执行，本地不执行。 */
     hostedTools: string[];
     /** ENABLE_DS_COST_STAT：开启后非官方端点（局域网网关）也按官方价格表估算费用。 */
     enableCostStat: boolean;
@@ -291,7 +291,7 @@ export function getChatApiSettings(sessionSelection?: ChatModelSelection): ChatA
         protocol: activeProtocol,
         reasoningEffort: activeOption?.reasoningEffort,
         reasoningEfforts: configuredEfforts.length > 0 ? configuredEfforts : undefined,
-        hostedTools: parseCommaList(process.env.OPENAI_HOSTED_TOOLS),
+        hostedTools: parseCommaList(process.env.OPENAI_RESPONSES_HOSTED_TOOLS),
         enableCostStat: isDeepSeekCostStatEnabled(),
     };
 }

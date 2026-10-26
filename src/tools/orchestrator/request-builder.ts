@@ -31,13 +31,23 @@ export function toResponsesToolDefinitions(tools: any[], enableDeferredLoading =
         }));
 }
 
-/** 托管工具类型（上游执行、本地没有对应函数）：名字本身就是 Responses 的工具 type。 */
-export function toHostedToolDefinitions(types: string[]): any[] {
+export interface HostedToolScope {
+    /** 接入端能执行的托管工具类型；省略表示不限制，交给上游忽略不支持的类型。 */
+    supportedTypes?: ReadonlySet<string>;
+}
+
+/**
+ * 托管工具类型（上游执行、本地没有对应函数）：名字本身就是 Responses 的工具 type。
+ * 定义保持 OpenAI 官方最小形状（`{type:"web_search"}` / `{type:"tool_search"}`），
+ * 过滤参数、user_location 等可选字段由上游按默认值处理。
+ */
+export function toHostedToolDefinitions(types: string[], scope: HostedToolScope = {}): any[] {
     const seen = new Set<string>();
     const definitions: any[] = [];
     for (const raw of types) {
         const type = raw.trim();
         if (!type || seen.has(type)) continue;
+        if (scope.supportedTypes && !scope.supportedTypes.has(type)) continue;
         seen.add(type);
         definitions.push({ type });
     }

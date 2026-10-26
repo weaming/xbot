@@ -149,7 +149,7 @@ export interface OrchestratorOptions {
   reasoningEfforts?: string[];
   toolChoice?: "auto" | "none";
   tools?: any[];
-  /** 托管工具类型（Responses 专用）：声明给上游执行，本地没有对应实现。 */
+  /** 托管工具类型（Responses 专用，来自 OPENAI_RESPONSES_HOSTED_TOOLS）：声明给上游执行，本地没有对应实现。 */
   hostedTools?: string[];
   // 执行工具的函数
   executeTool?: (name: string, args: any) => Promise<ToolExecutionResponse>;

@@ -43,6 +43,8 @@ mcpServers:
 
 字符串字段支持 `${VAR}` 环境变量展开。`requiredEnv` 中任一变量缺失时，该服务会被跳过；建议把令牌放在 `~/.xbot/env`，不要写入公开配置文件。
 
-每个服务还可设置 `disabled`、`includeTools`、`excludeTools`、`prefix`、`rename` 和 `tags` 来控制启用状态、工具筛选、命名和分组。`defer: true` 会在 `OPENAI_HOSTED_TOOLS` 含 `tool_search` 时，把该 MCP 服务的 Responses 工具定义标记为 `defer_loading: true`，由上游托管的 `tool_search` 按需发现；本地 MCP 执行器仍负责执行实际工具调用。需要 OAuth 的 HTTP 服务可设置 `oauth: true`；授权凭据会写入 `~/.xbot/mcp-auth/`。
+每个服务还可设置 `disabled`、`includeTools`、`excludeTools`、`prefix`、`rename` 和 `tags` 来控制启用状态、工具筛选、命名和分组。`defer: true` 会在 `OPENAI_RESPONSES_HOSTED_TOOLS` 含 `tool_search` 时，把该 MCP 服务的 Responses 工具定义标记为 `defer_loading: true`，由上游托管的 `tool_search` 按需发现；本地 MCP 执行器仍负责执行实际工具调用。需要 OAuth 的 HTTP 服务可设置 `oauth: true`；授权凭据会写入 `~/.xbot/mcp-auth/`。
+
+托管工具只在 Responses 协议声明，形状保持 OpenAI 官方最小写法（`{"type":"web_search"}`、`{"type":"tool_search"}`）。DeepSeek 兼容端只托管 `web_search`；模型名同时含 `deepseek` 与 `flash` 时（上游会忽略联网搜索）以及其他类型本地直接丢弃，`defer: true` 随之失效。
 
 运行 TUI 后，可使用 `/mcp` 查看 MCP 连接状态。

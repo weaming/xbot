@@ -46,7 +46,7 @@ export interface TurnContext {
   reasoningEffort?: string;
   reasoningEfforts?: string[];
   toolChoice?: "auto" | "none";
-  /** 托管工具类型（Responses 专用，来自 OPENAI_RESPONSES_TOOLS）：上游执行，本地不执行。 */
+  /** 托管工具类型（Responses 专用，来自 OPENAI_RESPONSES_HOSTED_TOOLS）：上游执行，本地不执行。 */
   hostedTools?: string[];
 
   // 消息与状态（就地修改）
