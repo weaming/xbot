@@ -15,6 +15,8 @@ import type { ChatModelSelection } from "../types/chat-model.js";
 
 export interface TuiSessionSummary {
     sessionId: string;
+    /** 会话绑定的工作目录（取自 session_created 事件），面板用于区分同名会话。 */
+    cwd?: string;
     createdAt?: string;
     updatedAt?: string;
     messageCount: number;

@@ -1860,7 +1860,8 @@ export class ChatApp {
         const { sessionId } = await this.agent.createSession();
         // 新建即认领：自己的空会话不会与别的实例冲突，失败只可能是极端情况
         await this.agent.claimSession(sessionId);
-        this.store.sessions.unshift({ sessionId, messageCount: 0 });
+        // 未落盘前 listSessions 看不到它，cwd 只能就地补上，否则面板目录列会缺一格
+        this.store.sessions.unshift({ sessionId, cwd: await this.agent.getSessionCwd(sessionId), messageCount: 0 });
         this.store.setSessions(this.store.sessions);
         return sessionId;
     }
@@ -1882,6 +1883,7 @@ export class ChatApp {
 
         this.store.sessions.unshift({
             sessionId,
+            cwd: await this.agent.getSessionCwd(sessionId),
             messageCount: 0,
             ...(cleanTitle ? { title: cleanTitle.slice(0, 200) } : {}),
         });
@@ -2045,6 +2047,8 @@ export class ChatApp {
             close: () => this.closeSessionPanel(),
         }, {
             spinner: SPINNER_FRAMES[this.spinnerIndex % SPINNER_FRAMES.length],
+            // 工作目录列按 home 缩写，避免长路径把副列撑开
+            home: process.env.HOME,
             // 确认窗口到期后由面板主动请求重绘，清掉 footer 的“再按 ⌃X 确认”提示
             requestRender: () => this.tui.requestRender(),
         });
@@ -2353,6 +2357,7 @@ export class ChatApp {
             return {
                 sessionId: session.sessionId,
                 title: session.title,
+                cwd: session.cwd,
                 messageCount: session.messageCount,
                 lastUserMessage: session.lastUserMessage,
                 updatedAt: session.updatedAt,

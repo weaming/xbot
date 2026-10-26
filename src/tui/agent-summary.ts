@@ -15,6 +15,7 @@ export function summarizeEvents(sessionId: string, events: AgentEvent[]): TuiSes
     let updatedAt: string | undefined;
     let archived = false;
     let modelSelection: TuiSessionSummary["modelSelection"];
+    let cwd: string | undefined;
 
     for (const event of events) {
         // 更新时间只认用户/模型活动：群聊状态这类自动注入每隔几分钟落一条，
@@ -30,10 +31,12 @@ export function summarizeEvents(sessionId: string, events: AgentEvent[]): TuiSes
         }
         if (event.type === "session_renamed") renamedTitle = event.payload.title;
         if (event.type === "model_selected") modelSelection = event.payload;
+        if (event.type === "session_created") cwd = event.payload.cwd;
     }
 
     return {
         sessionId,
+        ...(cwd ? { cwd } : {}),
         updatedAt,
         messageCount,
         lastUserMessage,

@@ -110,6 +110,18 @@ describe("summarizeEvents 会话更新时间", () => {
         expect(summary.updatedAt).toBe(at(0));
     });
 
+    test("摘要带出会话的工作目录（面板目录列的数据来源）", () => {
+        const summary = summarizeEvents("s", [created(0), eventOf("user_message", at(5), { text: "你好", turnId: "t1", trigger: "user" })]);
+
+        expect(summary.cwd).toBe("/tmp");
+    });
+
+    test("旧事件没有 cwd 字段时摘要不带 cwd（面板留空列，由宿主回退）", () => {
+        const summary = summarizeEvents("s", [eventOf("session_created", at(0), {})]);
+
+        expect(summary.cwd).toBeUndefined();
+    });
+
     test("注水多但无用户活动的会话不会排到活跃会话前面", () => {
         const idle = summarizeEvents("idle", [created(0), injected(50), injected(55)]);
         const active = summarizeEvents("active", [created(0), eventOf("user_message", at(30), { text: "在跑", turnId: "t1", trigger: "user" })]);

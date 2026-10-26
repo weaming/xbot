@@ -42,7 +42,7 @@ describe("会话面板", () => {
         expect(panel.getSelectedId()).toBe("01AAA111");
         expect(output).toContain("修复 tui tabs 管理");
         expect(output).toContain("docker 部署排查");
-        expect(output).toContain("会话 3 个 · 匹配 3 个");
+        expect(output).toContain("⌘ 会话 3 · 匹配 3 · 运行 1");
         expect(panel.render(70).every((line) => visibleWidth(line) <= 70)).toBe(true);
     });
 
@@ -59,6 +59,17 @@ describe("会话面板", () => {
         panel.handleInput(CTRL_U);
         expect(panel.getQuery()).toBe("");
         expect(panel.getSelectedId()).toBe("01AAA111");
+    });
+
+    test("窄屏下搜索行保留光标，超长 query 截尾且不超宽", () => {
+        const { panel } = makePanel();
+
+        panel.handleInput("docker 部署排查并修复超长搜索关键字");
+
+        const line = panel.render(20).map(stripTerminalSequences)[1];
+        expect(line).toContain("▏");
+        expect(line).toContain("…");
+        expect(visibleWidth(line)).toBeLessThanOrEqual(20);
     });
 
     test("无匹配时没有选中项，Enter 不触发切换", () => {
@@ -255,5 +266,57 @@ describe("会话面板", () => {
         // owner 文案变化（如待交付数 +1）同样要触发重建
         panel.updateItems([{ ...base, ownerState: "other", owner: "PID 99 · 空闲 · 处理中 1" }], DEFAULT_SPINNER);
         expect(text()).toContain("处理中 1");
+    });
+
+    test("取消归档后光标仍停在同一会话（按 sessionId 跟随，不按索引）", () => {
+        const archived = { sessionId: "01CCC333", title: "回测脚本优化", messageCount: 1, archived: true, busy: false, active: false };
+        const live = { sessionId: "01AAA111", title: "修复 tui tabs 管理", messageCount: 2, busy: false, active: true };
+        const { panel } = makePanel([live, archived]);
+
+        panel.handleInput(DOWN);
+        expect(panel.getSelectedId()).toBe("01CCC333");
+
+        // 取消归档后重排：未归档会话在前，被取消归档的会话移到首位
+        panel.updateItems([{ ...archived, archived: false }, live], DEFAULT_SPINNER);
+
+        expect(panel.getSelectedId()).toBe("01CCC333");
+        expect(panel.render(70).map(stripTerminalSequences).join("\n")).toContain("→ ○ 回测脚本优化");
+    });
+
+    test("归档后光标跟随被归档会话，底部提示切换为取消归档", () => {
+        const first = { sessionId: "01AAA111", title: "修复 tui tabs 管理", messageCount: 2, busy: false, active: true };
+        const second = { sessionId: "01BBB222", title: "docker 部署排查", messageCount: 1, busy: false, active: false };
+        const { panel } = makePanel([first, second]);
+
+        expect(panel.getSelectedId()).toBe("01AAA111");
+
+        // 选中的会话被归档后移到归档区（列表末尾），光标跟着它走而不是停在索引 0
+        panel.updateItems([second, { ...first, archived: true }], DEFAULT_SPINNER);
+
+        expect(panel.getSelectedId()).toBe("01AAA111");
+        const output = panel.render(70).map(stripTerminalSequences).join("\n");
+        expect(output).toContain("→ ✕ 修复 tui tabs 管理");
+        expect(output).toContain("⌃A 取消归档");
+    });
+
+    test("工作目录列按 home 缩写，列内各行起点对齐", () => {
+        const { panel } = makePanel([
+            { sessionId: "01AAA111", title: "zbot", cwd: "/Users/garden/src/zbot", messageCount: 1, busy: false, active: true },
+            { sessionId: "01BBB222", title: "deploy", cwd: "/Users/garden/src/infra/deploy", messageCount: 2, busy: false, active: false },
+        ], { home: "/Users/garden" });
+
+        const lines = panel.render(100).map(stripTerminalSequences).filter(line => line.includes("轮"));
+        // 用显示列宽而非字符下标比较：中文标题下两者不一致
+        const columnOf = (line: string, needle: string): number => {
+            const index = line.indexOf(needle);
+            // 找不到就必须失败，否则 slice(0,-1) 会算出错误列号让断言假通过
+            expect(index).toBeGreaterThanOrEqual(0);
+            return visibleWidth(line.slice(0, index));
+        };
+
+        expect(lines[0]).toContain("~/src/zbot");
+        expect(lines[1]).toContain("~/src/infra/deploy");
+        expect(columnOf(lines[0], "~/src/zbot")).toBe(columnOf(lines[1], "~/src/infra"));
+        expect(columnOf(lines[0], "1轮")).toBe(columnOf(lines[1], "2轮"));
     });
 });

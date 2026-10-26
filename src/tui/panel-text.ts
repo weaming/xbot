@@ -1,6 +1,8 @@
 /**
  * 浮层面板的纯文本工具：折为单行并按可见列宽截断。
  * 不用 truncateToWidth——它会在省略号前后插入 ANSI 复位码，破坏面板底色。
+ * 例外：已经着色、又必须保留颜色的一行（会话面板的标题行与 footer），
+ * 改用 truncateToWidth（见 session-panel.ts 的 TextLine），底色由浮层统一补回。
  */
 
 import { sliceByColumn, stripTerminalSequences, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";

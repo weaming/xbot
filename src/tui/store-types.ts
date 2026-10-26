@@ -74,6 +74,8 @@ export interface ToolBlock {
 
 export interface SessionView {
     sessionId: string;
+    /** 会话绑定的工作目录（来自会话摘要），会话面板的目录列据此标识来源。 */
+    cwd?: string;
     messageCount: number;
     lastUserMessage?: string;
     /** 会话标题：显式重命名优先，否则取首条用户消息（tab 固定展示）。 */

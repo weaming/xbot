@@ -1,6 +1,9 @@
 /**
  * 会话面板：居中浮层，模糊搜索 + 切换 / 重命名 / 删除 / 归档。
  * 面板打开时独占键盘输入（由 ChatApp 的全局输入监听转交），Esc 或 Ctrl+C 关闭。
+ *
+ * 列表行自行渲染（不用 SelectList）：会话行有固定列（轮数 / 时间 / 工作目录 / 状态），
+ * 只有整批统一列宽才能对齐；列宽规划与单行拼装见 session-row.ts。
  */
 
 import {
@@ -8,14 +11,15 @@ import {
     fuzzyFilter,
     Key,
     matchesKey,
-    SelectList,
+    sliceByColumn,
     stripTerminalSequences,
-    Text,
+    truncateToWidth,
+    visibleWidth,
 } from "@earendil-works/pi-tui";
-import type { Component, SelectItem } from "@earendil-works/pi-tui";
-import { PanelBody } from "./panel-body.js";
+import type { Component } from "@earendil-works/pi-tui";
 import { handlePanelScroll } from "./panel-scroll.js";
-import { truncatePlain } from "./panel-text.js";
+import { padColumns, truncatePlain } from "./panel-text.js";
+import { abbreviatePath, composeSessionRow, planSessionRows, type SessionRow } from "./session-row.js";
 import { DEFAULT_SPINNER, sessionMarker, type SessionOwnerState } from "./session-marker.js";
 import { selectListTheme, theme } from "./theme.js";
 
@@ -26,10 +30,14 @@ const REMOVE_CONFIRM_MS = 2_000;
 /** 搜索框提示符与光标。 */
 const SEARCH_PROMPT = "🔍 ";
 const CURSOR = "▏";
+/** 面板内容左侧留白（与 header / footer 对齐）。 */
+const LEFT_PAD = " ";
 
 export interface SessionPanelItem {
     sessionId: string;
     title?: string;
+    /** 会话绑定的工作目录：多仓库并行时靠它区分同名会话。 */
+    cwd?: string;
     messageCount: number;
     lastUserMessage?: string;
     updatedAt?: string;
@@ -60,6 +68,8 @@ export interface SessionPanelOptions {
     spinner?: string;
     /** 确认窗口到期后请求重绘，避免 footer 提示残留（由 ChatApp 注入）。 */
     requestRender?: () => void;
+    /** home 目录：cwd 缩写为 `~/…`；缺省读环境变量 HOME。 */
+    home?: string;
 }
 
 /** 相对时间：1 分钟内「刚刚」，1 小时内分钟，24 小时内小时，30 天内天，再早显示日期。 */
@@ -79,38 +89,24 @@ function formatRelativeTime(iso?: string): string {
     return new Date(time).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
 }
 
-/** 列表主列文本：标题可能来自用户输入，先折为单行纯文本再交给 SelectList。 */
-function labelOf(item: SessionPanelItem, spinner: string): string {
-    const title = stripTerminalSequences(item.title ?? "").replace(/\s+/g, " ").trim();
-    const marker = sessionMarker(
-        { archived: item.archived, busy: item.busy, active: item.active, question: item.question, owner: item.ownerState },
-        spinner,
-    );
-    return `${marker} ${title || item.sessionId.slice(0, 8)}`;
-}
-
-function describe(item: SessionPanelItem): string {
-    const parts: string[] = [];
-    if (item.messageCount > 0) parts.push(`${item.messageCount} 轮`);
-    parts.push(formatRelativeTime(item.updatedAt));
-    parts.push(`…${item.sessionId.slice(-8)}`);
-    if (item.owner) parts.push(item.owner);
-    if (item.question) parts.push("等你作答");
-    if (item.busy && !item.archived) parts.push("运行中");
-    if (item.archived) parts.push("已归档");
-    return parts.join(" · ");
+/** 标题折为单行：标题来自用户输入，先剥掉控制序列再交给渲染。 */
+function flattenTitle(item: SessionPanelItem): string {
+    return stripTerminalSequences(item.title ?? "").replace(/\s+/g, " ").trim();
 }
 
 export class SessionPanel implements Component {
-    private readonly root = new PanelBody();
-    private readonly header = new Text("", 1, 0);
-    private readonly search = new Text("", 1, 0);
-    private readonly footer = new Text("", 1, 0);
+    private readonly header = new TextLine();
+    private readonly search = new TextLine();
+    private readonly footer = new TextLine();
     private items: SessionPanelItem[];
     private spinner: string;
-    private list: SelectList | null = null;
     private matched: SessionPanelItem[] = [];
     private cursor = 0;
+    /**
+     * 选中会话的 id：列表重排（归档 / 取消归档 / 更新时间变化）后按 id 重新定位，
+     * 否则光标停在旧索引上，用户会突然选中另一个会话。
+     */
+    private selectedId: string | null = null;
     private query = "";
     /** 删除确认：首次按 ⌃X 记录会话与时间，窗口内再按一次才执行。 */
     private pendingRemove: { sessionId: string; armedAt: number } | null = null;
@@ -161,8 +157,10 @@ export class SessionPanel implements Component {
             return this.actOnSelected((sessionId) => this.requestRemove(sessionId));
         }
         if (matchesKey(data, Key.ctrl("a"))) {
-            // 只清删除待确认：归档自身的二次确认需要保留
+            // 只清删除待确认：归档自身的二次确认需要保留（见 requestArchive）
             this.pendingRemove = null;
+            // 取消归档是异步的，落地前先重绘一次，footer 才不会留着"再按 ⌃X 确认删除"
+            this.invalidate();
             const item = this.matched[this.cursor];
             if (!item) return;
             // 取消归档可逆，无需二次确认；归档会把会话移出会话条，仍需确认
@@ -200,11 +198,20 @@ export class SessionPanel implements Component {
     }
 
     render(width: number): string[] {
-        return this.root.render(width);
+        const contentWidth = Math.max(1, width - LEFT_PAD.length);
+        const lines = [
+            this.header.render(contentWidth, () => this.headerText(contentWidth)),
+            this.search.render(contentWidth, () => this.searchText(contentWidth)),
+            ...this.renderList(contentWidth),
+            this.footer.render(contentWidth, () => this.footerText()),
+        ];
+        return lines.map((line) => LEFT_PAD + line);
     }
 
     invalidate(): void {
-        this.root.invalidate();
+        this.header.invalidate();
+        this.search.invalidate();
+        this.footer.invalidate();
     }
 
     /** 当前选中的会话 id（无匹配时为 null）。 */
@@ -254,10 +261,9 @@ export class SessionPanel implements Component {
         // 选中项变化后旧的确认目标不再适用，避免提示指向错误会话
         this.clearPendingConfirm();
         this.cursor = (this.cursor + delta + this.matched.length) % this.matched.length;
-        this.list?.setSelectedIndex(this.cursor);
+        this.selectedId = this.matched[this.cursor]?.sessionId ?? null;
         // footer 文案随选中项状态切换（归档项显示"取消归档"），必须一并刷新
-        this.updateFooter();
-        this.root.invalidate();
+        this.invalidate();
     }
 
     private confirmWindow(): number {
@@ -289,6 +295,8 @@ export class SessionPanel implements Component {
 
     private setQuery(query: string): void {
         this.query = query;
+        // 搜索是重新定位：排序结果按匹配度重排，光标回到最佳匹配，不再跟随旧会话
+        this.selectedId = null;
         this.cursor = 0;
         this.rebuild();
     }
@@ -303,36 +311,118 @@ export class SessionPanel implements Component {
     private rebuild(): void {
         const matched = this.filter();
         this.matched = matched;
-        this.cursor = Math.max(0, Math.min(this.cursor, matched.length - 1));
-
-        const selectItems: SelectItem[] = matched.map((item) => ({
-            value: item.sessionId,
-            label: labelOf(item, this.spinner),
-            description: describe(item),
-        }));
-        const list = new SelectList(selectItems, MAX_VISIBLE, selectListTheme, {
-            minPrimaryColumnWidth: 24,
-            maxPrimaryColumnWidth: 44,
-        });
-        list.setSelectedIndex(this.cursor);
-        this.list = list;
-
-        this.header.setText(theme.commandBorder(`⌘ 会话 ${this.items.length} 个 · 匹配 ${matched.length} 个`));
-        this.search.setText(`${SEARCH_PROMPT}${this.query}${CURSOR}`);
-        this.updateFooter();
-
-        this.root.setChildren([this.header, this.search, list, this.footer]);
-        this.root.invalidate();
+        this.cursor = this.resolveCursor(matched);
+        this.selectedId = matched[this.cursor]?.sessionId ?? null;
+        this.invalidate();
     }
 
-    private updateFooter(): void {
-        this.footer.setText(this.pendingRemove
-            ? theme.statusBad(`再按 ⌃X 确认删除「${this.selectedTitle()}」`)
-            : this.pendingArchive
-                ? theme.statusBad(`再按 ⌃A 确认归档「${this.selectedTitle()}」`)
-                : theme.dim(this.selectedArchived()
-                    ? "Enter 查看 · ⌃X 删除 · ⌃A 取消归档 · Esc 关闭"
-                    : "Enter 切换 · ⌃R 重命名 · ⌃X 删除 · ⌃A 归档 · Esc 关闭"));
+    /** 光标定位：优先跟随原选中会话，其余情况保留原索引（删除后自然落到下一项）。 */
+    private resolveCursor(matched: SessionPanelItem[]): number {
+        if (matched.length === 0) return 0;
+        if (this.selectedId) {
+            const index = matched.findIndex(item => item.sessionId === this.selectedId);
+            if (index >= 0) return index;
+        }
+        return Math.max(0, Math.min(this.cursor, matched.length - 1));
+    }
+
+    /** 列表可见窗口：选中项尽量居中，与滚动提示一起构成窗口化列表。 */
+    private visibleRange(): { start: number; end: number } {
+        const total = this.matched.length;
+        const start = Math.max(0, Math.min(this.cursor - Math.floor(MAX_VISIBLE / 2), total - MAX_VISIBLE));
+        return { start, end: Math.min(start + MAX_VISIBLE, total) };
+    }
+
+    private renderList(width: number): string[] {
+        if (this.matched.length === 0) {
+            // 会话本身为空 vs 搜索无匹配是两回事，提示要分开
+            const hint = this.items.length === 0 ? "还没有会话" : "没有匹配的会话";
+            return [selectListTheme.noMatch(padColumns(truncatePlain(hint, width), width))];
+        }
+
+        const rows = this.matched.map(item => this.toRow(item));
+        const plan = planSessionRows(rows, width);
+        const { start, end } = this.visibleRange();
+        const lines: string[] = [];
+
+        for (let index = start; index < end; index += 1) {
+            const isSelected = index === this.cursor;
+            const { head, detail } = composeSessionRow(rows[index], plan, width, isSelected);
+            if (isSelected) {
+                lines.push(selectListTheme.selectedText(head + detail));
+                continue;
+            }
+            lines.push(head + (detail ? selectListTheme.description(detail) : ""));
+        }
+
+        if (start > 0 || end < this.matched.length) {
+            const counter = `(${this.cursor + 1}/${this.matched.length})`;
+            lines.push(selectListTheme.scrollInfo(padColumns(truncatePlain(counter, width), width)));
+        }
+        return lines;
+    }
+
+    private toRow(item: SessionPanelItem): SessionRow {
+        const status = this.statusOf(item);
+        const cwd = item.cwd ? abbreviatePath(item.cwd, this.home()) : undefined;
+        return {
+            marker: sessionMarker(
+                { archived: item.archived, busy: item.busy, active: item.active, question: item.question, owner: item.ownerState },
+                this.spinner,
+            ),
+            title: flattenTitle(item) || item.sessionId.slice(0, 8),
+            rounds: `${item.messageCount}轮`,
+            time: formatRelativeTime(item.updatedAt),
+            ...(cwd ? { cwd } : {}),
+            ...(status ? { status } : {}),
+        };
+    }
+
+    /** 副列状态标签：归属优先（面板是唯一认领入口），其余按需追加。 */
+    private statusOf(item: SessionPanelItem): string {
+        const parts: string[] = [];
+        if (item.owner) parts.push(item.owner);
+        if (item.question) parts.push("等你作答");
+        if (item.busy && !item.archived) parts.push("运行中");
+        if (item.archived) parts.push("已归档");
+        return parts.join(" · ");
+    }
+
+    private home(): string | undefined {
+        return this.options.home ?? process.env.HOME;
+    }
+
+    /** 标题行：左侧全局统计，右侧选中会话短 id（列里不再占宽）。 */
+    private headerText(width: number): string {
+        const summary = [`会话 ${this.items.length}`, `匹配 ${this.matched.length}`];
+        const running = this.items.filter(item => item.busy && !item.archived).length;
+        if (running > 0) summary.push(`运行 ${running}`);
+        const awaiting = this.items.filter(item => item.question).length;
+        if (awaiting > 0) summary.push(`待作答 ${awaiting}`);
+
+        const left = theme.commandBorder(`⌘ ${summary.join(" · ")}`);
+        const selected = this.matched[this.cursor];
+        if (!selected) return left;
+        const right = theme.dim(`…${selected.sessionId.slice(-8)}`);
+        return padBetween(left, right, width);
+    }
+
+    /** 搜索行：query 超宽时保留尾部并把光标留在视野内，否则打字看不到输入。 */
+    private searchText(width: number): string {
+        const room = Math.max(1, width - visibleWidth(SEARCH_PROMPT) - visibleWidth(CURSOR));
+        const queryWidth = visibleWidth(this.query);
+        if (queryWidth <= room) return `${SEARCH_PROMPT}${this.query}${CURSOR}`;
+        const tailWidth = Math.max(1, room - 1);
+        const tail = sliceByColumn(this.query, queryWidth - tailWidth, tailWidth, true);
+        return `${SEARCH_PROMPT}…${tail}${CURSOR}`;
+    }
+
+    private footerText(): string {
+        if (this.pendingRemove) return theme.statusBad(`再按 ⌃X 确认删除「${this.selectedTitle()}」`);
+        if (this.pendingArchive) return theme.statusBad(`再按 ⌃A 确认归档「${this.selectedTitle()}」`);
+        return theme.dim(this.selectedArchived()
+            ? "Enter 查看 · ⌃X 删除 · ⌃A 取消归档 · Esc 关闭"
+            : "Enter 切换 · ⌃R 重命名 · ⌃X 删除 · ⌃A 归档 · Esc 关闭");
     }
 
     private selectedTitle(): string {
@@ -346,6 +436,33 @@ export class SessionPanel implements Component {
     }
 }
 
+/** 左对齐 + 右对齐拼成一行（超出宽度时优先保留左侧）。 */
+function padBetween(left: string, right: string, width: number): string {
+    const leftWidth = visibleWidth(left);
+    const rightWidth = visibleWidth(right);
+    if (leftWidth + rightWidth + 1 > width) return truncatePlain(left, width);
+    return left + " ".repeat(width - leftWidth - rightWidth) + right;
+}
+
+/** 单行文本缓存：只有内容变化才重新渲染，避免每帧重复截断长文本。 */
+class TextLine {
+    private text = "";
+    private width = 0;
+
+    render(width: number, build: () => string): string {
+        if (width !== this.width || !this.text) {
+            this.width = width;
+            // 标题/提示带 ANSI 样式，用 truncateToWidth 保留颜色（面板底色由浮层统一施加）
+            this.text = truncateToWidth(build(), width, "…");
+        }
+        return this.text;
+    }
+
+    invalidate(): void {
+        this.text = "";
+    }
+}
+
 /** 逐项比较面板数据：任一会影响渲染的字段变化才需要重建列表。 */
 function sameItems(left: SessionPanelItem[], right: SessionPanelItem[]): boolean {
     if (left.length !== right.length) return false;
@@ -353,12 +470,14 @@ function sameItems(left: SessionPanelItem[], right: SessionPanelItem[]): boolean
         const other = right[index];
         return item.sessionId === other.sessionId
             && item.title === other.title
+            && item.cwd === other.cwd
             && item.messageCount === other.messageCount
             && item.lastUserMessage === other.lastUserMessage
             && item.updatedAt === other.updatedAt
             && item.archived === other.archived
             && item.busy === other.busy
             && item.active === other.active
+            && item.question === other.question
             && item.ownerState === other.ownerState
             && item.owner === other.owner;
     });
