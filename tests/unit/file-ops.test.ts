@@ -50,16 +50,17 @@ function writeTemp(relPath: string, content: string | Buffer): string {
 }
 
 describe("filesystem tools", () => {
-    test("read supports full/head/tail reads", async () => {
+    test("cat reads only paths arrays and supports head/tail reads", async () => {
         writeTemp("notes.txt", "alpha\nbeta\ngamma\n");
 
-        const fullResult = await readTextFileTool.execute({ path: "notes.txt" });
-        const headResult = await readTextFileTool.execute({ path: "notes.txt", head: 2 });
-        const tailResult = await readTextFileTool.execute({ path: "notes.txt", tail: 1 });
-        const invalidResult = await readTextFileTool.execute({ path: "notes.txt", head: 1, tail: 1 });
+        const fullResult = await readTextFileTool.execute({ paths: ["notes.txt"] });
+        const headResult = await readTextFileTool.execute({ paths: ["notes.txt"], head: 2 });
+        const tailResult = await readTextFileTool.execute({ paths: ["notes.txt"], tail: 1 });
+        const invalidResult = await readTextFileTool.execute({ paths: ["notes.txt"], head: 1, tail: 1 });
+        const missingPathsResult = await readTextFileTool.execute({ path: "notes.txt" });
         const outsideFile = path.join(outsideDir, "outside.txt");
         fs.writeFileSync(outsideFile, "outside");
-        const outsideResult = await readTextFileTool.execute({ path: outsideFile });
+        const outsideResult = await readTextFileTool.execute({ paths: [outsideFile] });
 
         expect(isError(fullResult)).toBe(false);
         expect(resultText(fullResult)).toBe("alpha\nbeta\ngamma\n");
@@ -67,6 +68,8 @@ describe("filesystem tools", () => {
         expect(resultText(tailResult)).toBe("gamma");
         expect(isError(invalidResult)).toBe(true);
         expect(resultText(invalidResult)).toContain("Cannot specify both head and tail");
+        expect(isError(missingPathsResult)).toBe(true);
+        expect(resultText(missingPathsResult)).toContain("At least one file path must be provided");
         expect(isError(outsideResult)).toBe(false);
         expect(resultText(outsideResult)).toBe("outside");
     });
@@ -74,10 +77,10 @@ describe("filesystem tools", () => {
     test("cat supports offset/limit paging", async () => {
         writeTemp("notes.txt", "l1\nl2\nl3\nl4\nl5\n");
 
-        const page = await readTextFileTool.execute({ path: "notes.txt", offset: 2, limit: 2 });
-        const fromOffset = await readTextFileTool.execute({ path: "notes.txt", offset: 4 });
-        const beyond = await readTextFileTool.execute({ path: "notes.txt", offset: 99 });
-        const conflict = await readTextFileTool.execute({ path: "notes.txt", offset: 1, head: 2 });
+        const page = await readTextFileTool.execute({ paths: ["notes.txt"], offset: 2, limit: 2 });
+        const fromOffset = await readTextFileTool.execute({ paths: ["notes.txt"], offset: 4 });
+        const beyond = await readTextFileTool.execute({ paths: ["notes.txt"], offset: 99 });
+        const conflict = await readTextFileTool.execute({ paths: ["notes.txt"], offset: 1, head: 2 });
 
         expect(isError(page)).toBe(false);
         expect(resultText(page)).toBe("l2\nl3");
@@ -91,7 +94,7 @@ describe("filesystem tools", () => {
         fs.writeFileSync(path.join(outsideDir, "secret.txt"), "secret");
         fs.symlinkSync(outsideDir, path.join(tmpDir, "outside-link"));
 
-        const readResult = await readTextFileTool.execute({ path: "outside-link/secret.txt" });
+        const readResult = await readTextFileTool.execute({ paths: ["outside-link/secret.txt"] });
         const treeResult = await directoryTreeTool.execute({ path: "." });
         const listResult = await listDirectoryTool.execute({ path: "." });
 
@@ -118,11 +121,13 @@ describe("filesystem tools", () => {
         writeTemp("b.txt", "B\n");
 
         const result = await readTextFileTool.execute({ paths: ["a.txt", "missing.txt", "b.txt"] });
+        const pagedResult = await readTextFileTool.execute({ paths: ["a.txt", "b.txt"], head: 1 });
 
         expect(isError(result)).toBe(false);
         expect(resultText(result)).toContain("a.txt:\nA\n");
         expect(resultText(result)).toContain("missing.txt: Error - No such file or directory: missing.txt");
         expect(resultText(result)).toContain("b.txt:\nB\n");
+        expect(resultText(pagedResult)).toBe("a.txt:\nA\n\n---\nb.txt:\nB\n");
     });
 
     test("write_file creates and overwrites files", async () => {

@@ -180,31 +180,11 @@ function imageMimeType(ext: string): string {
 }
 
 async function executeCat(
-    args: {
-        path?: string;
-        paths?: string[];
-        head?: number;
-        tail?: number;
-        offset?: number;
-        limit?: number;
-    },
+    args: { paths: string[]; head?: number; tail?: number; offset?: number; limit?: number },
 ): Promise<ToolExecutionResult> {
-    if (args.paths !== undefined) {
-        return executeReadMultipleFiles(args as { paths: string[] });
+    if (!Array.isArray(args.paths) || args.paths.length === 0) {
+        return err("At least one file path must be provided");
     }
-    return executeReadTextFile(args as { path: string; head?: number; tail?: number; offset?: number; limit?: number });
-}
-
-async function executeReadTextFile(
-    args: {
-        path: string;
-        head?: number;
-        tail?: number;
-        offset?: number;
-        limit?: number;
-    },
-): Promise<ToolExecutionResult> {
-    if (!args.path) return err("Missing required argument: path");
     if (args.head !== undefined && args.tail !== undefined) {
         return err("Cannot specify both head and tail parameters simultaneously");
     }
@@ -214,18 +194,38 @@ async function executeReadTextFile(
 
     try {
         const cwdRoot = getToolCwd();
-        const resolved = requireExistingFile(args.path, cwdRoot);
-        const content = fs.readFileSync(resolved, "utf-8");
-
-        if (args.head !== undefined) return ok(headLines(content, args.head));
-        if (args.tail !== undefined) return ok(tailLines(content, args.tail));
-        if (args.offset !== undefined) {
-            const lines = splitTextLines(content);
-            const start = Math.max(0, args.offset - 1);
-            const end = args.limit !== undefined ? start + args.limit : undefined;
-            return ok(lines.slice(start, end).join("\n"));
+        if (args.paths.length === 1) {
+            const resolved = requireExistingFile(args.paths[0], cwdRoot);
+            let content = fs.readFileSync(resolved, "utf-8");
+            if (args.head !== undefined) content = headLines(content, args.head);
+            else if (args.tail !== undefined) content = tailLines(content, args.tail);
+            else if (args.offset !== undefined) {
+                const lines = splitTextLines(content);
+                const start = Math.max(0, args.offset - 1);
+                const end = args.limit !== undefined ? start + args.limit : undefined;
+                content = lines.slice(start, end).join("\n");
+            }
+            return ok(content);
         }
-        return ok(content);
+
+        const results = args.paths.map((filePath) => {
+            try {
+                const resolved = requireExistingFile(filePath, cwdRoot);
+                let content = fs.readFileSync(resolved, "utf-8");
+                if (args.head !== undefined) content = headLines(content, args.head);
+                else if (args.tail !== undefined) content = tailLines(content, args.tail);
+                else if (args.offset !== undefined) {
+                    const lines = splitTextLines(content);
+                    const start = Math.max(0, args.offset - 1);
+                    const end = args.limit !== undefined ? start + args.limit : undefined;
+                    content = lines.slice(start, end).join("\n");
+                }
+                return `${path.relative(cwdRoot, resolved)}:\n${content}\n`;
+            } catch (error: any) {
+                return `${filePath}: Error - ${error.message}`;
+            }
+        });
+        return ok(results.join("\n---\n"));
     } catch (error: any) {
         return err(error.message);
     }
@@ -255,27 +255,6 @@ async function executeReadMediaFile(
     } catch (error: any) {
         return err(error.message);
     }
-}
-
-async function executeReadMultipleFiles(
-    args: { paths: string[] },
-): Promise<ToolExecutionResult> {
-    if (!Array.isArray(args.paths) || args.paths.length === 0) {
-        return err("At least one file path must be provided");
-    }
-
-    const cwdRoot = getToolCwd();
-    const results = args.paths.map((filePath) => {
-        try {
-            const resolved = requireExistingFile(filePath, cwdRoot);
-            const content = fs.readFileSync(resolved, "utf-8");
-            return `${path.relative(cwdRoot, resolved)}:\n${content}\n`;
-        } catch (error: any) {
-            return `${filePath}: Error - ${error.message}`;
-        }
-    });
-
-    return ok(results.join("\n---\n"));
 }
 
 async function executeWriteFile(
@@ -532,10 +511,9 @@ async function executeGetFileInfo(
 const catSchema = {
     type: "object",
     properties: {
-        path: { type: "string", description: "File path" },
         paths: {
             type: "array",
-            description: "Array of file paths to read simultaneously (cannot be used with path)",
+            description: "Array of file paths to read",
             items: { type: "string" },
         },
         head: { type: "number", description: "If provided, returns only the first N lines of the file" },
@@ -543,6 +521,7 @@ const catSchema = {
         offset: { type: "number", description: "1-based line offset to start reading from (with limit for paging)" },
         limit: { type: "number", description: "Maximum number of lines to read (with offset for paging)" },
     },
+    required: ["paths"],
 };
 
 const readMediaFileSchema = {
