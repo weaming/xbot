@@ -1,5 +1,5 @@
 /**
- * Internal filesystem tools aligned with the official MCP filesystem server.
+ * read_media_file 工具：把图片/音频读成结构化内容块交给会话资源系统。
  */
 
 import * as fs from "fs";
@@ -78,7 +78,3 @@ export const readMediaFileTool: ExecutableTool = {
     inputSchema: readMediaFileSchema,
     execute: executeReadMediaFile,
 };
-
-export const FILE_OPS_TOOLS: ExecutableTool[] = [
-    readMediaFileTool,
-];

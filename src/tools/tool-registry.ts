@@ -5,7 +5,7 @@ import { backgroundTaskTool } from "./background-task-tool.js";
 import { ghTool } from "./gh-tool.js";
 import { url2mdTool } from "./url2md-tool.js";
 import { cwdTool } from "./cwd-tool.js";
-import { FILE_OPS_TOOLS } from "./file-ops.js";
+import { readMediaFileTool } from "./read-media-file.js";
 import { toolResultToText } from "./tool-interface.js";
 import { toolCatalog } from "./tool-catalog.js";
 import { formatToolDef } from "./tool-schema.js";
@@ -15,7 +15,7 @@ export type { ExecutableTool, ToolExecutionResult };
 
 const coreTools: ExecutableTool[] = [
     todoTool,
-    ...FILE_OPS_TOOLS,
+    readMediaFileTool,
     backgroundTaskTool,
 ];
 

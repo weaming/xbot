@@ -1,7 +1,7 @@
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
-import { readMediaFileTool } from "../../src/tools/file-ops.js";
+import { readMediaFileTool } from "../../src/tools/read-media-file.js";
 import { toolResultToText } from "../../src/tools/tool-interface.js";
 import { useTmpStateDir, type TmpStateDir } from "./test-env.js";
 
@@ -9,7 +9,7 @@ let tmpDir: string;
 let stateDir: TmpStateDir;
 
 beforeEach(() => {
-    stateDir = useTmpStateDir("zbot-file-ops-test-");
+    stateDir = useTmpStateDir("zbot-read-media-file-test-");
     tmpDir = stateDir.dir;
     process.env.TUI_CWD = tmpDir;
 });
@@ -34,7 +34,7 @@ function writeTemp(relPath: string, content: string | Buffer): string {
     return full;
 }
 
-describe("filesystem tools", () => {
+describe("read_media_file", () => {
     test("read_media_file returns binary block and readable text fallback", async () => {
         writeTemp("pixel.png", Buffer.from("not-a-real-png"));
 
