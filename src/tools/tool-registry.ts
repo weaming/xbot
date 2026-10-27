@@ -48,15 +48,6 @@ export const getOpenAIToolDefinitions = (extraToolNames: string[] = []) => {
     return [getUseSkillToolDef(), ...tools].map(formatToolDef);
 };
 
-/** 获取所有已注册工具的稳定摘要，供 system prompt 构建完整工具列表。 */
-export const getAllToolSummary = (): Array<{ name: string; tags: string[]; source?: string }> =>
-    toolCatalog.listAllTools()
-        .map((tool) => ({ name: tool.name, tags: [...(tool.tags ?? [])].sort(), source: tool.source }))
-        .sort((left, right) => {
-            const sourceOrder = (left.source || 'local').localeCompare(right.source || 'local');
-            return sourceOrder !== 0 ? sourceOrder : left.name.localeCompare(right.name);
-        });
-
 const validateToolLimits = () => {
     const tools = getOpenAIToolDefinitions();
     if (tools.length > 100) {

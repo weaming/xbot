@@ -5,7 +5,7 @@ import { skillRegistry } from "../skills/skill-registry.js";
 import { loadCoreMemoryContext, loadDailyMemoryContext, loadIdentityContext } from "../skills/base-skill.js";
 import { DEFAULT_MEMORY_USER_ID, normalizeMemoryUserId } from "../utils/runtime-paths.js";
 import { executeWithChat, createChatClient, isAbortError } from "../tools/chat-orchestrator.js";
-import { executeMcpTool, getAllToolSummary, getOpenAIToolDefinitions } from "../tools/tool-registry.js";
+import { executeMcpTool, getOpenAIToolDefinitions } from "../tools/tool-registry.js";
 import { createTodoReminderProvider } from "../tools/todo-tool.js";
 import { runWithToolCwd } from "../utils/tool-cwd-context.js";
 import {
@@ -186,25 +186,11 @@ export interface BuildSystemPromptOptions {
     userId: number;
     activeSkillName?: string;
     sentSkillsMtime?: Record<string, number>;
-    extraToolsPreface?: string;
     includeMemory?: boolean;
     includeDailyMemory?: boolean;
     /** 会话绑定工作目录：identity 中 {{TUI_CWD}} 插值用它，缺省回退进程级 TUI_CWD。
      *  system prompt 按会话缓存，PWD 必须与该会话绑定目录一致。 */
     cwd?: string;
-}
-
-/** 工具调用规则：搜索到的工具会加入后续请求的 tools 参数。 */
-function buildToolCallingRuleSection(): string {
-    return [
-        "## 工具调用规则",
-        "只能调用当前 tools 参数中实际存在的工具，不得臆想或假设工具存在；认为某个工具可用前，先确认它的名字在 tools 列表中。",
-        "可直接调用当前 tools 参数中声明的工具。",
-        "tools 参数包含当前可用工具，直接调用匹配任务的已声明工具。",
-        "也可以改用列表中的等价工具（如新闻用名字里带 web_search 的工具）。",
-        "不要因为工具不在列表而停止回复，即使没有可用工具也要正常回复用户。",
-        "todo 仅用于复杂、持续时间较长或需要跨多轮推进的任务；简单任务、步骤少且预计几次工具调用/对话往返即可完成的任务，不要调用 todo。复杂任务开始时用 todo write 建立清单，执行中保持同时只有 1 条 in_progress，并随任务状态变化及时更新；收尾前清零未完成项。",
-    ].join("\n");
 }
 
 export interface BuildSystemPromptResult {
@@ -346,31 +332,6 @@ export function getChatModelOptions(): ChatModelOption[] {
     return options;
 }
 
-/** @public */
-export function buildExtraToolsSection(preface?: string): string {
-    const allTools = getAllToolSummary();
-
-    const bySource: Record<string, string[]> = {};
-    for (const tool of allTools) {
-        const source = tool.source || "local";
-        if (!bySource[source]) bySource[source] = [];
-        bySource[source].push(tool.name);
-    }
-
-    const lines = Object.entries(bySource)
-        .sort(([leftSource], [rightSource]) => leftSource.localeCompare(rightSource))
-        .map(([source, names]) => `- ${source}: ${names.sort((left, right) => left.localeCompare(right)).join(", ")}`)
-        .join("\n");
-
-    const parts = ["## 更多可用工具"];
-    if (preface) {
-        parts.push(preface);
-    }
-    parts.push(`共有 ${allTools.length} 个可用工具，所有非会话工具都已在 tools 参数中声明，可直接调用。${lines ? `\n${lines}` : ""}`);
-    parts.push("需要发现工具时调用 search_tools，传入独立的 keywords 列表（例如 [\"hello\", \"world\"]），不要写成 [\"hello world\"]。");
-    return parts.join("\n\n");
-}
-
 export function buildSystemPrompt(options: BuildSystemPromptOptions = { userId: DEFAULT_MEMORY_USER_ID }): BuildSystemPromptResult {
     const sections: string[] = [];
     const memoryUserId = normalizeMemoryUserId(options.userId);
@@ -378,8 +339,6 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = { userId: 
     if (identity) {
         sections.push(identity);
     }
-
-    sections.push(buildExtraToolsSection(options.extraToolsPreface));
 
     let nextSentSkillsMtime = options.sentSkillsMtime;
     let updatedSkillListing = false;
@@ -415,9 +374,6 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = { userId: 
         }
     }
 
-    // 动态规则放末尾，离对话最近
-    sections.push(buildToolCallingRuleSection());
-
     return {
         systemPrompt: sections.join("\n\n"),
         nextSentSkillsMtime,
@@ -439,10 +395,7 @@ export function getOrCreateSessionSystemPrompt(
     const cachedMemoryScopeMatches = !includeMemory || cachedMemoryUserId === memoryUserId;
     // 缓存里的 PWD 必须与该会话绑定目录一致（旧缓存无记录时重建一次以纠正错位 PWD）
     const cachedCwdMatchesSession = session.cachedSystemPromptCwd === session.cwd;
-    const runtimeFingerprint = JSON.stringify({
-        skills: skillRegistry.getFingerprint(),
-        tools: getAllToolSummary(),
-    });
+    const runtimeFingerprint = skillRegistry.getFingerprint();
     const cachedRuntimeMatches = session.cachedSystemPromptRuntimeFingerprint === runtimeFingerprint;
     if (session.cachedSystemPrompt && hasCompatibleCachedPrompt && cachedCwdMatchesSession && cachedMemoryScopeMatches && cachedRuntimeMatches) {
         return session.cachedSystemPrompt;

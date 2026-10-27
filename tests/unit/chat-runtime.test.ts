@@ -4,7 +4,6 @@ import os from "os";
 import path from "path";
 import {
     buildConversationHistory,
-    buildExtraToolsSection,
     buildSystemPrompt,
     formatChatProviderError,
     getOrCreateSessionSystemPrompt,
@@ -120,7 +119,6 @@ Alpha prompt body`,
         const result = buildSystemPrompt({
             activeSkillName: "alpha",
             sentSkillsMtime: {},
-            extraToolsPreface: "测试工具前言",
         });
 
         expect(result.systemPrompt).toContain("你是测试身份");
@@ -134,8 +132,6 @@ Alpha prompt body`,
         expect(result.systemPrompt.indexOf("## 可用技能")).toBeLessThan(result.systemPrompt.indexOf("<!-- 核心记忆"));
         expect(result.systemPrompt.indexOf("<!-- 核心记忆")).toBeLessThan(result.systemPrompt.indexOf("<!-- 昨日记忆"));
         expect(result.systemPrompt.indexOf("<!-- 今日记忆")).toBeLessThan(result.systemPrompt.indexOf("## 当前激活技能：alpha"));
-        // 工具调用规则动态段位于末尾
-        expect(result.systemPrompt.indexOf("## 工具调用规则")).toBeGreaterThan(result.systemPrompt.indexOf("## 当前激活技能：alpha"));
     });
 
     test("buildSystemPrompt appends the optional extra identity file", () => {
@@ -205,13 +201,6 @@ Alpha prompt body`,
             if (previousExtraIdentityFile === undefined) delete process.env.ZBOT_EXTRA_IDENTITY_FILE;
             else process.env.ZBOT_EXTRA_IDENTITY_FILE = previousExtraIdentityFile;
         }
-    });
-
-    test("tool calling rule section says all available tools are declared", () => {
-        const result = buildSystemPrompt();
-        expect(result.systemPrompt).toContain("不得臆想或假设工具存在");
-        expect(result.systemPrompt).toContain("可直接调用当前 tools 参数中声明的工具");
-        expect(result.systemPrompt).toContain("tools 参数包含当前可用工具");
     });
 
     test("buildSystemPrompt always includes the complete skill listing", async () => {
@@ -344,37 +333,6 @@ Beta prompt body`,
         expect(reloadedPrompt).toContain("更新指令");
     });
 
-    test("工具目录变化后重建 session system prompt 缓存", () => {
-        const session = {
-            cwd: tmpDir,
-            activeSkill: undefined,
-            sentSkillsMtime: {},
-        } as any;
-        const initialPrompt = getOrCreateSessionSystemPrompt(session, { includeMemory: false });
-        const remoteToolName = "reload_runtime_test_tool";
-
-        toolCatalog.syncRemoteTools("reload-runtime-test", [{
-            name: remoteToolName,
-            description: "用于验证重载的测试工具",
-            inputSchema: { type: "object", properties: {} },
-            execute: async () => ({ content: [] }),
-        }]);
-
-        try {
-            const reloadedPrompt = getOrCreateSessionSystemPrompt(session, { includeMemory: false });
-            expect(reloadedPrompt).not.toBe(initialPrompt);
-            expect(reloadedPrompt).toContain(remoteToolName);
-        } finally {
-            toolCatalog.removeRemoteServer("reload-runtime-test");
-        }
-    });
-
-    test("guides tool discovery toward precise multi-keyword searches", () => {
-        const section = buildExtraToolsSection("测试");
-
-        expect(section).toContain("传入独立的 keywords 列表");
-        expect(section).toContain("不要写成 [\"hello world\"]");
-    });
 });
 
 describe("system prompt PWD 与会话绑定目录一致", () => {

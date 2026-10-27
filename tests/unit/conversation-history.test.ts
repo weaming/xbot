@@ -234,11 +234,11 @@ describe('conversation history', () => {
         expect(getSessionContextHistory(session)).toEqual([{ role: 'user', content: 'failed request' }]);
     });
 
-    test('persists a complete tool turn when discovered tools are not injected', () => {
+    test('persists a complete tool turn when remote tools are not injected', () => {
         const session = createSession();
         const responseMessages: ChatMessage[] = [
             { role: 'assistant', content: null, tool_calls: [{ id: 'call_1' }] },
-            { role: 'tool', tool_call_id: 'call_1', name: 'search_tools', content: '[{}]' },
+            { role: 'tool', tool_call_id: 'call_1', name: 'todo', content: '[{}]' },
             { role: 'assistant', content: '完成' },
         ];
 
