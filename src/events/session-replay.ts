@@ -398,7 +398,6 @@ const SNAPSHOT_SESSION_FIELDS = [
     "createdAt",
     "updatedAt",
     "archivedAt",
-    "activeSkill",
     "modelSelection",
 ] as const;
 

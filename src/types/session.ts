@@ -89,7 +89,6 @@ export interface Session {
     createdAt?: string; // 会话创建时间（上海时区 ISO 字符串）
     updatedAt?: string; // 最近一次持久化相关变更时间
     archivedAt?: string; // 会话归档时间（上海时区 ISO 字符串）
-    activeSkill?: string; // 用户通过 /use 命令主动激活的技能名
     /** 会话固定使用的模型与协议；缺省时采用全局默认配置。 */
     modelSelection?: ChatModelSelection;
 }

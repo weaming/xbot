@@ -3,6 +3,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { SkillRegistry } from "../../src/skills/skill-registry.js";
+import { parseSkillMarkdown } from "../../src/skills/base-skill.js";
 import { restoreEnv } from "./test-env.js";
 
 /** 构造一个技能目录（Claude Codex 结构：SKILL.md frontmatter + body + 可带伴生文件）。 */
@@ -81,7 +82,7 @@ describe("skill registry multi-source loading", () => {
 
         expect(registry.hasSkill("alpha")).toBe(true);
         // 额外 yaml 字段不阻塞解析，正文完整保留
-        expect(registry.getSkill("alpha")?.getSystemPrompt()).toContain("技能正文");
+        expect(parseSkillMarkdown(path.join(userSkillsDir, "alpha")).systemPrompt).toContain("技能正文");
     });
 
     test("dir name fallback when frontmatter lacks name", async () => {

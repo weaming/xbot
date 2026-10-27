@@ -84,12 +84,7 @@ export async function runPrintCli(argv: string[]): Promise<void> {
         process.once("SIGINT", onSigint);
         process.once("SIGTERM", onSigterm);
             try {
-                const systemPrompt = runtime.buildSystemPrompt({
-                    userId: DEFAULT_MEMORY_USER_ID,
-                    cwd: args.cwd,
-                    includeMemory: false,
-                    includeDailyMemory: false,
-                });
+                const systemPrompt = runtime.buildSystemPrompt(args.cwd);
                 const result = await runtime.runChatQuery({
                     query: prompt,
                     systemPrompt,

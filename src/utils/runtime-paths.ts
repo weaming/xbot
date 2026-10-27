@@ -65,10 +65,6 @@ export const DEFAULT_MEMORY_USER_ID = Number.isSafeInteger(configuredMemoryUserI
     ? configuredMemoryUserId
     : 0;
 
-export function getMemoriesRootDir(...parts: string[]): string {
-    return getStateDir("memories", ...parts);
-}
-
 export function normalizeMemoryUserId(userId?: number | string): number {
     if (userId === undefined || userId === "") return DEFAULT_MEMORY_USER_ID;
 
@@ -76,14 +72,6 @@ export function normalizeMemoryUserId(userId?: number | string): number {
     return Number.isSafeInteger(parsedUserId) && parsedUserId >= 0
         ? parsedUserId
         : DEFAULT_MEMORY_USER_ID;
-}
-
-export function getUserMemoriesDir(userId: number, ...parts: string[]): string {
-    return getMemoriesRootDir(String(userId), ...parts);
-}
-
-export function getUserMemoryFilePath(userId: number): string {
-    return getUserMemoriesDir(userId, "MEMORY.md");
 }
 
 export function getSessionsDir(...parts: string[]): string {

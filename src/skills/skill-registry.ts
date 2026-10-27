@@ -161,14 +161,6 @@ export class SkillRegistry {
         this.skills.set(skill.config.name, skill);
     }
 
-    getSkill(name: string): BaseSkill | undefined {
-        return this.skills.get(name);
-    }
-
-    getAllSkills(): BaseSkill[] {
-        return Array.from(this.skills.values());
-    }
-
     getSkillNames(): string[] {
         return Array.from(this.skills.keys());
     }

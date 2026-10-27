@@ -41,11 +41,6 @@ export const getTodayDateString = (date: Date = new Date()): string => {
     return getShanghaiISOString(date).split('T')[0];
 };
 
-export const getDateStringOffsetDays = (offsetDays: number, date: Date = new Date()): string => {
-    const shifted = new Date(date.getTime() + offsetDays * 24 * 60 * 60 * 1000);
-    return getTodayDateString(shifted);
-};
-
 /** 解析 ISO 8601 时间戳；无效值返回 undefined。 */
 export const parseIsoTimestamp = (value?: string): Date | undefined => {
     if (!value) return undefined;

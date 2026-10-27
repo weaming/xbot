@@ -1,45 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
-import {
-    formatDisplayPath,
-    getToolCwd,
-    getUserMemoryFilePath,
-    getUserMemoriesDir,
-} from "../utils/runtime-paths.js";
-import { getDateStringOffsetDays, getTodayDateString } from "../utils/time.js";
+import { formatDisplayPath, getToolCwd } from "../utils/runtime-paths.js";
 
 const IDENTITY_FILES = ['AGENTS.md', 'SOUL.md', 'IDENTITY.md', 'USER.md'];
 let embeddedIdentity: string | undefined;
-
-/**
- * 读取文件内容，空内容返回 '空'
- */
-function readFileContent(filePath: string): string {
-    if (!fs.existsSync(filePath)) return '空';
-    const content = fs.readFileSync(filePath, 'utf-8').trim();
-    return content || '空';
-}
-
-/**
- * 加载最近记忆上下文（MEMORY.md + today + yesterday）。
- * 无长度限制，全部加载。
- */
-export function loadCoreMemoryContext(userId: number): string {
-    const sections: string[] = [];
-    sections.push(`<!-- 核心记忆 (MEMORY.md) -->\n${readFileContent(getUserMemoryFilePath(userId))}`);
-    return sections.join('\n\n');
-}
-
-export function loadDailyMemoryContext(userId: number): string {
-    const memoryDir = getUserMemoriesDir(userId);
-    const today = getTodayDateString();
-    const yesterday = getDateStringOffsetDays(-1);
-    const sections: string[] = [];
-    sections.push(`<!-- 昨日记忆 (${yesterday}) -->\n${readFileContent(path.join(memoryDir, `${yesterday}.md`))}`);
-    sections.push(`<!-- 今日记忆 (${today}) -->\n${readFileContent(path.join(memoryDir, `${today}.md`))}`);
-    return sections.join('\n\n');
-}
 
 /**
  * 将内容中的 {{VAR_NAME}} 替换为对应的环境变量值（overrides 优先于 process.env）。
@@ -136,11 +101,6 @@ export class BaseSkill {
     constructor(config: SkillConfig) {
         this.config = config;
     }
-
-    getSystemPrompt(): string {
-        return this.config.systemPrompt;
-    }
-
 }
 
 /**

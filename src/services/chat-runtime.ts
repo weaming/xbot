@@ -2,8 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { isIP } from "node:net";
 import { skillRegistry } from "../skills/skill-registry.js";
-import { loadCoreMemoryContext, loadDailyMemoryContext, loadIdentityContext } from "../skills/base-skill.js";
-import { DEFAULT_MEMORY_USER_ID, normalizeMemoryUserId } from "../utils/runtime-paths.js";
+import { loadIdentityContext } from "../skills/base-skill.js";
 import { executeWithChat, createChatClient, isAbortError } from "../tools/chat-orchestrator.js";
 import { executeMcpTool, getOpenAIToolDefinitions } from "../tools/tool-registry.js";
 import { createTodoReminderProvider } from "../tools/todo-tool.js";
@@ -182,15 +181,6 @@ export function formatChatProviderError(error: unknown, currentSettings = getCha
     return `LLM provider 请求失败：${message}`;
 }
 
-export interface BuildSystemPromptOptions {
-    userId: number;
-    activeSkillName?: string;
-    includeMemory?: boolean;
-    includeDailyMemory?: boolean;
-    /** 会话绑定工作目录：identity 中 {{TUI_CWD}} 插值用它，缺省回退进程级 TUI_CWD。 */
-    cwd?: string;
-}
-
 export interface ChatRunOptions {
     query: string;
     queryContent?: UserContent;
@@ -324,56 +314,27 @@ export function getChatModelOptions(): ChatModelOption[] {
     return options;
 }
 
-export function buildSystemPrompt(options: BuildSystemPromptOptions = { userId: DEFAULT_MEMORY_USER_ID }): string {
+/**
+ * 组装 system prompt：身份文件 + 技能清单。
+ * 每次调用都现读磁盘，不缓存；cwd 用于身份文件里 {{TUI_CWD}} 的插值。
+ */
+export function buildSystemPrompt(cwd?: string): string {
     const sections: string[] = [];
-    const memoryUserId = normalizeMemoryUserId(options.userId);
-    const identity = loadIdentityContext(options.cwd ? { TUI_CWD: options.cwd } : undefined).trim();
+    const identity = loadIdentityContext(cwd ? { TUI_CWD: cwd } : undefined).trim();
     if (identity) {
         sections.push(identity);
     }
 
-    const skillListing = skillRegistry.buildSkillListing();
-    sections.push(skillListing);
-
-    if (options.includeMemory !== false) {
-        const coreMemory = loadCoreMemoryContext(memoryUserId).trim();
-        if (coreMemory) {
-            sections.push(coreMemory);
-        }
-
-        if (options.includeDailyMemory !== false) {
-            const dailyMemory = loadDailyMemoryContext(memoryUserId).trim();
-            if (dailyMemory) {
-                sections.push(dailyMemory);
-            }
-        }
-    }
-
-    if (options.activeSkillName) {
-        const activeSkill = skillRegistry.getSkill(options.activeSkillName);
-        if (activeSkill) {
-            sections.push(`## 当前激活技能：${options.activeSkillName}\n${activeSkill.getSystemPrompt()}`);
-        }
-    }
-
+    sections.push(skillRegistry.buildSkillListing());
     return sections.join("\n\n");
 }
 
 /**
  * 逐次构建会话的 system prompt：不缓存、不落盘。
- * 技能清单、记忆文件、身份文件的改动下一次请求即生效，重启也不会带回旧文本。
- * 会话提示默认不含记忆（记忆走记忆工具），调用方要注入时显式传 includeMemory。
+ * 技能清单与身份文件的改动下一次请求即生效，重启也不会带回旧文本。
  */
-export function resolveSessionSystemPrompt(
-    session: Pick<Session, 'cwd' | 'activeSkill'>,
-    options: { includeMemory?: boolean; userId?: number } = {},
-): string {
-    return buildSystemPrompt({
-        activeSkillName: session.activeSkill,
-        includeMemory: options.includeMemory ?? false,
-        userId: options.userId ?? DEFAULT_MEMORY_USER_ID,
-        cwd: session.cwd,
-    });
+export function resolveSessionSystemPrompt(session: Pick<Session, 'cwd'>): string {
+    return buildSystemPrompt(session.cwd);
 }
 
 export function buildConversationHistory(

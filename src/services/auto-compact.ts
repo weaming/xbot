@@ -197,7 +197,7 @@ export async function autoCompactIfNeeded(
 ): Promise<AutoCompactResult> {
     const userId = normalizeMemoryUserId(options.userId);
     // 判定要带上系统提示的占用：只有历史估算会低估真实请求量，漏判就直接涨到 provider 400
-    const systemPrompt = resolveSessionSystemPrompt(session, { userId });
+    const systemPrompt = resolveSessionSystemPrompt(session);
     const systemPromptTokens = await countTextTokens(systemPrompt, options.model);
     if (!(await shouldAutoCompact(session, {
         model: options.model,
