@@ -22,6 +22,7 @@ import { padColumns, truncatePlain } from "./panel-text.js";
 import { abbreviatePath, composeSessionRow, planSessionRows, type SessionRow } from "./session-row.js";
 import { DEFAULT_SPINNER, sessionMarker, type SessionOwnerState } from "./session-marker.js";
 import { selectListTheme, theme } from "./theme.js";
+import { formatRelativeTime } from "../utils/time.js";
 
 /** 面板列表一次最多显示的行数（超出滚动）。 */
 const MAX_VISIBLE = 10;
@@ -70,23 +71,6 @@ export interface SessionPanelOptions {
     requestRender?: () => void;
     /** home 目录：cwd 缩写为 `~/…`；缺省读环境变量 HOME。 */
     home?: string;
-}
-
-/** 相对时间：1 分钟内「刚刚」，1 小时内分钟，24 小时内小时，30 天内天，再早显示日期。 */
-function formatRelativeTime(iso?: string): string {
-    if (!iso) return "未落盘";
-    const time = new Date(iso).getTime();
-    if (Number.isNaN(time)) return "";
-
-    const diffMs = Date.now() - time;
-    if (diffMs < 60_000) return "刚刚";
-    const minutes = Math.floor(diffMs / 60_000);
-    if (minutes < 60) return `${minutes}分钟前`;
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours}小时前`;
-    const days = Math.floor(hours / 24);
-    if (days < 30) return `${days}天前`;
-    return new Date(time).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
 }
 
 /** 标题折为单行：标题来自用户输入，先剥掉控制序列再交给渲染。 */

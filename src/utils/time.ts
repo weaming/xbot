@@ -1,5 +1,22 @@
 const SHANGHAI_OFFSET_MS = 8 * 60 * 60 * 1000;
 
+/** 相对时间：1 分钟内「刚刚」，1 小时内分钟，24 小时内小时，30 天内天，再早显示日期。 */
+export function formatRelativeTime(iso?: string): string {
+    if (!iso) return "未落盘";
+    const time = new Date(iso).getTime();
+    if (Number.isNaN(time)) return "";
+
+    const diffMs = Date.now() - time;
+    if (diffMs < 60_000) return "刚刚";
+    const minutes = Math.floor(diffMs / 60_000);
+    if (minutes < 60) return `${minutes}分钟前`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}小时前`;
+    const days = Math.floor(hours / 24);
+    if (days < 30) return `${days}天前`;
+    return new Date(time).toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
+}
+
 /**
  * 获取上海时区的 ISO 8601 字符串
  * 格式: YYYY-MM-DDTHH:mm:ss+08:00

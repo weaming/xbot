@@ -25,6 +25,8 @@ export function sessionArtifactPaths(sessionId: string): string[] {
     const safeId = sanitizeSessionId(sessionId);
     return [
         getSessionsDir("events", `${safeId}.jsonl`),
+        getSessionsDir("events", `${safeId}.snapshot.json`),
+        getSessionsDir("events", `${safeId}.stream.jsonl`),
         getSessionsDir("http", `${safeId}.jsonl`),
         getSessionsDir("log", `${safeId}.log`),
         getSessionsDir("todos", `${safeId}.json`),
@@ -32,6 +34,15 @@ export function sessionArtifactPaths(sessionId: string): string[] {
         getSessionsDir("locks", `${safeId}.lock`),
         getSessionsDir("assets", safeId),
     ];
+}
+
+/** 删除一个会话的全部落点（缺项跳过）；`skipAssets` 用于只清会话记录、不扫大目录。 */
+export async function removeSessionArtifacts(sessionId: string, skipAssets = false): Promise<void> {
+    for (const target of sessionArtifactPaths(sessionId)) {
+        if (skipAssets && target === getSessionsDir("assets", sanitizeSessionId(sessionId))) continue;
+        // assets 是目录，其余是文件；force 让缺失项直接跳过
+        await fs.promises.rm(target, { recursive: true, force: true });
+    }
 }
 
 /** 从环境变量解析保留天数；未设置用默认值，非法值告警后回退默认值。 */
@@ -155,15 +166,6 @@ export async function cleanupArchivedSessions(
         else console.log(`🧹 [cleanup] ${note}`);
     }
     return { removed, failed, retentionDays };
-}
-
-/** 逐个删除会话的落点；单个文件缺失不算失败。 */
-async function removeSessionArtifacts(sessionId: string, skipAssets: boolean): Promise<void> {
-    for (const target of sessionArtifactPaths(sessionId)) {
-        if (skipAssets && target === getSessionsDir("assets", sanitizeSessionId(sessionId))) continue;
-        // assets 是目录，其余是文件；force 让缺失项直接跳过
-        await fs.promises.rm(target, { recursive: true, force: true });
-    }
 }
 
 async function readEvents(filePath: string): Promise<AgentEvent[]> {

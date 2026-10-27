@@ -14,11 +14,12 @@ import path from "node:path";
 import { buildSystemPrompt } from "../services/chat-runtime.js";
 import { createEmptySession, eventCwd, SessionReplay } from "../events/session-replay.js";
 import { EventLog } from "../events/event-log.js";
+import { listSavedSessionIds } from "../events/session-files.js";
 import { getSessionExchangeLogFile } from "../utils/logger.js";
 import { appendInputHistory, loadInputHistory } from "./input-history.js";
 import { getTuiSessionLogFile } from "../utils/tui-state-paths.js";
 import { getTuiStartupCwd } from "./runtime-context.js";
-import { getSessionsDir, getSessionTodosFile, getStartupToolCwd, getToolCwd } from "../utils/runtime-paths.js";
+import { getSessionTodosFile, getStartupToolCwd, getToolCwd } from "../utils/runtime-paths.js";
 import { planResume } from "../services/resume-plan.js";
 import {
     describeClaimFailure,
@@ -460,15 +461,7 @@ export class LocalTuiAgent implements TuiAgent {
 
     /** 磁盘上已落盘的会话 id。 */
     listSavedSessionIds(): Set<string> {
-        const ids = new Set<string>();
-        try {
-            for (const fileName of fs.readdirSync(getSessionsDir("events"))) {
-                if (fileName.endsWith(".jsonl")) ids.add(fileName.slice(0, -".jsonl".length));
-            }
-        } catch {
-            // 目录不存在时没有已保存会话。
-        }
-        return ids;
+        return new Set(listSavedSessionIds());
     }
 
     /** 本进程内存里正在使用的会话 id。 */

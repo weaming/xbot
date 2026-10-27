@@ -38,4 +38,12 @@ Responses API 和 Chat Completions 可使用各自的 `OPENAI_RESPONSES_*` 与 `
 ~/.bun/bin/zbot
 ```
 
-文档：[MCP 多服务配置](docs/mcp.md)、[TUI 链接与终端交互](docs/tui-links.md)。
+会话也可以在命令行里增删查改（供其他 AI 或脚本调用）：
+
+```sh
+~/.bun/bin/zbot session list
+~/.bun/bin/zbot session show <id>
+~/.bun/bin/zbot session send <id> "跑一下测试" --wait
+```
+
+文档：[会话命令行](docs/session-cli.md)、[MCP 多服务配置](docs/mcp.md)、[TUI 链接与终端交互](docs/tui-links.md)。

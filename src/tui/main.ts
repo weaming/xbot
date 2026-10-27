@@ -9,6 +9,7 @@ import { configureTuiHostEnvironment, redirectTuiLogsToFile } from "./runtime-co
 import { herdrReporter } from "./herdr-reporter.js";
 import { officialDeepSeekCostYuan } from "../pricing/deepseek.js";
 import { isPrintCliInvocation } from "../cli/print.js";
+import { isSessionCliInvocation } from "../cli/session.js";
 import type { ChatApp } from "./app.js";
 
 const DEFAULT_ENV_FILE = path.join(os.homedir(), ".zbot", "env");
@@ -20,6 +21,21 @@ function resolveEnvFile(value: string): string {
 }
 
 const envFile = resolveEnvFile(process.env.ZBOT_ENV_FILE || DEFAULT_ENV_FILE);
+
+// 会话 CRUD 分支：必须在 dotenv 与 configureTuiHostEnvironment 之前分流 ——
+// 后者会把 ZBOT_STATE_DIR 固定到 ~/.zbot、改写 TUI_CWD 并重定向日志，
+// 命令行里指定别的状态目录就该读那个目录。
+if (isSessionCliInvocation(process.argv.slice(2))) {
+    try {
+        const { runSessionCli } = await import("../cli/session.js");
+        await runSessionCli(process.argv.slice(2).slice(1));
+    } catch (error: any) {
+        process.stderr.write(`${error?.message ?? error}\n`);
+        process.exitCode = 1;
+    }
+    process.exit(process.exitCode ?? 0);
+}
+
 // quiet：不向终端输出 "injected env" 提示，避免启动前污染主 buffer。
 dotenv.config({ path: envFile, quiet: true });
 configureTuiHostEnvironment();
