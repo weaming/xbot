@@ -374,10 +374,7 @@ function parseEditFileResult(result: string): EditFileDiff[] {
         files.push(file);
     }
 
-    if (files.length > 0) return files;
-
-    const path = extractEditFilePath(lines);
-    return path ? [{ path, additions: 0, removals: 0, lines: [] }] : [];
+    return files;
 }
 
 /** 判断该行是否为下一个文件的 diff 头（`--- ` 紧跟 `+++ `）。 */
@@ -388,14 +385,6 @@ function isDiffFileHeader(lines: string[], index: number): boolean {
 /** 从 `+++ ` 行提取文件路径（去掉时间戳列）。 */
 function parseDiffPath(line: string): string {
     return line.slice(4).split("\t", 1)[0].trim();
-}
-
-/** 从 edit_file 成功回显中提取文件路径。 */
-function extractEditFilePath(lines: string[]): string | undefined {
-    return lines
-        .find((line) => line.startsWith("Edited file successfully:"))
-        ?.replace("Edited file successfully:", "")
-        .trim();
 }
 
 // ── ask_user 问答 ───────────────────────────────────────────────────────────
