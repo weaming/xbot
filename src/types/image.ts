@@ -35,7 +35,7 @@ export interface ImageAssetContent {
     image: ImageAssetRef;
 }
 
-export interface ImageUrlContent {
+interface ImageUrlContent {
     type: "image_url";
     image: ImageUrlRef;
 }

@@ -64,7 +64,7 @@ interface ArchiveMark {
  * 它们不代表用户回来用过这个会话，不能因此让归档失效（否则归档会话永远清不掉）。
  * 归档后若真的继续对话或取消归档，末条有效事件就不是 session_archived，计时自然重置。
  */
-export function readArchiveMark(sessionId: string, events: AgentEvent[], fileMtimeMs: number): ArchiveMark {
+function readArchiveMark(sessionId: string, events: AgentEvent[], fileMtimeMs: number): ArchiveMark {
     const last = lastMeaningfulEvent(events);
     const archived = last?.type === "session_archived";
     const at = last ? Date.parse(last.ts) : Number.NaN;

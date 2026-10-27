@@ -7,5 +7,8 @@
   "project": [
     "**/*.{js,cjs,mjs,jsx,ts,cts,mts,tsx}!",
     "!tmp/**"
+  ],
+  "ignoreBinaries": [
+    "pbpaste"
   ]
 }

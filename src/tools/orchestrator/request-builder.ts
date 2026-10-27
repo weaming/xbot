@@ -76,7 +76,7 @@ export function sortToolsByName<T extends { function?: { name?: string } }>(tool
  * 追加后续发现的工具：只在尾部追加，不参与重排。
  * 这样同一会话内前缀不变，每次最多 miss 新增那几个工具的定义。
  */
-export interface ReasoningParamsInput {
+interface ReasoningParamsInput {
     protocol: ChatProtocol;
     model: string;
     baseURL: string;

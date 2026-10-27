@@ -15,7 +15,7 @@ import { getShanghaiISOString } from "./time.js";
 
 const LOCK_STALE_MS = 10_000;
 
-export interface SessionLockData {
+interface SessionLockData {
     pid: number;
     sessionId: string;
     lockedAt: string;
@@ -53,7 +53,7 @@ export function isProcessAlive(pid: number): boolean {
 }
 
 /** 同步读取锁文件内容，如不存在或损坏返回 null。 */
-export function readSessionLockSync(sessionId: string): SessionLockData | null {
+function readSessionLockSync(sessionId: string): SessionLockData | null {
     const lockPath = getSessionLockFilePath(sessionId);
     try {
         if (!fs.existsSync(lockPath)) return null;

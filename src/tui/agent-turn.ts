@@ -7,7 +7,7 @@ import { runTurnCore } from "../services/run-turn.js";
 import {
     buildConversationHistory,
     getChatApiSettings,
-    resolveSessionSystemPrompt,
+    buildSystemPrompt,
     runChatQuery,
 } from "../services/chat-runtime.js";
 import { buildCompactPrompt } from "../utils/compaction-prompt.js";
@@ -80,7 +80,7 @@ export async function runSessionTurn(
             userMessages,
             query: spec.query,
             queryContent: userMessages.at(-1) ? toUserContent(userMessages.at(-1)!) : undefined,
-            systemPrompt: resolveSessionSystemPrompt(activeSession),
+            systemPrompt: buildSystemPrompt(activeSession.cwd),
             buildHistory: () =>
                 buildConversationHistory(activeSession, userMessages, { skipToolCallIds: spec.skipToolCallIds }),
             signal: abortController.signal,
@@ -237,7 +237,7 @@ export async function compactSessionContext(
         host.notify(requestId, sessionId, { type: "progress", message: "🗜️ 正在压缩会话上下文..." });
         const response = await runChatQuery({
             query: buildCompactPrompt(instruction),
-            systemPrompt: resolveSessionSystemPrompt(session),
+            systemPrompt: buildSystemPrompt(session.cwd),
             history,
             sessionId,
             modelSelection: session.modelSelection,

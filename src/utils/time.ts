@@ -1,10 +1,5 @@
 const SHANGHAI_OFFSET_MS = 8 * 60 * 60 * 1000;
 
-export interface ShanghaiDateRange {
-    start: Date;
-    end: Date;
-}
-
 /**
  * 获取上海时区的 ISO 8601 字符串
  * 格式: YYYY-MM-DDTHH:mm:ss+08:00
@@ -31,41 +26,6 @@ export const getShanghaiISOString = (date: Date = new Date()): string => {
     const hourStr = String(hour).padStart(2, '0');
 
     return `${year}-${month}-${day}T${hourStr}:${minute}:${second}+08:00`;
-};
-
-/**
- * 获取上海时区的日期字符串
- * 格式: YYYY-MM-DD
- */
-export const getTodayDateString = (date: Date = new Date()): string => {
-    return getShanghaiISOString(date).split('T')[0];
-};
-
-/** 解析 ISO 8601 时间戳；无效值返回 undefined。 */
-export const parseIsoTimestamp = (value?: string): Date | undefined => {
-    if (!value) return undefined;
-
-    const timestamp = new Date(value);
-    return Number.isNaN(timestamp.getTime()) ? undefined : timestamp;
-};
-
-/** 返回上海时区某个自然日对应的半开时间区间。 */
-export const getShanghaiDateRange = (date: string): ShanghaiDateRange => {
-    const start = parseIsoTimestamp(`${date}T00:00:00+08:00`);
-    if (!start || getTodayDateString(start) !== date) {
-        throw new Error(`Invalid Shanghai date: ${date}`);
-    }
-
-    return {
-        start,
-        end: new Date(start.getTime() + 24 * 60 * 60 * 1000),
-    };
-};
-
-/** 判断 ISO 时间戳是否落在给定的上海自然日区间内。 */
-export const isTimestampInRange = (value: string | undefined, range: ShanghaiDateRange): boolean => {
-    const timestamp = parseIsoTimestamp(value);
-    return timestamp !== undefined && timestamp >= range.start && timestamp < range.end;
 };
 
 /**
@@ -119,26 +79,3 @@ export const formatGoDuration = (durationMs: number): string => {
     if (hours > 0) return `${hours}h${minutes}m${secondsText}s`;
     return `${minutes}m${secondsText}s`;
 };
-
-/** 返回香港时区的时间字符串，格式 HH:mm:ss */
-export const nowHKTime = (): string =>
-    new Date().toLocaleString('zh-CN', {
-        timeZone: 'Asia/Hong_Kong',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false,
-    });
-
-/** 返回香港时区的日期时间字符串，格式 YYYY/MM/DD HH:mm:ss */
-export const nowHKDateTime = (): string =>
-    new Date().toLocaleString('zh-CN', {
-        timeZone: 'Asia/Hong_Kong',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false,
-    });

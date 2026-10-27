@@ -14,7 +14,7 @@ import {
 } from "../../utils/image-assets.js";
 import type { UIEvent } from "../../events/ui-events.js";
 /** 只声明本模块用到的最小客户端形状，避免与主模块形成循环依赖。 */
-export interface RequestClient {
+interface RequestClient {
     baseURL: string;
     protocol?: "responses" | "chat_completions";
     createResponse?: unknown;

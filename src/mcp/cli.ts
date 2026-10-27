@@ -153,10 +153,6 @@ function printHelp(): void {
   zbot mcp remove <名称>`);
 }
 
-export function isMcpCliCommand(args: string[]): boolean {
-    return args[0] === "mcp";
-}
-
 export async function runMcpCli(args: string[], options: McpCliOptions = {}): Promise<void> {
     const [subcommand, ...subcommandArgs] = args;
     const configPath = options.configPath ?? getConfigPath();

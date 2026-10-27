@@ -11,7 +11,7 @@ import { toolCatalog } from "./tool-catalog.js";
 import { formatToolDef } from "./tool-schema.js";
 
 import type { ExecutableTool, ToolExecutionResult } from "./tool-interface.js";
-export type { ExecutableTool, ToolExecutionResult };
+export type { ToolExecutionResult };
 
 const coreTools: ExecutableTool[] = [
     todoTool,

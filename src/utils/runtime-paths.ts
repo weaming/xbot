@@ -79,17 +79,13 @@ export function getSessionsDir(...parts: string[]): string {
 }
 
 /** 会话任务清单目录：sessions/todos/。 */
-export function getSessionTodosDir(...parts: string[]): string {
+function getSessionTodosDir(...parts: string[]): string {
     return getSessionsDir("todos", ...parts);
 }
 
 /** 单个会话的任务清单文件：sessions/todos/<sessionId>.json（删除会话时一并清理）。 */
 export function getSessionTodosFile(sessionId: string): string {
     return getSessionTodosDir(`${sessionId}.json`);
-}
-
-export function getUploadsDir(...parts: string[]): string {
-    return getStateDir("uploads", ...parts);
 }
 
 /** 展开 ${VAR} 形式的环境变量引用。 */

@@ -16,7 +16,7 @@
 
 import type { PeerMessage, PeerResult } from "./protocol.js";
 
-export type OutboundState = "awaiting" | "expired" | "queued";
+type OutboundState = "awaiting" | "expired" | "queued";
 
 export interface OutboundEntry {
     msgId: string;

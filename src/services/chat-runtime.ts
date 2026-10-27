@@ -46,7 +46,7 @@ export type ChatModelOption = ChatModelSelection;
 
 let defaultModelOption: ChatModelOption | null | undefined;
 
-export function getDefaultChatModelOption(): ChatModelOption | undefined {
+function getDefaultChatModelOption(): ChatModelOption | undefined {
     if (defaultModelOption !== undefined) return defaultModelOption ?? undefined;
     try {
         const value = JSON.parse(fs.readFileSync(getTuiModelPreferencesFile(), "utf8")) as Partial<ChatModelOption>;
@@ -327,14 +327,6 @@ export function buildSystemPrompt(cwd?: string): string {
 
     sections.push(skillRegistry.buildSkillListing());
     return sections.join("\n\n");
-}
-
-/**
- * 逐次构建会话的 system prompt：不缓存、不落盘。
- * 技能清单与身份文件的改动下一次请求即生效，重启也不会带回旧文本。
- */
-export function resolveSessionSystemPrompt(session: Pick<Session, 'cwd'>): string {
-    return buildSystemPrompt(session.cwd);
 }
 
 export function buildConversationHistory(

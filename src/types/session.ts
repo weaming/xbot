@@ -1,4 +1,4 @@
-export type ToolResultMode = 'adaptive' | 'full';
+type ToolResultMode = 'adaptive' | 'full';
 
 export interface ToolResultPolicy {
     mode: ToolResultMode;

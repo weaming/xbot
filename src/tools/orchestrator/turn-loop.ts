@@ -24,14 +24,14 @@ import { filterEmptyAssistantMessages } from "./messages.js";
 import { extractCitations } from "./citations.js";
 
 /** 每轮请求的协议与客户端形状。 */
-export interface TurnClient {
+interface TurnClient {
   baseURL: string;
   protocol?: "responses" | "chat_completions";
   create(params: any, options?: any): Promise<any>;
   createResponse?(params: any, options?: any): Promise<any>;
 }
 
-export type EmitFn = (event: UIEvent) => void;
+type EmitFn = (event: UIEvent) => void;
 
 export interface TurnContext {
   client: TurnClient;

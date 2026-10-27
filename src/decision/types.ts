@@ -6,16 +6,14 @@
  */
 
 /** 问题类型：choice 从命名选项中选一个，score 落在有序档位，noul 是概率化的 yes/no。 */
-export type QuestionType = "choice" | "score" | "noul";
-
 /** noul 的判定说明：分别描述什么算 yes、什么算 no。 */
-export interface NoulCriteria {
+interface NoulCriteria {
     true: string;
     false: string;
 }
 
 /** 单个问题的定义。criteria 的形态随 type 变化。 */
-export interface Question {
+interface Question {
     type: "choice";
     instructions: string;
     /** 选项名 -> 描述（描述可为 null）；2-255 个选项。 */

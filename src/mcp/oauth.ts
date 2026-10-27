@@ -31,7 +31,7 @@ const OAUTH_CALLBACK_PATH = "/callback";
 
 const DEFAULT_AUTH_TIMEOUT_MS = 10 * 60 * 1000;
 
-export interface McpOAuthLogEvent {
+interface McpOAuthLogEvent {
     server: string;
     text: string;
     /** 需要用户打开完成授权的链接 */

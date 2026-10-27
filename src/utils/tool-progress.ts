@@ -2,7 +2,7 @@ const MAX_BASH_PROGRESS_CHARS = 1800;
 const MAX_TOOL_ARGUMENT_CHARS = 200;
 const MAX_TOOL_ARGUMENT_PREVIEW_CHARS = 120;
 
-export function isShellCommandTool(toolName: string): boolean {
+function isShellCommandTool(toolName: string): boolean {
     const normalizedName = toolName.toLowerCase();
     return normalizedName === "bash"
         || normalizedName === "fish"

@@ -11,7 +11,7 @@
 
 import fs from "fs";
 import path from "node:path";
-import { resolveSessionSystemPrompt } from "../services/chat-runtime.js";
+import { buildSystemPrompt } from "../services/chat-runtime.js";
 import { createEmptySession, eventCwd, SessionReplay } from "../events/session-replay.js";
 import { EventLog } from "../events/event-log.js";
 import { getSessionExchangeLogFile } from "../utils/logger.js";
@@ -681,11 +681,11 @@ export class LocalTuiAgent implements TuiAgent {
         const diskSeq = await this.eventLog.lastSeq(sessionId, { forceRefresh: true });
         const active = this.activeSessions.get(sessionId);
         if (active && active.lastSeq >= diskSeq) {
-            return resolveSessionSystemPrompt(active.session);
+            return buildSystemPrompt(active.session.cwd);
         }
 
         if (diskSeq === 0) {
-            if (active) return resolveSessionSystemPrompt(active.session);
+            if (active) return buildSystemPrompt(active.session.cwd);
             throw new Error(`会话不存在: ${sessionId}`);
         }
 
@@ -695,7 +695,7 @@ export class LocalTuiAgent implements TuiAgent {
             lastSeq: replayed.lastSeq,
             abortController: active?.abortController,
         });
-        return resolveSessionSystemPrompt(replayed.session);
+        return buildSystemPrompt(replayed.session.cwd);
     }
 
     async closeSession(sessionId: string): Promise<void> {

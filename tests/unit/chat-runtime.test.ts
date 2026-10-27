@@ -6,7 +6,7 @@ import {
     buildConversationHistory,
     buildSystemPrompt,
     formatChatProviderError,
-    resolveSessionSystemPrompt,
+    buildSystemPrompt,
     validateChatApiSettings,
 } from "../../src/services/chat-runtime.js";
 import { setEmbeddedIdentity } from "../../src/skills/base-skill.js";
@@ -233,9 +233,9 @@ Beta prompt body`,
         const session = { cwd: tmpDir };
 
         fs.writeFileSync(path.join(tmpDir, "AGENTS.md"), "初始 TUI 规则", "utf-8");
-        const initialPrompt = resolveSessionSystemPrompt(session);
+        const initialPrompt = buildSystemPrompt(session.cwd);
         fs.writeFileSync(path.join(tmpDir, "AGENTS.md"), "更新后的 TUI 规则", "utf-8");
-        const laterPrompt = resolveSessionSystemPrompt(session);
+        const laterPrompt = buildSystemPrompt(session.cwd);
 
         expect(initialPrompt).toContain("初始 TUI 规则");
         expect(laterPrompt).toContain("更新后的 TUI 规则");
@@ -250,13 +250,13 @@ Beta prompt body`,
         await skillRegistry.load();
 
         const session = { cwd: tmpDir };
-        const initialPrompt = resolveSessionSystemPrompt(session);
+        const initialPrompt = buildSystemPrompt(session.cwd);
 
         fs.writeFileSync(skillPath, "---\nname: reloadable\ndescription: 更新描述\n---\n更新指令", "utf-8");
         fs.utimesSync(skillPath, new Date(), new Date(Date.now() + 1_000));
         await skillRegistry.load();
 
-        const reloadedPrompt = resolveSessionSystemPrompt(session);
+        const reloadedPrompt = buildSystemPrompt(session.cwd);
         expect(reloadedPrompt).not.toBe(initialPrompt);
         expect(reloadedPrompt).toContain("更新描述");
     });
@@ -293,21 +293,21 @@ describe("system prompt PWD 与会话绑定目录一致", () => {
         const sessionA = makeSession("/sessions/a");
         const sessionB = makeSession("/sessions/b");
 
-        const promptA = resolveSessionSystemPrompt(sessionA);
+        const promptA = buildSystemPrompt(sessionA.cwd);
         expect(promptA).toContain("/sessions/a");
         expect(promptA).not.toContain("/global/activated/cwd");
 
-        const promptB = resolveSessionSystemPrompt(sessionB);
+        const promptB = buildSystemPrompt(sessionB.cwd);
         expect(promptB).toContain("/sessions/b");
         expect(promptA).toContain("/sessions/a");
     });
 
     test("全局 TUI_CWD 变化不改变会话绑定目录的 PWD", () => {
         const sessionA = makeSession("/sessions/a");
-        const first = resolveSessionSystemPrompt(sessionA);
+        const first = buildSystemPrompt(sessionA.cwd);
 
         process.env.TUI_CWD = "/switched/to/other";
-        const second = resolveSessionSystemPrompt(sessionA);
+        const second = buildSystemPrompt(sessionA.cwd);
 
         expect(first).toContain("/sessions/a");
         expect(second).toContain("/sessions/a");
@@ -316,10 +316,10 @@ describe("system prompt PWD 与会话绑定目录一致", () => {
 
     test("会话 cwd 改变后 prompt 跟着换 PWD", () => {
         const sessionA = makeSession("/sessions/a");
-        const before = resolveSessionSystemPrompt(sessionA);
+        const before = buildSystemPrompt(sessionA.cwd);
 
         sessionA.cwd = "/sessions/b";
-        const after = resolveSessionSystemPrompt(sessionA);
+        const after = buildSystemPrompt(sessionA.cwd);
 
         expect(before).toContain("/sessions/a");
         expect(after).toContain("/sessions/b");

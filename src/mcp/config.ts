@@ -11,12 +11,12 @@ import * as yaml from "js-yaml";
 
 import type { ToolFilterConfig } from "./filter.js";
 
-export type McpProtocolVersion = "2026-07-28" | "2025-11-25";
+type McpProtocolVersion = "2026-07-28" | "2025-11-25";
 
 export type McpTransportType = "stdio" | "http" | "streamable-http" | "sse";
 
 /** 远端 MCP 服务的 OAuth 客户端设置（授权码 + PKCE，回调走 127.0.0.1 回环） */
-export interface McpOAuthConfig {
+interface McpOAuthConfig {
     /** 预注册客户端 ID；缺省走 RFC 7591 动态客户端注册 */
     clientId?: string;
     /** 预注册客户端密钥；缺省按公共客户端（token_endpoint_auth_method=none）处理 */
@@ -55,7 +55,7 @@ export interface McpServerConfig extends ToolFilterConfig {
     disabled?: boolean;
 }
 
-export interface McpConfigRoot {
+interface McpConfigRoot {
     servers?: McpServerConfig[];
     mcpServers?: Record<string, Omit<McpServerConfig, "name"> & { name?: string }>;
 }

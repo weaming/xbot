@@ -157,10 +157,6 @@ export class SkillRegistry {
         return Array.from(this.skills.keys());
     }
 
-    register(skill: BaseSkill): void {
-        this.skills.set(skill.config.name, skill);
-    }
-
     getSkillNames(): string[] {
         return Array.from(this.skills.keys());
     }

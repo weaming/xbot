@@ -13,7 +13,7 @@ import { isAbortError } from "../tools/chat-orchestrator.js";
 import { emptyUsage, mergeUsage } from "../events/ui-events.js";
 import type { UsageInfo } from "../types/chat.js";
 import type { ChatModelSelection } from "../types/chat-model.js";
-import { resolveSessionSystemPrompt, runChatQuery } from "./chat-runtime.js";
+import { buildSystemPrompt, runChatQuery } from "./chat-runtime.js";
 import { DEFAULT_MEMORY_USER_ID, normalizeMemoryUserId } from "../utils/runtime-paths.js";
 
 export interface AutoCompactOptions {
@@ -197,7 +197,7 @@ export async function autoCompactIfNeeded(
 ): Promise<AutoCompactResult> {
     const userId = normalizeMemoryUserId(options.userId);
     // 判定要带上系统提示的占用：只有历史估算会低估真实请求量，漏判就直接涨到 provider 400
-    const systemPrompt = resolveSessionSystemPrompt(session);
+    const systemPrompt = buildSystemPrompt(session.cwd);
     const systemPromptTokens = await countTextTokens(systemPrompt, options.model);
     if (!(await shouldAutoCompact(session, {
         model: options.model,

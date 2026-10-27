@@ -33,7 +33,7 @@ export type AgentEventType =
     | "model_selected";
 
 /** 用户消息附带的图片引用。 */
-export type UserImageRef = ImageInputRef;
+type UserImageRef = ImageInputRef;
 
 export interface AgentEventPayloads {
     session_created: { cwd: string };

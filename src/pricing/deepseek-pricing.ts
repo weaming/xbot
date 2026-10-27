@@ -24,7 +24,7 @@ export interface DeepSeekPriceBand {
     output: number;
 }
 
-export interface DeepSeekModelPrices {
+interface DeepSeekModelPrices {
     /** 空闲时段（高峰的一半） */
     offpeak: DeepSeekPriceBand;
     /** 高峰时段 */
@@ -32,7 +32,7 @@ export interface DeepSeekModelPrices {
 }
 
 /** 某一生效期内各价格档的价格表 */
-export type DeepSeekModelTable = Record<DeepSeekModelKey, DeepSeekModelPrices>;
+type DeepSeekModelTable = Record<DeepSeekModelKey, DeepSeekModelPrices>;
 
 /** 一段生效期内的完整模型价格表 */
 export interface DeepSeekPriceSnapshot {

@@ -15,7 +15,7 @@
 export type PanelKind = "session" | "todo" | "shortcut" | "model" | "question";
 
 /** 面板必须提供的能力。 */
-export interface PanelLike {
+interface PanelLike {
     handleInput(data: string): void;
 }
 

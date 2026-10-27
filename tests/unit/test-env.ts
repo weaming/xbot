@@ -46,7 +46,7 @@ export function restoreEnv(name: string, value: string | undefined): void {
  * 宿主 shell 常导出 OPENAI_CHAT_MODEL 之类的真实配置，
  * 不隔离时 getChatApiSettings 会返回宿主的模型，断言"默认模型"必然失败。
  */
-export const MODEL_ENV_KEYS = [
+const MODEL_ENV_KEYS = [
     "OPENAI_MODEL",
     "OPENAI_API_KEY",
     "OPENAI_BASE_URL",
