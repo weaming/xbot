@@ -46,4 +46,14 @@ describe("read_media_file", () => {
         expect(result.content[0].path).toBe(path.join(tmpDir, "pixel.png"));
         expect(resultText(result)).toContain("base64_chars=");
     });
+
+    test("非图片/音频扩展名明确报错，不再静默产出 blob", async () => {
+        writeTemp("notes.pdf", Buffer.from("not-really-a-pdf"));
+
+        const result = await readMediaFileTool.execute({ path: "notes.pdf" });
+
+        expect(isError(result)).toBe(true);
+        expect(resultText(result)).toContain("不支持的文件类型");
+        expect(resultText(result)).toContain(".pdf");
+    });
 });

@@ -20,7 +20,8 @@ function requireExistingFile(inputPath: string, cwdRoot?: string): string {
     return resolved;
 }
 
-function imageMimeType(ext: string): string {
+/** 扩展名 → mime；不在表内返回 undefined，由调用方明确报错而不是静默产出 blob。 */
+function mediaMimeType(ext: string): string | undefined {
     const mimeTypes: Record<string, string> = {
         ".png": "image/png",
         ".jpg": "image/jpeg",
@@ -29,12 +30,21 @@ function imageMimeType(ext: string): string {
         ".webp": "image/webp",
         ".bmp": "image/bmp",
         ".svg": "image/svg+xml",
+        ".avif": "image/avif",
+        ".heic": "image/heic",
+        ".tif": "image/tiff",
+        ".tiff": "image/tiff",
         ".mp3": "audio/mpeg",
         ".wav": "audio/wav",
         ".ogg": "audio/ogg",
+        ".oga": "audio/ogg",
         ".flac": "audio/flac",
+        ".m4a": "audio/mp4",
+        ".aac": "audio/aac",
+        ".opus": "audio/opus",
+        ".webm": "audio/webm",
     };
-    return mimeTypes[ext.toLowerCase()] || "application/octet-stream";
+    return mimeTypes[ext.toLowerCase()];
 }
 
 const readMediaFileSchema = {
@@ -53,15 +63,16 @@ async function executeReadMediaFile(
     try {
         const cwdRoot = getToolCwd();
         const resolved = requireExistingFile(args.path, cwdRoot);
-        const mimeType = imageMimeType(path.extname(resolved));
-        const type = mimeType.startsWith("image/")
-            ? "image"
-            : mimeType.startsWith("audio/")
-                ? "audio"
-                : "blob";
+        const extension = path.extname(resolved).toLowerCase();
+        const mimeType = mediaMimeType(extension);
+        if (!mimeType) return err(`不支持的文件类型：${extension || "无扩展名"}`);
+        const type = mimeType.startsWith("image/") ? "image" : "audio";
+        const raw = fs.readFileSync(resolved);
+        // 空文件在这里就拦掉：否则会生成 0 字节资产，上游收到 `data:...;base64,` 后 4xx
+        if (raw.length === 0) return err(`文件为空：${args.path}`);
         const content: ToolContentBlock = {
             type,
-            data: fs.readFileSync(resolved).toString("base64"),
+            data: raw.toString("base64"),
             mimeType,
             path: resolved,
         };

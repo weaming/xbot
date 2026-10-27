@@ -60,6 +60,18 @@ export type UserContent = string | Array<
     | InputAudioContent
 >;
 
+/**
+ * OpenAI 与 DeepSeek 视觉共同支持的图片格式。
+ * bmp/svg 等容器无法上行，发送会被上游拒绝，因此在提取阶段就过滤掉。
+ * 注意不含 image/jpg —— 非标准别名由 normalizeMimeType 归一化成 image/jpeg。
+ */
+export const SUPPORTED_IMAGE_MIME_TYPES: ReadonlySet<string> = new Set([
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+]);
+
 export interface DeepSeekFileContent {
     type: "file";
     file_id: string;

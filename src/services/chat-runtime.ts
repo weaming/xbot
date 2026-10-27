@@ -8,7 +8,14 @@ import { executeWithChat, createChatClient, isAbortError } from "../tools/chat-o
 import { executeMcpTool, getAllToolSummary, getOpenAIToolDefinitions } from "../tools/tool-registry.js";
 import { createTodoReminderProvider } from "../tools/todo-tool.js";
 import { runWithToolCwd } from "../utils/tool-cwd-context.js";
-import { toolContentToAudioContent, toolContentToImageContent, toolResultToText } from "../tools/tool-interface.js";
+import {
+    describeDroppedMedia,
+    toolContentToAudioContent,
+    toolContentToImageContent,
+    toolResultToText,
+} from "../tools/tool-interface.js";
+import { supportsAudioInput } from "../tools/orchestrator/turn-request.js";
+import { resolveProtocol } from "../tools/orchestrator/request-builder.js";
 import type { ChatMessage, Session } from "../types/session.js";
 import type { StreamDelta } from "../types/chat.js";
 import { toUserContent, type UserContent, type UserMessageInput } from "../types/image.js";
@@ -507,10 +514,18 @@ export async function runChatQuery(options: ChatRunOptions) {
                 const result = toolCwd
                     ? await runWithToolCwd(toolCwd, execute)
                     : await execute();
+                const content = toolResultToText(result);
+                const audioContent = toolContentToAudioContent(result.content);
+                // provider 能力判定留在这一层，说明函数只消费结果；
+                // 用 resolveProtocol / client.baseURL 与实际生效路径（prepareRequest）保持同源
+                const audioDropReason = resolveProtocol(client) === "responses"
+                    ? "responses"
+                    : supportsAudioInput(settings.model, client.baseURL) ? undefined : "endpoint";
+                const mediaNotice = describeDroppedMedia(result.content, { audioDropReason });
                 return {
-                    content: toolResultToText(result),
+                    content: mediaNotice ? `${content}${mediaNotice}` : content,
                     imageContent: await toolContentToImageContent(result.content, options.sessionId),
-                    audioContent: toolContentToAudioContent(result.content),
+                    audioContent,
                     contextPolicy: result.contextPolicy,
                 };
             },
