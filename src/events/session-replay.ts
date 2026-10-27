@@ -175,7 +175,7 @@ export class SessionReplay {
         const snapshot: EventSnapshot = {
             lastSeq,
             ts: new Date().toISOString(),
-            session: serializeSession(session),
+            session: pickSessionFields(session),
         };
         const filePath = this.snapshotFilePath(sessionId);
         await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
@@ -410,8 +410,4 @@ function pickSessionFields(source: Session | Record<string, unknown>): Session {
         if (value !== undefined) projected[field] = value;
     }
     return projected as unknown as Session;
-}
-
-function serializeSession(session: Session): Session {
-    return pickSessionFields(session);
 }

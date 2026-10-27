@@ -18,7 +18,7 @@ import { getSessionExchangeLogFile } from "../utils/logger.js";
 import { appendInputHistory, loadInputHistory } from "./input-history.js";
 import { getTuiSessionLogFile } from "../utils/tui-state-paths.js";
 import { getTuiStartupCwd } from "./runtime-context.js";
-import { DEFAULT_MEMORY_USER_ID, getSessionsDir, getSessionTodosFile, getStartupToolCwd, getToolCwd } from "../utils/runtime-paths.js";
+import { getSessionsDir, getSessionTodosFile, getStartupToolCwd, getToolCwd } from "../utils/runtime-paths.js";
 import { planResume } from "../services/resume-plan.js";
 import {
     describeClaimFailure,
@@ -681,11 +681,11 @@ export class LocalTuiAgent implements TuiAgent {
         const diskSeq = await this.eventLog.lastSeq(sessionId, { forceRefresh: true });
         const active = this.activeSessions.get(sessionId);
         if (active && active.lastSeq >= diskSeq) {
-            return resolveSessionSystemPrompt(active.session, { includeMemory: false, userId: DEFAULT_MEMORY_USER_ID });
+            return resolveSessionSystemPrompt(active.session);
         }
 
         if (diskSeq === 0) {
-            if (active) return resolveSessionSystemPrompt(active.session, { includeMemory: false, userId: DEFAULT_MEMORY_USER_ID });
+            if (active) return resolveSessionSystemPrompt(active.session);
             throw new Error(`会话不存在: ${sessionId}`);
         }
 
@@ -695,7 +695,7 @@ export class LocalTuiAgent implements TuiAgent {
             lastSeq: replayed.lastSeq,
             abortController: active?.abortController,
         });
-        return resolveSessionSystemPrompt(replayed.session, { includeMemory: false, userId: DEFAULT_MEMORY_USER_ID });
+        return resolveSessionSystemPrompt(replayed.session);
     }
 
     async closeSession(sessionId: string): Promise<void> {

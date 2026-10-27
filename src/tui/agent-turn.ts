@@ -80,7 +80,7 @@ export async function runSessionTurn(
             userMessages,
             query: spec.query,
             queryContent: userMessages.at(-1) ? toUserContent(userMessages.at(-1)!) : undefined,
-            systemPrompt: resolveSessionSystemPrompt(activeSession, { includeMemory: false, userId: DEFAULT_MEMORY_USER_ID }),
+            systemPrompt: resolveSessionSystemPrompt(activeSession),
             buildHistory: () =>
                 buildConversationHistory(activeSession, userMessages, { skipToolCallIds: spec.skipToolCallIds }),
             signal: abortController.signal,
@@ -237,7 +237,7 @@ export async function compactSessionContext(
         host.notify(requestId, sessionId, { type: "progress", message: "🗜️ 正在压缩会话上下文..." });
         const response = await runChatQuery({
             query: buildCompactPrompt(instruction),
-            systemPrompt: resolveSessionSystemPrompt(session, { includeMemory: false, userId: DEFAULT_MEMORY_USER_ID }),
+            systemPrompt: resolveSessionSystemPrompt(session),
             history,
             sessionId,
             modelSelection: session.modelSelection,

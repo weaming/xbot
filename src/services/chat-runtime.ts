@@ -362,15 +362,16 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = { userId: 
 /**
  * 逐次构建会话的 system prompt：不缓存、不落盘。
  * 技能清单、记忆文件、身份文件的改动下一次请求即生效，重启也不会带回旧文本。
+ * 会话提示默认不含记忆（记忆走记忆工具），调用方要注入时显式传 includeMemory。
  */
 export function resolveSessionSystemPrompt(
     session: Pick<Session, 'cwd' | 'activeSkill'>,
-    options: { includeMemory?: boolean; userId: number } = { userId: DEFAULT_MEMORY_USER_ID },
+    options: { includeMemory?: boolean; userId?: number } = {},
 ): string {
     return buildSystemPrompt({
         activeSkillName: session.activeSkill,
-        includeMemory: options.includeMemory,
-        userId: options.userId,
+        includeMemory: options.includeMemory ?? false,
+        userId: options.userId ?? DEFAULT_MEMORY_USER_ID,
         cwd: session.cwd,
     });
 }
