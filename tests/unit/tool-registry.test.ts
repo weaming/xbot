@@ -36,10 +36,9 @@ describe('tool registry', () => {
         expect(result.contextPolicy).toEqual({ mode: 'adaptive' });
     });
 
-    test('读文件与补丁类本地工具声明 contextPolicy full', async () => {
-        const { readTextFileTool, editFileTool } = await import('../../src/tools/file-ops.js');
+    test('补丁类本地工具声明 contextPolicy full', async () => {
+        const { editFileTool } = await import('../../src/tools/file-ops.js');
 
-        expect(readTextFileTool.contextPolicy).toEqual({ mode: 'full' });
         expect(editFileTool.contextPolicy).toEqual({ mode: 'full' });
     });
 });

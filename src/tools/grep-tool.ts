@@ -33,7 +33,7 @@ type GrepRunResult = {
 };
 
 /** rg 二进制解析：环境变量覆盖 → PATH。 */
-export function resolveRgBinary(): string {
+function resolveRgBinary(): string {
     if (process.env.RG_BIN) return process.env.RG_BIN;
     return "rg";
 }
