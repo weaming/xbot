@@ -65,6 +65,7 @@ function pushFakePanel(
 
 let tmpDir: string;
 let originalStateDir: string | undefined;
+let originalTuiCwd: string | undefined;
 let restoreModelEnv: () => void;
 
 interface FakeAgent {
@@ -166,12 +167,16 @@ beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-tui-pending-"));
     originalStateDir = process.env.ZBOT_STATE_DIR;
     process.env.ZBOT_STATE_DIR = tmpDir;
+    originalTuiCwd = process.env.TUI_CWD;
 });
 
 afterEach(() => {
     restoreModelEnv();
     if (originalStateDir === undefined) delete process.env.ZBOT_STATE_DIR;
     else process.env.ZBOT_STATE_DIR = originalStateDir;
+    // ChatApp 会把进程级 TUI_CWD 切到会话目录；不还原会让后续文件拿到已删除的临时目录。
+    if (originalTuiCwd === undefined) delete process.env.TUI_CWD;
+    else process.env.TUI_CWD = originalTuiCwd;
     fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 

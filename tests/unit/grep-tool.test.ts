@@ -9,17 +9,23 @@ import { useTmpStateDir, type TmpStateDir } from "./test-env.js";
 let tmpDir: string;
 let outsideDir: string;
 let stateDir: TmpStateDir;
+let previousTuiCwd: string | undefined;
 
 beforeEach(() => {
     stateDir = useTmpStateDir("zbot-grep-test-");
     tmpDir = stateDir.dir;
     outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-grep-outside-"));
     delete process.env.RG_BIN;
+    // 工具以会话 cwd 为基准解析 cwd="."；测试固定在临时目录里搜索，避免扫到仓库。
+    previousTuiCwd = process.env.TUI_CWD;
+    process.env.TUI_CWD = tmpDir;
 });
 
 afterEach(() => {
     fs.rmSync(outsideDir, { recursive: true, force: true });
     stateDir.cleanup();
+    if (previousTuiCwd === undefined) delete process.env.TUI_CWD;
+    else process.env.TUI_CWD = previousTuiCwd;
 });
 
 function writeTemp(relPath: string, content: string): string {
