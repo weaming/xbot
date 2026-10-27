@@ -8,6 +8,7 @@ import { Container, Markdown, Text } from "@earendil-works/pi-tui";
 import type { Component, DefaultTextStyle } from "@earendil-works/pi-tui";
 import { markdownTheme, theme } from "./theme.js";
 import type { PeerMeta } from "./store-types.js";
+import { isUlid, shortSessionId } from "../utils/session-id.js";
 
 /** 会话间消息内容：独立消息（UiMessage）携带 text + peer 元数据。 */
 export interface PeerContent {
@@ -32,15 +33,13 @@ function hasMarkdownSyntax(text: string): boolean {
     return MARKDOWN_PATTERNS.some((pattern) => pattern.test(text));
 }
 
-function shortId(id: string): string {
-    return id.length > 20 ? id.slice(-8) : id;
-}
-
 /** 对端展示：有标题时「标题 …短id」，否则只显示短 id。 */
 function peerLabel(peer: PeerMeta): string {
     const title = peer.peerTitle?.trim();
-    if (title) return `${theme.chatRoom(title)} ${theme.dim(`…${shortId(peer.peerId)}`)}`;
-    return theme.chatRoom(shortId(peer.peerId));
+    // 只截真正会话的 ULID；命令行发起方（`cli-<pid>`）这类短标识原样显示
+    const label = isUlid(peer.peerId) ? shortSessionId(peer.peerId) : peer.peerId;
+    if (title) return `${theme.chatRoom(title)} ${theme.dim(`…${label}`)}`;
+    return theme.chatRoom(label);
 }
 
 /** 状态标记：结果（成功/未完成/丢失）、期望结果。 */

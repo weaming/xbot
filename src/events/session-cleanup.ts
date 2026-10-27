@@ -36,10 +36,20 @@ export function sessionArtifactPaths(sessionId: string): string[] {
     ];
 }
 
-/** 删除一个会话的全部落点（缺项跳过）；`skipAssets` 用于只清会话记录、不扫大目录。 */
-export async function removeSessionArtifacts(sessionId: string, skipAssets = false): Promise<void> {
+/**
+ * 删除一个会话的全部落点（缺项跳过）。
+ * `skipAssets` 用于只清会话记录、不扫大目录；`skipLock` 给"自己正持有该会话锁"的调用方用，
+ * 否则会在临界区中途删掉自己的锁文件，让第三方抢进来。
+ */
+export async function removeSessionArtifacts(
+    sessionId: string,
+    options: { skipAssets?: boolean; skipLock?: boolean } = {},
+): Promise<void> {
+    const assetsDir = getSessionsDir("assets", sanitizeSessionId(sessionId));
+    const lockFile = getSessionsDir("locks", `${sanitizeSessionId(sessionId)}.lock`);
     for (const target of sessionArtifactPaths(sessionId)) {
-        if (skipAssets && target === getSessionsDir("assets", sanitizeSessionId(sessionId))) continue;
+        if (options.skipAssets && target === assetsDir) continue;
+        if (options.skipLock && target === lockFile) continue;
         // assets 是目录，其余是文件；force 让缺失项直接跳过
         await fs.promises.rm(target, { recursive: true, force: true });
     }
@@ -138,7 +148,8 @@ export async function cleanupArchivedSessions(
     const failed: Array<{ sessionId: string; error: string }> = [];
 
     for (const fileName of fileNames) {
-        if (!fileName.endsWith(".jsonl")) continue;
+        // 流式片段旁路文件不是独立会话，跳过免得白读
+        if (!fileName.endsWith(".jsonl") || fileName.endsWith(".stream.jsonl")) continue;
         const sessionId = fileName.slice(0, -".jsonl".length);
         if (protectedIds.has(sessionId)) continue;
 
@@ -151,7 +162,7 @@ export async function cleanupArchivedSessions(
             const mark = readArchiveMark(sessionId, events, stat.mtimeMs);
             if (!mark.archived || mark.activeAt > cutoff) continue;
 
-            await removeSessionArtifacts(sessionId, skipAssets);
+            await removeSessionArtifacts(sessionId, { skipAssets });
             removed.push(sessionId);
             // 立即通知：调用方随后列会话时，不能再用缓存把这一个又读回来
             onRemoved?.([sessionId]);

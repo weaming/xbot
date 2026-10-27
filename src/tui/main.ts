@@ -21,24 +21,41 @@ function resolveEnvFile(value: string): string {
 }
 
 const envFile = resolveEnvFile(process.env.ZBOT_ENV_FILE || DEFAULT_ENV_FILE);
+const cliArgs = process.argv.slice(2);
+const isSessionCli = isSessionCliInvocation(cliArgs);
 
-// 会话 CRUD 分支：必须在 dotenv 与 configureTuiHostEnvironment 之前分流 ——
-// 后者会把 ZBOT_STATE_DIR 固定到 ~/.zbot、改写 TUI_CWD 并重定向日志，
-// 命令行里指定别的状态目录就该读那个目录。
-if (isSessionCliInvocation(process.argv.slice(2))) {
+/**
+ * 会话 CRUD 分支：必须在 dotenv 与 configureTuiHostEnvironment 之前分流 ——
+ * 后者会把 ZBOT_STATE_DIR 固定到 ~/.zbot、改写 TUI_CWD 并重定向日志。
+ *
+ * 收尾只设 exitCode、不调 process.exit：stdout 接管道时写入是异步的，
+ * 提前退出会把 `--json`/`--full` 的大段输出截断在 64KiB，`| jq` 直接解析失败。
+ */
+if (isSessionCli) {
     try {
         const { runSessionCli } = await import("../cli/session.js");
-        await runSessionCli(process.argv.slice(2).slice(1));
+        await runSessionCli(cliArgs.slice(1));
     } catch (error: any) {
-        process.stderr.write(`${error?.message ?? error}\n`);
-        process.exitCode = 1;
+        const message = error?.message ?? String(error);
+        process.exitCode = typeof error?.exitCode === "number" ? error.exitCode : 1;
+        if (cliArgs.includes("--json")) {
+            // 结构化错误也走 stdout，调用方不必解析本地化文案
+            process.stdout.write(`${JSON.stringify({
+                error: {
+                    ...(error?.details ?? {}),
+                    code: error?.code ?? "failed",
+                    message,
+                },
+            })}\n`);
+        } else {
+            process.stderr.write(`${message}\n`);
+        }
     }
-    process.exit(process.exitCode ?? 0);
+} else {
+    // quiet：不向终端输出 "injected env" 提示，避免启动前污染主 buffer。
+    dotenv.config({ path: envFile, quiet: true });
+    configureTuiHostEnvironment();
 }
-
-// quiet：不向终端输出 "injected env" 提示，避免启动前污染主 buffer。
-dotenv.config({ path: envFile, quiet: true });
-configureTuiHostEnvironment();
 
 const SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 const SIGNAL_EXIT_CODES = {
@@ -138,7 +155,6 @@ async function startChatApp(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-    const cliArgs = process.argv.slice(2);
     if (isPrintCliInvocation(cliArgs)) {
         try {
             const { runPrintCli } = await import("../cli/print.js");
@@ -174,7 +190,10 @@ async function main(): Promise<void> {
     }
 }
 
-main().catch((error) => {
-    console.error(`💥 TUI main() rejected: ${error?.message ?? error}`);
-    process.exit(1);
-});
+// 末尾启动：模块级常量（SHUTDOWN_SIGNALS 等）此时已初始化，main() 不会在 TDZ 里跑
+if (!isSessionCli) {
+    main().catch((error) => {
+        console.error(`💥 TUI main() rejected: ${error?.message ?? error}`);
+        process.exit(1);
+    });
+}

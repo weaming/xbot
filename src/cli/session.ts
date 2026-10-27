@@ -11,7 +11,8 @@
  */
 
 import fs from "node:fs";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import path from "node:path";
+import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { EventLog } from "../events/event-log.js";
 import { listSavedSessionIds } from "../events/session-files.js";
 import { SessionReplay } from "../events/session-replay.js";
@@ -21,15 +22,21 @@ import { padColumns, truncatePlain } from "../tui/panel-text.js";
 import { sortSessions, type SessionOrderItem } from "../utils/session-order.js";
 import { formatRelativeTime } from "../utils/time.js";
 import { createUlid } from "../utils/ulid.js";
-import { resolveCwdInput } from "../utils/runtime-paths.js";
-import { acquireSessionLock, isSessionLockedByOtherSync } from "../utils/session-lock.js";
+import { getSessionsDir, resolveCwdInput } from "../utils/runtime-paths.js";
+import { isUlid, sanitizeSessionId, shortSessionId } from "../utils/session-id.js";
+import { acquireSessionLock } from "../utils/session-lock.js";
 import { removeSessionArtifacts } from "../events/session-cleanup.js";
-import { listOwnership, probeOwnership, type PeerOwnership } from "../control/registry.js";
-import { getSocketPath } from "../control/paths.js";
+import {
+    describeOwnership as describePeerOwnership,
+    listOwnership,
+    probeOwnership,
+    type PeerOwnership,
+} from "../control/registry.js";
+import { getSocketPath, removeSocketFile } from "../control/paths.js";
 import { PeerConnection } from "../control/client.js";
 import { createPeerMessage, type PeerResult } from "../control/protocol.js";
 import type { TuiSessionSummary } from "../tui/agent-types.js";
-import type { StoredChatMessage } from "../types/session.js";
+import { MAX_SESSION_TITLE_LENGTH, type StoredChatMessage } from "../types/session.js";
 import type { ChatModelSelection } from "../types/chat-model.js";
 import type { UserContent } from "../types/image.js";
 
@@ -42,8 +49,6 @@ const TITLE_COLUMNS = 40;
 const CWD_COLUMNS = 28;
 /** send --wait 的默认等待上限。 */
 const DEFAULT_WAIT_SECONDS = 300;
-/** 会话标题长度上限，与 TUI 的 renameSession 保持一致。 */
-const MAX_TITLE_LENGTH = 200;
 
 const eventLog = new EventLog();
 const replay = new SessionReplay(eventLog);
@@ -58,17 +63,35 @@ const SESSION_CLI_USAGE = [
     "  rename <id> <标题>                        重命名会话",
     "  archive <id> / unarchive <id>             归档 / 取消归档",
     "  delete <id>                               彻底删除会话的全部落盘数据",
-    "  send <id> <文本> [--wait[=秒]] [--json]   向运行中的会话投递消息",
+    "  send <id> <文本> [--wait[=秒]] [--json]   向运行中的会话投递消息（秒数写成 --wait=秒）",
     "",
     "id 支持完整 id、唯一前缀或末几位；写操作要求会话未被其他实例持有。",
 ].join("\n");
 
 /** 列表行：摘要 + 归属（socket 探测结果）；排序键与摘要同源，供 sortSessions 使用。 */
-export interface SessionRow extends SessionOrderItem {
+export interface SessionListRow extends SessionOrderItem {
     summary: TuiSessionSummary;
     ownership?: PeerOwnership;
     /** 真实创建时间（首条事件 ts）。 */
     createdAt?: string;
+    /** 日志文件存在但读不出任何有效事件：保留一行并标注，别让它从列表里静默消失。 */
+    corrupted?: boolean;
+}
+
+/**
+ * 带机器可读分类与退出码的 CLI 错误：`--json` 调用方靠 code / exitCode 判断下一步
+ * （例如 wait_timeout 表示"消息已投递，不要重发"）。
+ */
+export class SessionCliError extends Error {
+    constructor(
+        readonly code: string,
+        message: string,
+        readonly exitCode = 1,
+        readonly details: Record<string, unknown> = {},
+    ) {
+        super(message);
+        this.name = "SessionCliError";
+    }
 }
 
 interface ListCommand {
@@ -97,16 +120,19 @@ interface RenameCommand {
     kind: "rename";
     id: string;
     title: string;
+    json: boolean;
 }
 
 interface ArchiveCommand {
     kind: "archive" | "unarchive";
     id: string;
+    json: boolean;
 }
 
 interface DeleteCommand {
     kind: "delete";
     id: string;
+    json: boolean;
 }
 
 interface SendCommand {
@@ -118,7 +144,7 @@ interface SendCommand {
     json: boolean;
 }
 
-export type SessionCommand =
+type SessionCommand =
     | { kind: "help" }
     | ListCommand
     | ShowCommand
@@ -133,6 +159,11 @@ export interface SessionCliIO {
     write?: (text: string) => void;
     /** 读取 stdin（send 未给文本时用）；默认读到 EOF。 */
     readStdin?: () => Promise<string>;
+}
+
+/** 参数/用法错误：`--json` 调用方靠 code=usage 与运行时失败区分开。 */
+function usageError(message: string): SessionCliError {
+    return new SessionCliError("usage", message);
 }
 
 // ── 参数解析 ──────────────────────────────────────────────────
@@ -160,16 +191,16 @@ export function parseSessionArgs(argv: string[]): SessionCommand {
         case "rename":
             return parseRenameArgs(rest);
         case "archive":
-            return { kind: "archive", id: requireSingleId(rest, "archive") };
+            return { kind: "archive", ...parseIdOnlyArgs(rest, "archive") };
         case "unarchive":
-            return { kind: "unarchive", id: requireSingleId(rest, "unarchive") };
+            return { kind: "unarchive", ...parseIdOnlyArgs(rest, "unarchive") };
         case "delete":
         case "rm":
-            return { kind: "delete", id: requireSingleId(rest, "delete") };
+            return { kind: "delete", ...parseIdOnlyArgs(rest, "delete") };
         case "send":
             return parseSendArgs(rest);
         default:
-            throw new Error(`未知子命令：${command}\n\n${SESSION_CLI_USAGE}`);
+            throw usageError(`未知子命令：${command}\n\n${SESSION_CLI_USAGE}`);
     }
 }
 
@@ -178,7 +209,7 @@ function parseListArgs(args: string[]): ListCommand {
     for (const arg of args) {
         if (arg === "--all" || arg === "-a") command.all = true;
         else if (arg === "--json") command.json = true;
-        else throw new Error(`list 不支持参数：${arg}`);
+        else throw usageError(`list 不支持参数：${arg}`);
     }
     return command;
 }
@@ -196,14 +227,14 @@ function parseShowArgs(args: string[]): ShowCommand {
         } else if (arg.startsWith("--turns=")) {
             command.turns = parsePositiveInt(arg.slice("--turns=".length), "--turns");
         } else if (arg.startsWith("-")) {
-            throw new Error(`show 不支持参数：${arg}`);
+            throw usageError(`show 不支持参数：${arg}`);
         } else if (command.id) {
-            throw new Error("show 只接受一个会话 id");
+            throw usageError("show 只接受一个会话 id");
         } else {
             command.id = arg;
         }
     }
-    if (!command.id) throw new Error("用法：zbot session show <id> [--turns N|--all] [--full] [--json]");
+    if (!command.id) throw usageError("用法：zbot session show <id> [--turns N|--all] [--full] [--json]");
     return command;
 }
 
@@ -223,53 +254,94 @@ function parseNewArgs(args: string[]): NewCommand {
         } else if (arg.startsWith("--cwd=")) {
             command.cwd = requireValue(arg.slice("--cwd=".length), "--cwd");
         } else {
-            throw new Error(`new 不支持参数：${arg}`);
+            throw usageError(`new 不支持参数：${arg}`);
         }
     }
     return command;
 }
 
 function parseRenameArgs(args: string[]): RenameCommand {
-    const [id, ...titleParts] = args;
-    if (!id || id.startsWith("-")) throw new Error("用法：zbot session rename <id> <标题>");
-    const title = titleParts.join(" ").trim();
-    if (!title) throw new Error("rename 需要新标题");
-    return { kind: "rename", id, title };
+    // `--` 之后一律当标题，允许标题里出现 - 开头的片段
+    const separator = args.indexOf("--");
+    const head = separator === -1 ? args : args.slice(0, separator);
+    const literalTitle = separator === -1 ? [] : args.slice(separator + 1);
+    const [id, ...flagParts] = head;
+    if (!id || id.startsWith("-")) throw usageError("用法：zbot session rename <id> <标题>");
+
+    let json = false;
+    const titleParts: string[] = [];
+    for (const part of flagParts) {
+        if (part === "--json") {
+            json = true;
+            continue;
+        }
+        // 开关样式的片段明确报错，避免把 --xxx 当成标题静默写进去；正文用 `--` 分隔
+        if (part.startsWith("-")) throw usageError(`rename 不支持参数：${part}（标题请写在 -- 之后）`);
+        titleParts.push(part);
+    }
+    const title = [...titleParts, ...literalTitle].join(" ").trim();
+    if (!title) throw usageError("rename 需要新标题");
+    return { kind: "rename", id, title, json };
 }
 
 function parseSendArgs(args: string[]): SendCommand {
     const command: SendCommand = { kind: "send", id: "", text: "", json: false };
     const textParts: string[] = [];
-    for (const arg of args) {
-        if (arg === "--json") command.json = true;
-        else if (arg === "--wait") command.waitSeconds = DEFAULT_WAIT_SECONDS;
-        else if (arg === "--no-wait") command.waitSeconds = undefined;
-        else if (arg.startsWith("--wait=")) command.waitSeconds = parsePositiveInt(arg.slice("--wait=".length), "--wait");
-        else if (!command.id) {
-            if (arg.startsWith("-")) throw new Error(`send 需要会话 id，收到参数：${arg}`);
-            command.id = arg;
-        } else textParts.push(arg);
+    // `--` 之后一律当正文，允许消息以 - 开头
+    let literal = false;
+    for (let index = 0; index < args.length; index += 1) {
+        const arg = args[index]!;
+        if (!literal && arg === "--") {
+            literal = true;
+            continue;
+        }
+        if (!literal) {
+            if (arg === "--json") { command.json = true; continue; }
+            if (arg === "--wait") {
+                const next = args[index + 1];
+                if (next !== undefined && /^\d+$/.test(next)) {
+                    throw usageError(`--wait 的秒数请写成 --wait=${next}（空格形式会被当成消息正文）`);
+                }
+                command.waitSeconds = DEFAULT_WAIT_SECONDS;
+                continue;
+            }
+            if (arg.startsWith("--wait=")) {
+                command.waitSeconds = parsePositiveInt(arg.slice("--wait=".length), "--wait");
+                continue;
+            }
+            if (arg.startsWith("-")) throw usageError(`send 不支持参数：${arg}（等待秒数写成 --wait=秒）`);
+            if (!command.id) {
+                command.id = arg;
+                continue;
+            }
+        }
+        textParts.push(arg);
     }
-    if (!command.id) throw new Error("用法：zbot session send <id> <文本> [--wait[=秒]]");
+    if (!command.id) throw usageError("用法：zbot session send <id> <文本> [--wait[=秒]]");
     command.text = textParts.join(" ").trim();
     return command;
 }
 
-function requireSingleId(args: string[], command: string): string {
-    const id = args[0];
-    if (!id || id.startsWith("-")) throw new Error(`用法：zbot session ${command} <id>`);
-    if (args.length > 1) throw new Error(`${command} 只接受一个会话 id`);
-    return id;
+/** archive / unarchive / delete 的参数：一个 id + 可选 --json。 */
+function parseIdOnlyArgs(args: string[], command: string): { id: string; json: boolean } {
+    const unknown = args.find(arg => arg.startsWith("-") && arg !== "--json");
+    if (unknown) throw usageError(`${command} 不支持参数：${unknown}`);
+    const json = args.includes("--json");
+    const positional = args.filter(arg => arg !== "--json");
+    const id = positional[0];
+    if (!id || id.startsWith("-")) throw usageError(`用法：zbot session ${command} <id> [--json]`);
+    if (positional.length > 1) throw usageError(`${command} 只接受一个会话 id`);
+    return { id, json };
 }
 
 function requireValue(value: string | undefined, flag: string): string {
-    if (!value || value.startsWith("-")) throw new Error(`${flag} 需要取值`);
+    if (!value || value.startsWith("-")) throw usageError(`${flag} 需要取值`);
     return value;
 }
 
 function parsePositiveInt(value: string | undefined, flag: string): number {
     const parsed = Number(value);
-    if (!Number.isInteger(parsed) || parsed <= 0) throw new Error(`${flag} 需要正整数`);
+    if (!Number.isInteger(parsed) || parsed <= 0) throw usageError(`${flag} 需要正整数`);
     return parsed;
 }
 
@@ -303,10 +375,22 @@ export async function runSessionCli(argv: string[], io: SessionCliIO = {}): Prom
 async function runList(command: ListCommand, write: (text: string) => void): Promise<void> {
     const savedIds = listSavedSessionIds();
     const ownership = await listOwnership(savedIds);
-    const rows: SessionRow[] = [];
+    const rows: SessionListRow[] = [];
     for (const sessionId of savedIds) {
         const meta = await readSessionMeta(sessionId);
-        if (!meta) continue;
+        if (!meta) {
+            // 事件日志存在却读不出有效事件：留一行标注，避免脚本以为会话"不存在"；
+            // 更新时间用文件 mtime，否则排序会把这些行永远顶在最前面
+            const updatedAt = eventFileMtime(sessionId);
+            rows.push({
+                sessionId,
+                ...(updatedAt ? { updatedAt } : {}),
+                summary: { sessionId, messageCount: 0, ...(updatedAt ? { updatedAt } : {}) },
+                ownership: ownership.get(sessionId),
+                corrupted: true,
+            });
+            continue;
+        }
         const { summary } = meta;
         rows.push({
             sessionId,
@@ -338,26 +422,32 @@ async function runShow(command: ShowCommand, write: (text: string) => void): Pro
         probeOwnership(sessionId),
     ]);
     const summary = meta?.summary;
+    // 事件日志读不出有效事件（损坏/半行）：明确标出来，别让它看起来只是"空会话"
+    const corrupted = meta === null;
+    const updatedAt = summary?.updatedAt ?? (corrupted ? eventFileMtime(sessionId) : undefined);
     const { session } = replayed;
     const turns = command.all ? session.turns : session.turns.slice(-command.turns);
     const startIndex = session.turns.length - turns.length;
     // 标题口径与 TUI 一致：显式重命名优先，否则取首条用户消息（session.title 只记重命名）
     const title = summary?.title ?? session.title;
+    // 目录取自事件（session_created / session_cwd_changed）；缺失时不拿重放回退值冒充真实 cwd
+    const cwd = summary?.cwd;
 
     if (command.json) {
         write(`${JSON.stringify({
             sessionId,
-            title,
-            cwd: session.cwd,
+            title: title ?? null,
+            cwd: cwd ?? null,
             ...toJsonOwnership(ownership),
             archived: summary?.archived === true,
+            ...(corrupted ? { corrupted: true } : {}),
             totalTurns: session.turns.length,
-            createdAt: meta?.createdAt,
-            updatedAt: summary?.updatedAt,
-            modelSelection: session.modelSelection,
-            lastPromptTokens: session.lastPromptTokens,
+            createdAt: meta?.createdAt ?? null,
+            updatedAt: updatedAt ?? null,
+            modelSelection: session.modelSelection ?? null,
+            lastPromptTokens: session.lastPromptTokens ?? null,
             compactCount: session.compactCount,
-            turns: turns.map((turn, index) => ({
+            turnDetails: turns.map((turn, index) => ({
                 index: startIndex + index + 1,
                 id: turn.id,
                 status: turn.status,
@@ -370,12 +460,13 @@ async function runShow(command: ShowCommand, write: (text: string) => void): Pro
     const lines = [
         `会话   ${sessionId}`,
         `标题   ${title ?? "（未命名）"}`,
-        `目录   ${abbreviatePath(session.cwd, process.env.HOME, CWD_COLUMNS)}`,
-        `状态   ${describeOwnership(ownership)}${summary?.archived ? " · 已归档" : ""}`,
+        `目录   ${cwd ? abbreviatePath(cwd, process.env.HOME, CWD_COLUMNS) : "（未知）"}`,
+        `状态   ${describePeerOwnership(sessionId, ownership ?? { state: "free" })}${summary?.archived ? " · 已归档" : ""}`,
         `轮数   ${session.turns.length}（压缩 ${session.compactCount} 次）`,
-        `更新   ${formatTimestamp(summary?.updatedAt)}`,
+        `更新   ${formatTimestamp(updatedAt)}`,
         `创建   ${formatTimestamp(meta?.createdAt)}`,
     ];
+    if (corrupted) lines.push("日志   损坏（读不出有效事件）");
     if (session.modelSelection) lines.push(`模型   ${formatModel(session.modelSelection)}`);
     if (session.lastPromptTokens) lines.push(`上下文 最近一次输入 ${session.lastPromptTokens} tokens`);
 
@@ -388,7 +479,7 @@ async function runShow(command: ShowCommand, write: (text: string) => void): Pro
 
 async function runNew(command: NewCommand, write: (text: string) => void): Promise<void> {
     const cwd = command.cwd ? resolveCwdInput(command.cwd, process.cwd()) : process.cwd();
-    if (!isDirectory(cwd)) throw new Error(`cwd 不是已存在的目录：${cwd}`);
+    if (!isDirectory(cwd)) throw usageError(`cwd 不是已存在的目录：${cwd}`);
     const title = command.title ? cleanTitle(command.title) : undefined;
 
     const sessionId = createUlid();
@@ -396,7 +487,7 @@ async function runNew(command: NewCommand, write: (text: string) => void): Promi
     if (title) await eventLog.append(sessionId, "session_renamed", { title });
 
     if (command.json) {
-        write(`${JSON.stringify({ sessionId, cwd, title }, null, 2)}\n`);
+        write(`${JSON.stringify({ sessionId, cwd, title: title ?? null }, null, 2)}\n`);
         return;
     }
     write(`已创建会话 ${sessionId}（${abbreviatePath(cwd, process.env.HOME, CWD_COLUMNS)}）${title ? `「${title}」` : ""}\n`);
@@ -404,36 +495,48 @@ async function runNew(command: NewCommand, write: (text: string) => void): Promi
 
 async function runRename(command: RenameCommand, write: (text: string) => void): Promise<void> {
     const sessionId = await resolveSessionId(command.id);
-    await assertSessionFree(sessionId);
     const title = cleanTitle(command.title);
-    await withSessionLock(sessionId, async () => {
+    await withSessionLockFree(sessionId, async () => {
         await eventLog.append(sessionId, "session_renamed", { title });
     });
-    write(`已重命名 ${shortId(sessionId)} → ${title}\n`);
+    if (command.json) {
+        write(`${JSON.stringify({ sessionId, action: "rename", title }, null, 2)}\n`);
+        return;
+    }
+    write(`已重命名 ${shortSessionId(sessionId)} → ${title}\n`);
 }
 
 async function runArchive(command: ArchiveCommand, write: (text: string) => void): Promise<void> {
     const sessionId = await resolveSessionId(command.id);
-    await assertSessionFree(sessionId);
-    await withSessionLock(sessionId, async () => {
+    await withSessionLockFree(sessionId, async () => {
         await eventLog.append(
             sessionId,
             command.kind === "archive" ? "session_archived" : "session_unarchived",
             {},
         );
     });
-    write(`${command.kind === "archive" ? "已归档" : "已取消归档"} ${shortId(sessionId)}\n`);
+    if (command.json) {
+        write(`${JSON.stringify({ sessionId, action: command.kind, archived: command.kind === "archive" }, null, 2)}\n`);
+        return;
+    }
+    write(`${command.kind === "archive" ? "已归档" : "已取消归档"} ${shortSessionId(sessionId)}\n`);
 }
 
 async function runDelete(command: DeleteCommand, write: (text: string) => void): Promise<void> {
     const sessionId = await resolveSessionId(command.id);
-    await assertSessionFree(sessionId);
-
     const meta = await readSessionMeta(sessionId);
-    await withSessionLock(sessionId, async () => {
-        await removeSessionArtifacts(sessionId);
+    const turns = meta?.summary.messageCount ?? 0;
+    await withSessionLockFree(sessionId, async () => {
+        // 锁留给 release 收尾，否则会在临界区中途删掉自己的互斥文件
+        await removeSessionArtifacts(sessionId, { skipLock: true });
+        // 删 socket 前再确认一次无监听者：这段窗口里别人可能刚好 bind 上来
+        if ((await probeOwnership(sessionId)).state === "free") removeSocketFile(sessionId);
     });
-    write(`已删除 ${shortId(sessionId)}（${meta?.summary.messageCount ?? 0} 轮）\n`);
+    if (command.json) {
+        write(`${JSON.stringify({ sessionId, action: "delete", deleted: true, turns }, null, 2)}\n`);
+        return;
+    }
+    write(`已删除 ${shortSessionId(sessionId)}（${turns} 轮）\n`);
 }
 
 async function runSend(
@@ -441,14 +544,17 @@ async function runSend(
     write: (text: string) => void,
     readStdinText: () => Promise<string>,
 ): Promise<void> {
-    const sessionId = await resolveSessionId(command.id);
+    const sessionId = await resolveSendTarget(command.id);
     const text = command.text || (await readStdinText()).trim();
-    if (!text) throw new Error("send 需要消息正文");
+    if (!text) throw usageError("send 需要消息正文");
 
     const ownership = await probeOwnership(sessionId);
     if (ownership.state === "free") {
-        throw new Error(
-            `会话 ${shortId(sessionId)} 没有运行中的实例持有，投递无法执行；先在 TUI 里打开该会话，或用 session new 新建`,
+        throw new SessionCliError(
+            "no_holder",
+            `会话 ${shortSessionId(sessionId)} 没有运行中的实例持有，投递无法执行；先在 TUI 里打开该会话，或用 session new 新建`,
+            1,
+            { sessionId, delivered: false },
         );
     }
 
@@ -469,22 +575,41 @@ async function runSend(
 
     try {
         const reply = await connection.deliver(message);
-        if (reply.type !== "ack") throw new Error(`会话 ${shortId(sessionId)} 返回了非预期应答`);
-        if (!reply.ok) throw new Error(describeAckError(sessionId, reply.error));
+        if (reply.type !== "ack") {
+            throw new SessionCliError(
+                "bad_reply",
+                `会话 ${shortSessionId(sessionId)} 返回了非预期应答`,
+                1,
+                { sessionId, delivered: false },
+            );
+        }
+        if (!reply.ok) {
+            throw new SessionCliError(reply.error, describeAckError(sessionId, reply.error), 1, {
+                sessionId,
+                delivered: false,
+            });
+        }
 
         if (command.waitSeconds === undefined) {
             if (command.json) write(`${JSON.stringify({ sessionId, msgId: message.id, delivered: true }, null, 2)}\n`);
-            else write(`已投递到 ${shortId(sessionId)}（${message.id}）\n`);
+            else write(`已投递到 ${shortSessionId(sessionId)}（${message.id}）\n`);
             return;
         }
 
-        const result = await withTimeout(resultPromise, command.waitSeconds * 1000, sessionId);
-        if (command.json) {
-            write(`${JSON.stringify({ sessionId, ...result }, null, 2)}\n`);
-            return;
-        }
+        const result = await withTimeout(resultPromise, command.waitSeconds * 1000, sessionId, message.id);
         if (!result.ok) {
-            throw new Error(result.error ?? `会话 ${shortId(sessionId)} 执行失败：${result.stopReason}`);
+            // 失败也把已产出的部分输出带出来：人类模式进 stderr，--json 进 details
+            const partial = result.text ? `\n（部分输出）\n${result.text}` : "";
+            throw new SessionCliError(
+                "peer_failed",
+                `${result.error ?? `会话 ${shortSessionId(sessionId)} 执行失败：${result.stopReason}`}${partial}`,
+                1,
+                { sessionId, msgId: message.id, delivered: true, stopReason: result.stopReason, partialText: result.text },
+            );
+        }
+        if (command.json) {
+            write(`${JSON.stringify({ sessionId, ...result, delivered: true }, null, 2)}\n`);
+            return;
         }
         write(result.text ? `${result.text}\n` : "（对方回合没有输出）\n");
     } finally {
@@ -503,59 +628,92 @@ async function readSessionMeta(
     return { summary: summarizeEvents(sessionId, events), ...(events[0] ? { createdAt: events[0].ts } : {}) };
 }
 
+/** 事件日志文件的 mtime：日志损坏时唯一的"更新时间"来源。 */
+function eventFileMtime(sessionId: string): string | undefined {
+    try {
+        const file = path.join(getSessionsDir("events"), `${sanitizeSessionId(sessionId)}.jsonl`);
+        return fs.statSync(file).mtime.toISOString();
+    } catch {
+        return undefined;
+    }
+}
+
 /** 把用户输入的 id 补全：优先精确匹配，其次唯一前缀，再次唯一后缀（工具里惯用末几位）。 */
 export function resolveSessionIdFrom(input: string, savedIds: string[]): string {
     const trimmed = input.trim();
-    if (!trimmed) throw new Error("需要会话 id");
+    if (!trimmed) throw new SessionCliError("usage", "需要会话 id");
     if (savedIds.includes(trimmed)) return trimmed;
 
     const prefix = savedIds.filter(sessionId => sessionId.startsWith(trimmed));
-    if (prefix.length === 1) return prefix[0]!;
     const suffix = savedIds.filter(sessionId => sessionId.endsWith(trimmed));
-    if (suffix.length === 1) return suffix[0]!;
 
-    const candidates = prefix.length > 1 ? prefix : suffix;
+    // 前缀与后缀各命中一个但指向不同会话时同样算歧义，不能悄悄取前缀
+    const candidates = [...new Set([...prefix, ...suffix])];
     if (candidates.length > 1) {
-        throw new Error(`会话 ${trimmed} 匹配到多个候选：${candidates.map(shortId).join(" ")}，请写更长的 id`);
+        throw new SessionCliError(
+            "ambiguous",
+            `会话 ${trimmed} 匹配到多个候选：${candidates.map(shortSessionId).join(" ")}，请写更长的 id`,
+            1,
+            { candidates },
+        );
     }
-    throw new Error(`会话不存在：${trimmed}`);
+    if (candidates.length === 1) return candidates[0]!;
+    throw new SessionCliError("not_found", `会话不存在：${trimmed}`, 1, { input: trimmed });
 }
 
 async function resolveSessionId(input: string): Promise<string> {
     return resolveSessionIdFrom(input, listSavedSessionIds());
 }
 
-function toJsonRow(row: SessionRow): Record<string, unknown> {
+/**
+ * send 的目标解析：另一实例刚派生、还没落任何事件的会话不在磁盘上，
+ * 只要给的是完整 ULID 就按原样交给控制通道判定可达性（与 session_send 工具一致）。
+ */
+async function resolveSendTarget(input: string): Promise<string> {
+    const trimmed = input.trim();
+    try {
+        return await resolveSessionId(trimmed);
+    } catch (error) {
+        if (isUlid(trimmed)) return trimmed;
+        throw error;
+    }
+}
+
+function toJsonRow(row: SessionListRow): Record<string, unknown> {
     const { summary } = row;
     return {
         sessionId: summary.sessionId,
-        title: summary.title,
-        cwd: summary.cwd,
+        title: summary.title ?? null,
+        cwd: summary.cwd ?? null,
         turns: summary.messageCount,
-        createdAt: row.createdAt,
-        updatedAt: summary.updatedAt,
+        createdAt: row.createdAt ?? null,
+        updatedAt: summary.updatedAt ?? null,
         archived: summary.archived === true,
-        ...(summary.archived ? { status: "archived" } : toJsonOwnership(row.ownership)),
-        modelSelection: summary.modelSelection,
+        ...(row.corrupted ? { corrupted: true } : {}),
+        ...toJsonOwnership(row.ownership),
+        modelSelection: summary.modelSelection ?? null,
     };
 }
 
-/** 归属的机器可读形态（`--json` 用），人读文案见 describeOwnership。 */
-function toJsonOwnership(ownership?: PeerOwnership): { status: string; holderPid?: number; busy?: boolean } {
-    if (!ownership || ownership.state === "free") return { status: "idle" };
-    if (ownership.state === "mine") return { status: "mine", holderPid: process.pid };
+/**
+ * 归属的机器可读形态（`--json` 用）；归档态只由 `archived` 表达，不覆盖状态字段。
+ * 缺省值一律给 null，保证键集合稳定、调用方不用判 undefined。
+ */
+function toJsonOwnership(ownership?: PeerOwnership): { status: string; holderPid: number | null; busy: boolean | null } {
+    if (!ownership || ownership.state === "free") return { status: "idle", holderPid: null, busy: null };
+    if (ownership.state === "mine") return { status: "mine", holderPid: process.pid, busy: null };
     const info = ownership.info;
-    return { status: "held", ...(info ? { holderPid: info.pid, busy: info.busy } : {}) };
+    return { status: "held", holderPid: info?.pid ?? null, busy: info?.busy ?? null };
 }
 
 // ── 展示 ─────────────────────────────────────────────────────
 
 const TABLE_HEADERS = ["状态", "ID", "轮数", "更新", "目录", "标题"];
 
-export function formatTable(rows: SessionRow[]): string[] {
+export function formatTable(rows: SessionListRow[]): string[] {
     const body = rows.map(row => [
-        row.summary.archived ? "已归档" : describeOwnership(row.ownership),
-        shortId(row.summary.sessionId),
+        formatStatusCell(row),
+        shortSessionId(row.summary.sessionId),
         `${row.summary.messageCount}轮`,
         formatRelativeTime(row.summary.updatedAt),
         abbreviatePath(row.summary.cwd ?? "", process.env.HOME, CWD_COLUMNS) || "-",
@@ -570,6 +728,15 @@ export function formatTable(rows: SessionRow[]): string[] {
         .join("  ")
         .trimEnd();
     return [joinRow(TABLE_HEADERS), ...body.map(joinRow)];
+}
+
+/** 状态列：归档与归属同时展示，避免 `--all` 时看不出归档会话还被谁持有。 */
+function formatStatusCell(row: SessionListRow): string {
+    if (row.corrupted) return "日志损坏";
+    const ownership = row.ownership ?? { state: "free" as const };
+    const owner = describePeerOwnership(row.summary.sessionId, ownership);
+    if (!row.summary.archived) return owner;
+    return ownership.state === "free" ? "已归档" : `已归档 · ${owner}`;
 }
 
 function renderTurn(turn: { status: string; messages: StoredChatMessage[] }, index: number, full: boolean): string[] {
@@ -598,13 +765,19 @@ function renderMessage(message: StoredChatMessage, full: boolean): string[] {
             return [`tool[${message.name ?? message.tool_call_id}]: ${formatBody(message.content, full)}`];
         case "system":
             return [`system: ${formatBody(message.content, full)}`];
+        default: {
+            // 日志里可能混进本版本不认识的 role：降级成一行文本，别让整条命令崩在裸 JS 报错上
+            const unknown = message as { role?: string; content?: unknown };
+            return [`${unknown.role ?? "unknown"}: ${formatBody(String(unknown.content ?? ""), full)}`];
+        }
     }
 }
 
 function formatBody(text: string, full: boolean): string {
     if (!text) return "（空）";
     if (!full) return truncatePlain(text, MESSAGE_PREVIEW_COLUMNS);
-    return text.replace(/\n/g, "\n  ");
+    // --full 也要剥控制序列：日志里混进的工具/网页输出可以清屏或写剪贴板
+    return stripTerminalSequences(text).replace(/\n/g, "\n  ");
 }
 
 function userText(content: UserContent): string {
@@ -618,22 +791,14 @@ function userText(content: UserContent): string {
         .join(" ");
 }
 
-function describeOwnership(ownership?: PeerOwnership): string {
-    if (!ownership || ownership.state === "free") return "空闲";
-    if (ownership.state === "mine") return "本实例";
-    const info = ownership.info;
-    if (!info) return "被占用";
-    return `运行中(pid ${info.pid}${info.busy ? " 忙" : ""})`;
-}
-
 function describeAckError(sessionId: string, code: string): string {
     switch (code) {
         case "busy":
-            return `会话 ${shortId(sessionId)} 正在执行中，请稍后重试`;
+            return `会话 ${shortSessionId(sessionId)} 正在执行中，请稍后重试`;
         case "unreachable":
-            return `会话 ${shortId(sessionId)} 不可达（进程可能刚退出）`;
+            return `会话 ${shortSessionId(sessionId)} 不可达（进程可能刚退出）`;
         default:
-            return `会话 ${shortId(sessionId)} 拒绝了消息（${code}）`;
+            return `会话 ${shortSessionId(sessionId)} 拒绝了消息（${code}）`;
     }
 }
 
@@ -663,30 +828,29 @@ function formatModel(selection: ChatModelSelection): string {
     return [selection.protocol, selection.model].filter(Boolean).join(" · ") || "（未知）";
 }
 
-function shortId(sessionId: string): string {
-    return sessionId.length > 8 ? sessionId.slice(-8) : sessionId;
-}
-
 // ── 守卫与工具 ────────────────────────────────────────────────
 
 /** 写操作前确认没有实例持有该会话：持有者的内存状态不会跟着事件日志走，双写会让 seq 分叉。 */
 async function assertSessionFree(sessionId: string): Promise<void> {
     const ownership = await probeOwnership(sessionId);
-    if (ownership.state === "free") {
-        if (isSessionLockedByOtherSync(sessionId)) {
-            throw new Error(`会话 ${shortId(sessionId)} 正被其他进程写入，请稍后重试`);
-        }
-        return;
-    }
+    if (ownership.state === "free") return;
     const info = ownership.state === "other" ? ownership.info : undefined;
-    throw new Error(
-        `会话 ${shortId(sessionId)} 正被其他实例持有${info ? `（pid ${info.pid}${info.busy ? "，执行中" : ""}）` : ""}`
+    throw new SessionCliError(
+        "held",
+        `会话 ${shortSessionId(sessionId)} 正被其他实例持有${info ? `（pid ${info.pid}${info.busy ? "，执行中" : ""}）` : ""}`
         + "，请在那个实例里操作，或先 /close 释放后再试",
+        1,
+        { sessionId, holderPid: info?.pid ?? null, busy: info?.busy ?? null },
     );
 }
 
 async function withSessionLock<T>(sessionId: string, run: () => Promise<T>): Promise<T> {
-    const lock = await acquireSessionLock(sessionId);
+    const lock = await acquireSessionLock(sessionId).catch((error: any) => {
+        const message = error?.message ?? String(error);
+        // 只有"别的实例在跑/在写"才是 held；权限、文件系统等异常保持 failed
+        const code = /其他实例|竞争|正在写入|holder/i.test(message) ? "held" : "failed";
+        throw new SessionCliError(code, message, 1, { sessionId });
+    });
     try {
         return await run();
     } finally {
@@ -694,10 +858,35 @@ async function withSessionLock<T>(sessionId: string, run: () => Promise<T>): Pro
     }
 }
 
-function withTimeout(promise: Promise<PeerResult>, timeoutMs: number, sessionId: string): Promise<PeerResult> {
+/**
+ * 写操作的标准姿势：**先廉价探测一次**（拿到"被持有"的友好错误，不必先碰锁），
+ * **再取锁，锁内重新探测**作为权威判定 —— 否则第一次探测为 free 与真正 append 之间的
+ * 窗口里被别的实例 claim 并开跑，两侧会各自从旧 lastSeq +1，把 seq 写分叉。
+ */
+async function withSessionLockFree<T>(sessionId: string, run: () => Promise<T>): Promise<T> {
+    await assertSessionFree(sessionId);
+    return withSessionLock(sessionId, async () => {
+        await assertSessionFree(sessionId);
+        return run();
+    });
+}
+
+function withTimeout(
+    promise: Promise<PeerResult>,
+    timeoutMs: number,
+    sessionId: string,
+    msgId: string,
+): Promise<PeerResult> {
     return new Promise<PeerResult>((resolve, reject) => {
         const timer = setTimeout(() => {
-            reject(new Error(`等待会话 ${shortId(sessionId)} 的结果超时（${Math.round(timeoutMs / 1000)}s）`));
+            // 超时≠失败投递：消息已进对方回合，重发会在目标会话里多压一轮
+            reject(new SessionCliError(
+                "wait_timeout",
+                `等待会话 ${shortSessionId(sessionId)} 的结果超时（${Math.round(timeoutMs / 1000)}s）；`
+                + `消息已投递（msgId=${msgId}），不要重复发送`,
+                2,
+                { sessionId, msgId, delivered: true },
+            ));
         }, timeoutMs);
         timer.unref?.();
         promise.then(
@@ -714,8 +903,8 @@ function withTimeout(promise: Promise<PeerResult>, timeoutMs: number, sessionId:
 }
 
 function cleanTitle(title: string): string {
-    const cleaned = title.trim().slice(0, MAX_TITLE_LENGTH);
-    if (!cleaned) throw new Error("标题不能为空");
+    const cleaned = title.trim().slice(0, MAX_SESSION_TITLE_LENGTH);
+    if (!cleaned) throw usageError("标题不能为空");
     return cleaned;
 }
 

@@ -1,5 +1,8 @@
 type ToolResultMode = 'adaptive' | 'full';
 
+/** 会话标题长度上限（renameSession 与命令行共用）。 */
+export const MAX_SESSION_TITLE_LENGTH = 200;
+
 export interface ToolResultPolicy {
     mode: ToolResultMode;
 }

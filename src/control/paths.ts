@@ -27,6 +27,15 @@ export function ensureControlDir(): void {
     fs.mkdirSync(getControlDir(), { recursive: true });
 }
 
+/** 删除会话的 socket 文件；调用方必须已确认无监听者（connect 失败），否则会删掉别人的活连接。 */
+export function removeSocketFile(sessionId: string): void {
+    try {
+        fs.unlinkSync(getSocketPath(sessionId));
+    } catch (error: any) {
+        if (error?.code !== "ENOENT") throw error;
+    }
+}
+
 /** 列出磁盘上存在 socket 文件的会话 id；目录不存在时返回空数组。 */
 export function listSocketSessionIds(): string[] {
     try {

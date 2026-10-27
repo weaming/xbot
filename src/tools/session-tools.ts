@@ -16,6 +16,7 @@ import {
     type SessionControl,
 } from "../control/channel.js";
 import { describeOwnership } from "../control/registry.js";
+import { shortSessionId } from "../utils/session-id.js";
 import { getPeerResultHistory, getSessionControl, getSessionDirectory } from "../control/runtime.js";
 import { err, ok, type ExecutableTool, type ToolExecutionResult } from "./tool-interface.js";
 import { toolCatalog } from "./tool-catalog.js";
@@ -103,7 +104,7 @@ const sessionSpawnTool: ExecutableTool = {
 
         return ok(
             [
-                `已派生并接管会话 ${shortId(result.sessionId)}`,
+                `已派生并接管会话 ${shortSessionId(result.sessionId)}`,
                 `完整 id：${result.sessionId}`,
                 ...(args.auto_close ? ["任务完成回传后会自动归档（保留历史）。"] : []),
                 `用 session_send(session="${result.sessionId}", text=…, expect_result=true) 派活。`,
@@ -168,7 +169,7 @@ const sessionSendTool: ExecutableTool = {
                 ...(expectResult ? { expectResult: true } : {}),
                 ...(args.reply_to ? { replyTo: args.reply_to } : {}),
             });
-            const sent = `已发送到会话 ${shortId(resolved.sessionId)}（msgId=${message.id}）`;
+            const sent = `已发送到会话 ${shortSessionId(resolved.sessionId)}（msgId=${message.id}）`;
             if (waitSeconds === 0) {
                 return ok(`${sent}${expectResult ? "，结果稍后自动回传" : ""}`);
             }
@@ -185,10 +186,10 @@ const sessionSendTool: ExecutableTool = {
                 return ok(`${sent}，等待已由用户放入后台：先继续手头的事，结果到达后会自动继续一轮`);
             }
             if (outcome.reason === "aborted") return err(`${sent}，但等待结果被中止`);
-            return err(`${sent}，但结果已丢失（会话 ${shortId(resolved.sessionId)} 不可达），不要重复发送`);
+            return err(`${sent}，但结果已丢失（会话 ${shortSessionId(resolved.sessionId)} 不可达），不要重复发送`);
         } catch (error) {
             if (error instanceof PeerSendFailure) return err(error.message);
-            return err(`发送到会话 ${shortId(resolved.sessionId)} 失败：${(error as Error)?.message ?? error}`);
+            return err(`发送到会话 ${shortSessionId(resolved.sessionId)} 失败：${(error as Error)?.message ?? error}`);
         }
     },
 };
@@ -263,7 +264,7 @@ const sessionCloseTool: ExecutableTool = {
 
         const result = await control.closeSpawnedSession(resolved.sessionId);
         if (!result.ok) return err(result.error);
-        return ok(`已归档并关闭子会话 ${shortId(resolved.sessionId)}；历史保留，可从会话面板重新打开。`);
+        return ok(`已归档并关闭子会话 ${shortSessionId(resolved.sessionId)}；历史保留，可从会话面板重新打开。`);
     },
 };
 
@@ -297,8 +298,8 @@ const sessionCancelTool: ExecutableTool = {
         const result = await control.cancelSpawnedSession(resolved.sessionId, { close: args.close === true });
         if (!result.ok) return err(result.error);
         return ok(result.closed
-            ? `已取消并归档子会话 ${shortId(resolved.sessionId)}；历史保留。`
-            : `已取消子会话 ${shortId(resolved.sessionId)} 的当前任务；会话仍保持打开，可继续用 session_send。`);
+            ? `已取消并归档子会话 ${shortSessionId(resolved.sessionId)}；历史保留。`
+            : `已取消子会话 ${shortSessionId(resolved.sessionId)} 的当前任务；会话仍保持打开，可继续用 session_send。`);
     },
 };
 
@@ -343,7 +344,7 @@ const sessionWakeTool: ExecutableTool = {
         }
 
         const text = (args.text ?? "").trim();
-        if (!text) return ok(`已唤醒并认领会话 ${shortId(resolved.sessionId)}；用 session_send 继续工作。`);
+        if (!text) return ok(`已唤醒并认领会话 ${shortSessionId(resolved.sessionId)}；用 session_send 继续工作。`);
 
         try {
             const message = await control.send(args.__sessionId, resolved.sessionId, text, {
@@ -351,7 +352,7 @@ const sessionWakeTool: ExecutableTool = {
                 ...(args.close !== false ? { closeOnResult: true } : {}),
             });
             return ok([
-                `已唤醒会话 ${shortId(resolved.sessionId)} 并发送输入（msgId=${message.id}）。`,
+                `已唤醒会话 ${shortSessionId(resolved.sessionId)} 并发送输入（msgId=${message.id}）。`,
                 "任务结果稍后会自动回传。",
                 ...(args.close === false ? ["收到结果后会话保持打开。"] : ["收到结果后会自动重新归档。"]),
             ].join("\n"));
@@ -379,7 +380,7 @@ async function describeAll(
         const marker = state.state === "mine" ? "●" : state.state === "free" ? "○" : "👁";
         const title = entry.title ? `「${entry.title}」` : "";
         const current = entry.sessionId === caller ? " ← 你" : "";
-        return `${marker} ${shortId(entry.sessionId)} ${title} ${describeOwnership(entry.sessionId, state)}${current}`;
+        return `${marker} ${shortSessionId(entry.sessionId)} ${title} ${describeOwnership(entry.sessionId, state)}${current}`;
     });
 
     const summary = [`会话（本实例 PID ${process.pid}）：`, ...lines];
@@ -406,7 +407,7 @@ async function describeOne(
 ): Promise<ToolExecutionResult> {
     const ownership = await control.probe(sessionId);
     const lines = [
-        `会话 ${shortId(sessionId)}`,
+        `会话 ${shortSessionId(sessionId)}`,
         `归属：${describeOwnership(sessionId, ownership)}`,
     ];
 
@@ -432,8 +433,8 @@ async function recentResultLines(sessionId: string): Promise<string[]> {
     if (!latest) return ["", "最近结果：（无）"];
 
     const peer = latest.peerTitle
-        ? `${shortId(latest.peerId)}「${latest.peerTitle}」`
-        : shortId(latest.peerId);
+        ? `${shortSessionId(latest.peerId)}「${latest.peerTitle}」`
+        : shortSessionId(latest.peerId);
     const status = latest.lost ? "已丢失" : latest.late ? "迟到结果" : latest.ok ? "ok" : "失败";
     return ["", `最近结果（来自 ${peer} · ${latest.createdAt} · ${status}）：`, latest.text];
 }
@@ -459,10 +460,6 @@ async function resolveSessionId(
         return { ok: false, error: `会话 ${input} 匹配到多个候选，请写更长的 id` };
     }
     return { ok: true, sessionId: matched[0]!.sessionId };
-}
-
-function shortId(sessionId: string): string {
-    return sessionId.length > 8 ? sessionId.slice(-8) : sessionId;
 }
 
 export const SESSION_TOOLS: ExecutableTool[] = [

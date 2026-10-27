@@ -44,7 +44,7 @@ import { acquireSessionLock, isSessionLockedByOtherSync, type SessionLockHandle 
 import { mergeUsage, type UIEvent } from "../events/ui-events.js";
 import type { UsageInfo } from "../types/chat.js";
 import type { AgentEvent, AgentEventPayloads } from "../events/agent-events.js";
-import type { Session } from "../types/session.js";
+import { MAX_SESSION_TITLE_LENGTH, type Session } from "../types/session.js";
 import type { ChatModelSelection } from "../types/chat-model.js";
 import { aggregateInstanceUsage, summarizeEvents } from "./agent-summary.js";
 import { compactSessionContext, runSessionTurn, type TurnHost } from "./agent-turn.js";
@@ -569,7 +569,7 @@ export class LocalTuiAgent implements TuiAgent {
     }
 
     async renameSession(sessionId: string, title: string): Promise<void> {
-        const cleanTitle = title.trim().slice(0, 200);
+        const cleanTitle = title.trim().slice(0, MAX_SESSION_TITLE_LENGTH);
         if (!cleanTitle) return;
 
         this.beginSessionOperation(sessionId);
