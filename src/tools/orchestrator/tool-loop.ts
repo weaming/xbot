@@ -49,6 +49,7 @@ async function processToolCall(
     let toolFailed = false;
     let toolContextPolicy: ToolExecutionOutput["contextPolicy"];
     let toolImageContent: ToolExecutionOutput["imageContent"];
+    let toolAudioContent: ToolExecutionOutput["audioContent"];
 
     if (host.executeTool) {
         try {
@@ -58,6 +59,7 @@ async function processToolCall(
             toolOutput = executionOutput.content;
             toolContextPolicy = executionOutput.contextPolicy;
             toolImageContent = executionOutput.imageContent;
+            toolAudioContent = executionOutput.audioContent;
 
             toolOutput = compactJsonToolOutput(toolOutput, toolCall.name);
         } catch (error: any) {
@@ -85,6 +87,7 @@ async function processToolCall(
         durationMs,
         ...(toolContextPolicy ? { contextPolicy: toolContextPolicy } : {}),
         ...(toolImageContent && toolImageContent.length > 0 ? { imageContent: toolImageContent } : {}),
+        ...(toolAudioContent && toolAudioContent.length > 0 ? { audioContent: toolAudioContent } : {}),
     };
     if (host.collectMessages) host.collectMessages.push(toolMessage);
     else host.appendTurnMessage?.(toolMessage);

@@ -72,10 +72,12 @@ describe("chat runtime", () => {
             tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "tool", arguments: "{}" } }],
         };
         const toolMessage = { role: "tool" as const, tool_call_id: "call_1", name: "tool", content: "result" };
+        // 上行形态：name 属本地渲染元数据，请求里只留 content/role/tool_call_id
+        const promptToolMessage = { role: "tool" as const, tool_call_id: "call_1", content: "result" };
         const finalMessage = { role: "assistant" as const, content: "answer", reasoning_content: "final reasoning" };
         appendCompletedTurn(session, ["first question"], [assistantMessage, toolMessage, finalMessage], true);
 
-        const completedTranscript = [systemMessage, { role: "user", content: "first question" }, assistantMessage, toolMessage, finalMessage];
+        const completedTranscript = [systemMessage, { role: "user", content: "first question" }, assistantMessage, promptToolMessage, finalMessage];
         const nextRequest = [systemMessage, ...getSessionContextHistory(session), { role: "user", content: "second question" }];
 
         expectNextRequestToReusePrefix(completedTranscript, nextRequest);

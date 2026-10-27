@@ -243,6 +243,9 @@ export async function executeWithChat(
   let persistFailure: unknown;
   const persistMessage = (message: ChatMessage): void => {
     if (!onTurnMessage) return;
+    // 必须传原对象：run-turn 靠对象身份去重（失败/中断回合按 partialMessages 补写），
+    // 这里换成副本会让去重恒为 false 并重复落 turn_message。
+    // audioContent 的剔除下沉到唯一落盘口 persistTurnMessage。
     persistChain = persistChain
       .then(() => onTurnMessage(message))
       .catch((error: any) => {

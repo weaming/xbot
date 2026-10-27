@@ -13,7 +13,11 @@ function userInputMessage(input: StoredUserInput): ChatMessage {
 }
 
 function createStoredMessage(message: ChatMessage): StoredChatMessage {
-    return { ...message, id: createUlid(), createdAt: getShanghaiISOString() } as StoredChatMessage;
+    // audioContent 是内联 base64（读一个 5MB wav 就是 ~6.7MB），只在构造当轮请求时需要。
+    // 图片走 sessions/assets 资产引用没有这个问题，音频暂无对应机制，落盘前直接剔除，
+    // 代价是后续轮次只保留工具结果里的文本占位符。ctx.messages 里的原消息不受影响。
+    const { audioContent: _audioContent, ...rest } = message as ChatMessage & { audioContent?: unknown };
+    return { ...rest, id: createUlid(), createdAt: getShanghaiISOString() } as StoredChatMessage;
 }
 
 function toChatMessage(message: StoredChatMessage): ChatMessage {

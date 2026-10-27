@@ -4,6 +4,7 @@ import path from "node:path";
 import { createToolImageAsset } from "../utils/image-assets.js";
 import type { ImageAssetContent, ImageDataContent } from "../types/image.js";
 import type { ToolResultPolicy } from "../types/session.js";
+import { AUDIO_MIME_TO_FORMAT, type AudioContent } from "../types/audio.js";
 
 export type ToolImageContent = ImageAssetContent | ImageDataContent;
 
@@ -26,6 +27,7 @@ export interface ToolExecutionResult {
 export interface ToolExecutionOutput {
     content: string;
     imageContent?: ToolImageContent[];
+    audioContent?: AudioContent[];
     contextPolicy?: ToolResultPolicy;
 }
 
@@ -98,6 +100,20 @@ export function toolContentToText(content: ToolContentBlock[]): string {
 
 export function toolResultToText(result: ToolExecutionResult): string {
     return toolContentToText(result.content);
+}
+
+/**
+ * 提取工具结果里的音频块，转成 OpenAI `input_audio` 可用的形态。
+ * 仅 wav/mp3 可上行；其余容器返回空数组，由调用方保留文本占位符。
+ */
+export function toolContentToAudioContent(content: ToolContentBlock[]): AudioContent[] {
+    return normalizeToolContent(content).flatMap((block): AudioContent[] => {
+        if (block.type !== "audio") return [];
+        if (typeof block.data !== "string") return [];
+
+        const format = AUDIO_MIME_TO_FORMAT[(block.mimeType || "").toLowerCase()];
+        return format ? [{ data: block.data, format }] : [];
+    });
 }
 
 /** 将工具返回的图片转换为可在后续模型请求中恢复的图片引用。 */

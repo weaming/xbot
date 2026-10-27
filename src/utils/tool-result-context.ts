@@ -36,11 +36,22 @@ function getMaxCharacterCount(characters: string[], tokenLimit: number): number 
     return lower;
 }
 
-/** 剥离工具消息的本地元数据（contextPolicy / durationMs），只留上行需要的字段。 */
+/**
+ * 剥离工具消息的本地元数据（contextPolicy / durationMs / name），只留上行需要的字段。
+ *
+ * name 不属于 OpenAI 官方 ChatCompletionToolMessageParam 的字段（只有 content/role/tool_call_id），
+ * 官方端点会以 Unrecognized request argument 拒绝多余字段；tool_call_id 已足以关联调用。
+ */
 function stripToolLocalMetadata(message: ChatMessage): ChatMessage {
     if (message.role !== 'tool') return message;
-    if (message.contextPolicy === undefined && message.durationMs === undefined) return message;
-    const { contextPolicy: _contextPolicy, durationMs: _durationMs, ...apiMessage } = message;
+    if (
+        message.contextPolicy === undefined
+        && message.durationMs === undefined
+        && message.name === undefined
+    ) {
+        return message;
+    }
+    const { contextPolicy: _contextPolicy, durationMs: _durationMs, name: _name, ...apiMessage } = message;
     return apiMessage as ChatMessage;
 }
 

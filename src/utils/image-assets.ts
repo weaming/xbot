@@ -152,7 +152,12 @@ function materializeImageContent(content: UserContent): unknown {
             };
         }
 
-        return materializeImageAsset(block.image);
+        if (block.type === "image_asset") {
+            return materializeImageAsset(block.image);
+        }
+
+        // 非图片块（如 input_audio）原样透传：这里曾无条件兜底成图片资产，会把音频块读成 undefined.path 抛错
+        return block;
     }));
 }
 

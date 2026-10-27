@@ -8,7 +8,7 @@ import { executeWithChat, createChatClient, isAbortError } from "../tools/chat-o
 import { executeMcpTool, getAllToolSummary, getOpenAIToolDefinitions } from "../tools/tool-registry.js";
 import { createTodoReminderProvider } from "../tools/todo-tool.js";
 import { runWithToolCwd } from "../utils/tool-cwd-context.js";
-import { toolContentToImageContent, toolResultToText } from "../tools/tool-interface.js";
+import { toolContentToAudioContent, toolContentToImageContent, toolResultToText } from "../tools/tool-interface.js";
 import type { ChatMessage, Session } from "../types/session.js";
 import type { StreamDelta } from "../types/chat.js";
 import { toUserContent, type UserContent, type UserMessageInput } from "../types/image.js";
@@ -510,6 +510,7 @@ export async function runChatQuery(options: ChatRunOptions) {
                 return {
                     content: toolResultToText(result),
                     imageContent: await toolContentToImageContent(result.content, options.sessionId),
+                    audioContent: toolContentToAudioContent(result.content),
                     contextPolicy: result.contextPolicy,
                 };
             },

@@ -5,7 +5,8 @@ export interface ToolResultPolicy {
 }
 
 // OpenAI-compatible message types
-import type { UserContent } from './image.js';
+import type { ImageAssetContent, ImageDataContent, UserContent } from './image.js';
+import type { AudioContent } from './audio.js';
 import type { ChatModelSelection } from './chat-model.js';
 
 /** 上游托管工具（如 web_search）随正文返回的引用来源。 */
@@ -29,6 +30,9 @@ export type ChatMessage =
         contextPolicy?: ToolResultPolicy;
         /** 执行耗时（ms）：本地渲染元数据，上行前剥离。 */
         durationMs?: number;
+        /** 工具返回的图片/音频：本地元数据，上行前由 expandToolMediaMessages 抽成独立 user 消息。 */
+        imageContent?: Array<ImageAssetContent | ImageDataContent>;
+        audioContent?: AudioContent[];
         [key: string]: any;
     }
     | { role: 'system'; content: string };

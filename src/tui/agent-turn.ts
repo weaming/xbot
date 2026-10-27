@@ -122,7 +122,10 @@ export async function runSessionTurn(
                 host.updateActiveSeq(sessionId, appended.seq);
             },
             persistTurnMessage: async (message, tid) => {
-                const appended = await host.eventLog.append(sessionId, "turn_message", { turnId: tid, message });
+                // audioContent 是内联 base64，事件日志按整会话保留（归档前不清理），落事件前剔除。
+                // 这里构造副本不影响调用方的对象身份去重：去重比较的是传进本函数的原对象。
+                const { audioContent: _audioContent, ...stored } = message as typeof message & { audioContent?: unknown };
+                const appended = await host.eventLog.append(sessionId, "turn_message", { turnId: tid, message: stored });
                 host.updateActiveSeq(sessionId, appended.seq);
                 return appended.seq;
             },

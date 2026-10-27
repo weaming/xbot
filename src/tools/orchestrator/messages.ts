@@ -9,6 +9,7 @@
 
 import type { ChatMessage } from "../../types/session.js";
 import type { ToolImageContent } from "../tool-interface.js";
+import type { InputAudioContent } from "../../types/audio.js";
 import { materializeImageMessages } from "../../utils/image-assets.js";
 
 function responseImagePart(part: any): any {
@@ -91,48 +92,83 @@ export async function materializeResponsesInput(messages: ChatMessage[]): Promis
 
     result.push({
       role: "user",
-      content: materialized.content.map((part: any) => part.type === "text"
-        ? { type: "input_text", text: part.text }
-        : responseImagePart(part)),
+      content: materialized.content.map((part: any) => {
+        if (part.type === "text") return { type: "input_text", text: part.text };
+        if (part.type === "image_url") return responseImagePart(part);
+        // 其余块类型（将来的 user 音频等）原样透传，避免被当成图片构造成 input_image
+        return part;
+      }),
     });
   }
 
   return result;
 }
 
-/** 把工具结果中的图片补成请求专用的用户多模态消息。 */
-export function expandToolImageMessages(messages: ChatMessage[]): ChatMessage[] {
-  const expanded: ChatMessage[] = [];
-  const pendingImages: ToolImageContent[] = [];
-  const flushImages = () => {
-    if (pendingImages.length === 0) return;
-    expanded.push({
-      role: "user",
-      content: [
-        { type: "text", text: "工具返回了图片，请结合工具结果分析图片内容。" },
-        ...pendingImages,
-      ],
-    });
-    pendingImages.length = 0;
-  };
+/**
+ * 把工具结果中的图片/音频补成请求专用的用户多模态消息。
+ *
+ * Chat Completions 的工具消息只能承载文本，图片走 image_url、音频走 input_audio，
+ * 因此都提升为紧随其后的 user 消息。音频是否注入由 allowAudio 控制：只有明确支持
+ * input_audio 的端点才开，其他端点（如 DeepSeek）会因未知内容块返回 400。
+ */
+export function expandToolMediaMessages(
+    messages: ChatMessage[],
+    options: { allowAudio?: boolean } = {},
+): ChatMessage[] {
+    const expanded: ChatMessage[] = [];
+    const pendingMedia: Array<ToolImageContent | InputAudioContent> = [];
+    const flushMedia = () => {
+        if (pendingMedia.length === 0) return;
 
-  for (const message of messages) {
-    if (message.role !== "tool") {
-      flushImages();
-      expanded.push(message);
-      continue;
-    }
+        const hasImage = pendingMedia.some((part) => part.type !== "input_audio");
+        const hasAudio = pendingMedia.some((part) => part.type === "input_audio");
+        expanded.push({
+            role: "user",
+            content: [
+                {
+                    type: "text",
+                    text: hasImage && hasAudio
+                        ? "工具返回了图片与音频，请结合工具结果分析这些内容。"
+                        : hasImage
+                            ? "工具返回了图片，请结合工具结果分析图片内容。"
+                            : "工具返回了音频，请结合工具结果分析音频内容。",
+                },
+                ...pendingMedia,
+            ],
+        });
+        pendingMedia.length = 0;
+    };
 
-    if (message.imageContent && message.imageContent.length > 0) {
-      pendingImages.push(...message.imageContent);
-      const { imageContent: _imageContent, ...toolMessage } = message;
-      expanded.push(toolMessage as ChatMessage);
-    } else {
-      expanded.push(message);
+    for (const message of messages) {
+        if (message.role !== "tool") {
+            flushMedia();
+            expanded.push(message);
+            continue;
+        }
+
+        // 是否注入音频由 allowAudio 决定；但字段本身是本地元数据，任何情况下都不能上行
+        const hasLocalMedia = message.imageContent !== undefined || message.audioContent !== undefined;
+        if (!hasLocalMedia) {
+            expanded.push(message);
+            continue;
+        }
+
+        const images = message.imageContent ?? [];
+        const audios = options.allowAudio ? (message.audioContent ?? []) : [];
+        pendingMedia.push(
+            ...images,
+            ...audios.map((audio) => ({ type: "input_audio" as const, input_audio: audio })),
+        );
+
+        const {
+            imageContent: _imageContent,
+            audioContent: _audioContent,
+            ...toolMessage
+        } = message;
+        expanded.push(toolMessage as ChatMessage);
     }
-  }
-  flushImages();
-  return expanded;
+    flushMedia();
+    return expanded;
 }
 
 export function stripResponsesMetadata(messages: ChatMessage[]): ChatMessage[] {

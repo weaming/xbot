@@ -33,7 +33,7 @@ import {
   toHostedToolDefinitions,
 } from "./request-builder.js";
 import {
-  expandToolImageMessages,
+  expandToolMediaMessages,
   materializeResponsesInput,
   stripResponsesMetadata,
 } from "./messages.js";
@@ -55,6 +55,27 @@ async function uploadImageForDeepSeek(client: ChatClient, image: any): Promise<s
  */
 export function isDeepSeekEndpoint(model: string, baseURL: string): boolean {
     return model.toLowerCase().includes("deepseek") || endpointHost(baseURL) === DEEPSEEK_OFFICIAL_HOST;
+}
+
+/**
+ * 判定接入端是否接受 Chat Completions 的 `input_audio` 内容块。
+ *
+ * 目前只有音频模型（如 gpt-audio-*、gpt-4o-audio-preview）支持；DeepSeek 只有视觉能力，
+ * 收到 audio 内容块会返回 400。默认关闭，宁可退化成文本占位符。
+ *
+ * 名字启发式会误判「名字含 audio 但端点不接受 input_audio」的网关别名
+ * （如自建 LiteLLM 的 my-audio-model），可用 TOOL_AUDIO_INPUT=on|off 强制覆盖。
+ */
+export function supportsAudioInput(model: string, baseURL: string): boolean {
+    // 硬性不支持，任何覆盖都不能让它发 input_audio：该 env 是全局的，
+    // 为网关别名开的开关不该顺带打死同一实例里的 DeepSeek 会话。
+    if (isDeepSeekEndpoint(model, baseURL)) return false;
+
+    const override = (process.env.TOOL_AUDIO_INPUT ?? "").trim().toLowerCase();
+    if (override === "off" || override === "0" || override === "false") return false;
+    if (override === "on" || override === "1" || override === "true") return true;
+
+    return /audio/i.test(model);
 }
 
 /** DeepSeek 兼容端只托管服务端 web_search，且 flash 档上游会忽略，因此其余类型与 flash 档一律不发。 */
@@ -117,7 +138,9 @@ export async function prepareRequest(options: PrepareRequestOptions): Promise<Pr
 
     const requestMessages = useResponses
         ? sourceMessages
-        : expandToolImageMessages(stripResponsesMetadata(sourceMessages));
+        : expandToolMediaMessages(stripResponsesMetadata(sourceMessages), {
+            allowAudio: supportsAudioInput(model, client.baseURL),
+        });
 
     const materializedMessages = useResponses
         ? await materializeResponsesInput(requestMessages)

@@ -151,11 +151,11 @@ describe("Chat Orchestrator", () => {
     expect(requests[1].messages.at(-1)).toEqual({
       role: "tool",
       tool_call_id: "call_unavailable",
-      name: "unavailable_tool",
       content: "executed",
     });
-    // 耗时只是本地渲染元数据，不随请求上行
+    // 耗时与工具名只是本地渲染元数据，不随请求上行
     expect(requests[1].messages.at(-1)).not.toHaveProperty("durationMs");
+    expect(requests[1].messages.at(-1)).not.toHaveProperty("name");
     expect(result.messages).toEqual([
       {
         role: "assistant",
@@ -224,7 +224,6 @@ describe("Chat Orchestrator", () => {
     expect(requests[1].messages.at(-2)).toEqual({
       role: "tool",
       tool_call_id: "call_read_image",
-      name: "read_media_file",
       content: "[image image/png base64_chars=8]",
     });
     expect(requests[1].messages.at(-1)).toEqual({
@@ -241,6 +240,104 @@ describe("Chat Orchestrator", () => {
       ],
     });
     expect(result.messages[1]).toMatchObject({ imageContent });
+  });
+
+  test("音频模型收到工具音频时补成带 input_audio 的用户消息", async () => {
+    const { executeWithChat } = await import('../../src/tools/chat-orchestrator.js');
+    const requests: any[] = [];
+    let requestCount = 0;
+    const audioContent = [{ data: "UklGRg==", format: "wav" as const }];
+    const client = {
+      baseURL: "http://test.invalid",
+      create: async (request: any) => {
+        requests.push(structuredClone(request));
+        requestCount++;
+        return requestCount === 1
+          ? {
+            choices: [{
+              message: {
+                role: "assistant",
+                tool_calls: [{
+                  id: "call_read_audio",
+                  type: "function",
+                  function: { name: "read_media_file", arguments: '{"path":"voice.wav"}' },
+                }],
+              },
+            }],
+          }
+          : { choices: [{ message: { role: "assistant", content: "音频内容" } }] };
+      },
+    };
+
+    await executeWithChat({
+      query: "分析音频",
+      client,
+      model: "gpt-audio-1.5",
+      executeTool: async () => ({
+        content: "[audio audio/wav base64_chars=8]",
+        audioContent,
+      }),
+    });
+
+    // 工具消息只留文本，本地 audioContent 不得上行
+    expect(requests[1].messages.at(-2)).toEqual({
+      role: "tool",
+      tool_call_id: "call_read_audio",
+      content: "[audio audio/wav base64_chars=8]",
+    });
+    expect(requests[1].messages.at(-1)).toEqual({
+      role: "user",
+      content: [
+        { type: "text", text: "工具返回了音频，请结合工具结果分析音频内容。" },
+        { type: "input_audio", input_audio: { data: "UklGRg==", format: "wav" } },
+      ],
+    });
+  });
+
+  test("不支持音频的模型只保留文本占位符，不外发 input_audio", async () => {
+    const { executeWithChat } = await import('../../src/tools/chat-orchestrator.js');
+    const requests: any[] = [];
+    let requestCount = 0;
+    const client = {
+      baseURL: "http://test.invalid",
+      create: async (request: any) => {
+        requests.push(structuredClone(request));
+        requestCount++;
+        return requestCount === 1
+          ? {
+            choices: [{
+              message: {
+                role: "assistant",
+                tool_calls: [{
+                  id: "call_read_audio",
+                  type: "function",
+                  function: { name: "read_media_file", arguments: '{"path":"voice.wav"}' },
+                }],
+              },
+            }],
+          }
+          : { choices: [{ message: { role: "assistant", content: "收到" } }] };
+      },
+    };
+
+    await executeWithChat({
+      query: "分析音频",
+      client,
+      model: "gpt-4o",
+      executeTool: async () => ({
+        content: "[audio audio/wav base64_chars=8]",
+        audioContent: [{ data: "UklGRg==", format: "wav" as const }],
+      }),
+    });
+
+    const sent = JSON.stringify(requests[1].messages);
+    expect(sent).not.toContain("input_audio");
+    expect(sent).not.toContain("audioContent");
+    expect(requests[1].messages.at(-1)).toEqual({
+      role: "tool",
+      tool_call_id: "call_read_audio",
+      content: "[audio audio/wav base64_chars=8]",
+    });
   });
 
   test("GPT Responses 请求使用 function_call_output 的 input_image 格式", async () => {
@@ -1120,7 +1217,6 @@ describe("Chat Orchestrator", () => {
     expect(requests[1].messages.at(-1)).toEqual({
       role: "tool",
       tool_call_id: "call_json",
-      name: "longport_json_tool",
       content: '{"items":[1,2]}',
     });
   });

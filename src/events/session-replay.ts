@@ -208,12 +208,6 @@ export class SessionReplay {
         return event.seq;
     }
 
-    /** 回合内每条完整消息即时落盘（turn_message），返回事件 seq。 */
-    async appendTurnMessage(sessionId: string, turnId: string, message: ChatMessage): Promise<number> {
-        const event = await this.eventLog.append(sessionId, "turn_message", { turnId, message });
-        return event.seq;
-    }
-
     /** 段边界落盘（turn_segment_start），返回事件 seq。 */
     async appendSegmentStart(sessionId: string, payload: AgentEventPayloads["turn_segment_start"]): Promise<number> {
         const event = await this.eventLog.append(sessionId, "turn_segment_start", payload);

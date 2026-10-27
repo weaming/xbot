@@ -436,6 +436,36 @@ describe("LocalTuiAgent.sendMessage interrupted/failed turn materialization", ()
         expect(events.at(-1).payload.turnId).toBe(userEvent.payload.turnId);
     });
 
+    test("persistTurnMessage 落盘时剔除工具消息的内联 audioContent", async () => {
+        runChatQueryImpl = async options => {
+            await options.onTurnMessage?.({
+                role: "tool",
+                tool_call_id: "c_audio",
+                name: "read_media_file",
+                content: "[audio audio/wav base64_chars=8]",
+                audioContent: [{ data: "UklGRg==", format: "wav" }],
+            });
+            return {
+                content: "完成",
+                messages: [{ role: "assistant", content: "完成" }],
+            };
+        };
+
+        await agent.sendMessage(sessionId, "听一下");
+
+        const turnMessages = readSession().filter(event => event.type === "turn_message");
+        expect(turnMessages).toHaveLength(1);
+        const stored = turnMessages[0].payload.message;
+        // 内联 base64 不进事件日志；消息本身仍完整保留
+        expect(stored).not.toHaveProperty("audioContent");
+        expect(JSON.stringify(turnMessages)).not.toContain("UklGRg==");
+        expect(stored).toMatchObject({
+            role: "tool",
+            tool_call_id: "c_audio",
+            content: "[audio audio/wav base64_chars=8]",
+        });
+    });
+
     test("resumeSession 重跑缺失工具且不产生用户消息（对上游无感）", async () => {
         // 先造一个中断回合：assistant(tool_calls) 无结果
         runChatQueryImpl = async () => {

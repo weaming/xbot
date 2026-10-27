@@ -1,4 +1,6 @@
 /** 图片资产与带图片的用户输入。 */
+import type { InputAudioContent } from "./audio.js";
+
 export interface ImageAssetRef {
     id: string;
     path: string;
@@ -51,7 +53,11 @@ export interface ImageDataContent {
 }
 
 export type UserContent = string | Array<
-    { type: "text"; text: string } | ImageAssetContent | ImageUrlContent | ImageDataContent
+    | { type: "text"; text: string }
+    | ImageAssetContent
+    | ImageUrlContent
+    | ImageDataContent
+    | InputAudioContent
 >;
 
 export interface DeepSeekFileContent {
