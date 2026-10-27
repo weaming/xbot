@@ -332,8 +332,9 @@ describe("LocalTuiAgent.sendMessage interrupted/failed turn materialization", ()
         await expect(agent.sendMessage(sessionId, "问题")).rejects.toThrow("Connection error.");
 
         const events = readSession();
-        expect(events.some((event: any) => event.type === "turn_stream_delta" && event.payload.delta.text === "已显示的部分"))
-            .toBe(true);
+        // 流式片段只进 pending 缓冲，回合定稿后剔除，不落主日志
+        expect(events.some((event: any) => event.type === "turn_stream_delta")).toBe(false);
+        expect(fs.existsSync(path.join(tmpDir, "sessions", "events", `${sessionId}.stream.jsonl`))).toBe(false);
         const freshAgent = new LocalTuiAgent();
         const replayed = await (freshAgent as any).requireActiveSession(sessionId);
         expect(getSessionContextHistory(replayed).map(message => message.content)).toEqual(["问题", "已显示的部分"]);

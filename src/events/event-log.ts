@@ -7,18 +7,45 @@ import fs from "fs";
 import path from "path";
 import { getSessionsDir } from "../utils/runtime-paths.js";
 import { sanitizeSessionId } from "../utils/session-id.js";
+import type { StreamDelta } from "../types/chat.js";
 import type { AgentEvent, AgentEventPayloads, AgentEventType } from "./agent-events.js";
 
 /** 从文件尾部回读的窗口：一次读这么多字节找最后一行，不够再往前翻一倍。 */
 const TAIL_WINDOW_BYTES = 8 * 1024;
 const TAIL_WINDOW_MAX_BYTES = 1024 * 1024;
 
+/** 流式片段聚合窗口：攒够字节数或静默这么久就落盘，把逐 token 写降成批量写。 */
+const STREAM_FLUSH_BYTES = 512;
+const STREAM_FLUSH_MS = 150;
+
+/** pending 流文件的一行：一个请求里连续的若干 delta。片段不占主日志 seq。 */
+interface StreamBatch {
+    ts: string;
+    turnId: string;
+    requestIndex: number;
+    deltas: StreamDelta[];
+}
+
+/** 单会话流式缓冲：active 是正在追加的批次，batches 是已封口待落盘的批次。 */
+interface StreamState {
+    active: StreamBatch | null;
+    batches: StreamBatch[];
+    bytes: number;
+    timer: ReturnType<typeof setTimeout> | null;
+    chain: Promise<void>;
+}
+
 export class EventLog {
     private readonly seqCache = new Map<string, number>();
     private readonly appendLocks = new Map<string, Promise<void>>();
+    private readonly streamStates = new Map<string, StreamState>();
 
     private eventFilePath(sessionId: string): string {
         return path.join(getSessionsDir("events"), `${sanitizeSessionId(sessionId)}.jsonl`);
+    }
+
+    private streamFilePath(sessionId: string): string {
+        return path.join(getSessionsDir("events"), `${sanitizeSessionId(sessionId)}.stream.jsonl`);
     }
 
     /** 会话当前最后 seq（无日志时 0）。支持 forceRefresh 绕过内存缓存重新读取磁盘。 */
@@ -31,6 +58,168 @@ export class EventLog {
         const seq = await readLastSeqFromTail(this.eventFilePath(sessionId));
         this.seqCache.set(sessionId, seq);
         return seq;
+    }
+
+    /**
+     * 追加一条流式片段：只进内存缓冲，按 STREAM_FLUSH_BYTES / STREAM_FLUSH_MS 批量落到
+     * pending 流文件，既不进主日志也不占主日志 seq：
+     * seq 是会话状态的时间轴，让逐 token 片段推进它会把 lastSeq 抬高，
+     * 破坏「按 seq 尾部窗口回查」这类调用（如会话间结果扫描）。
+     */
+    async appendStreamDelta(
+        sessionId: string,
+        turnId: string,
+        requestIndex: number,
+        delta: StreamDelta,
+    ): Promise<void> {
+        const state = this.streamState(sessionId);
+        if (!state.active || state.active.turnId !== turnId || state.active.requestIndex !== requestIndex) {
+            this.sealBatch(state);
+            state.active = {
+                ts: new Date().toISOString(),
+                turnId,
+                requestIndex,
+                deltas: [],
+            };
+        }
+
+        const active = state.active;
+        active.deltas.push(delta);
+        state.bytes += estimateDeltaBytes(delta);
+
+        if (state.bytes >= STREAM_FLUSH_BYTES) {
+            await this.flushStream(sessionId);
+            return;
+        }
+        this.scheduleFlush(sessionId, state);
+    }
+
+    /** 把缓冲里的流式片段立即落盘（消息定稿前、回合提交前、读取前调用）。 */
+    async flushStream(sessionId: string): Promise<void> {
+        const state = this.streamStates.get(sessionId);
+        if (!state) return;
+        if (state.timer) {
+            clearTimeout(state.timer);
+            state.timer = null;
+        }
+        this.sealBatch(state);
+        if (state.batches.length === 0) return;
+
+        const batches = state.batches;
+        state.batches = [];
+        state.bytes = 0;
+        const text = batches.map(batch => JSON.stringify(batch) + "\n").join("");
+        state.chain = state.chain
+            .then(() => fs.promises.appendFile(this.streamFilePath(sessionId), text, "utf8"))
+            .catch(error => {
+                // 流式片段只影响崩溃恢复，写失败不中断回合
+                console.warn(`[EventLog] 流式片段落盘失败 (session=${sessionId}): ${error}`);
+            });
+        await state.chain;
+    }
+
+    /**
+     * 回合定稿后剔除该回合的流式片段：pending 文件里其他未闭合回合的片段保留。
+     * 文件清空即删除，常态下不残留任何流式数据。
+     */
+    async dropStream(sessionId: string, turnId: string): Promise<void> {
+        await this.flushStream(sessionId);
+        const filePath = this.streamFilePath(sessionId);
+        const text = await readFileIfExists(filePath);
+        if (!text) return;
+
+        const kept: string[] = [];
+        for (const line of text.split("\n")) {
+            if (!line.trim()) continue;
+            let batch: StreamBatch;
+            try {
+                batch = JSON.parse(line) as StreamBatch;
+            } catch {
+                continue;
+            }
+            if (batch.turnId === turnId) continue;
+            kept.push(line);
+        }
+
+        if (kept.length === 0) {
+            await fs.promises.rm(filePath, { force: true });
+            return;
+        }
+        const tempPath = `${filePath}.${process.pid}.tmp`;
+        try {
+            await fs.promises.writeFile(tempPath, kept.join("\n") + "\n", "utf8");
+            await fs.promises.rename(tempPath, filePath);
+        } finally {
+            await fs.promises.rm(tempPath, { force: true });
+        }
+    }
+
+    /** 丢弃会话全部流式片段（截断/删除会话时用）。 */
+    async clearStream(sessionId: string): Promise<void> {
+        const state = this.streamStates.get(sessionId);
+        if (state?.timer) clearTimeout(state.timer);
+        this.streamStates.delete(sessionId);
+        await fs.promises.rm(this.streamFilePath(sessionId), { force: true });
+    }
+
+    private streamState(sessionId: string): StreamState {
+        let state = this.streamStates.get(sessionId);
+        if (!state) {
+            state = { active: null, batches: [], bytes: 0, timer: null, chain: Promise.resolve() };
+            this.streamStates.set(sessionId, state);
+        }
+        return state;
+    }
+
+    /** 封口当前批次：后续 delta 属于新批次（换请求或换回合）。 */
+    private sealBatch(state: StreamState): void {
+        if (!state.active || state.active.deltas.length === 0) {
+            state.active = null;
+            return;
+        }
+        state.batches.push(state.active);
+        state.active = null;
+    }
+
+    /** 静默 STREAM_FLUSH_MS 后落盘；定时器不阻止进程退出。 */
+    private scheduleFlush(sessionId: string, state: StreamState): void {
+        if (state.timer) return;
+        state.timer = setTimeout(() => {
+            state.timer = null;
+            void this.flushStream(sessionId);
+        }, STREAM_FLUSH_MS);
+        state.timer.unref?.();
+    }
+
+    /** pending 流文件里的片段，展开成与主日志同形的 turn_stream_delta 事件。 */
+    private async readStreamEvents(sessionId: string): Promise<AgentEvent[]> {
+        if (this.streamStates.has(sessionId)) await this.flushStream(sessionId);
+        const text = await readFileIfExists(this.streamFilePath(sessionId));
+        if (!text) return [];
+
+        const events: AgentEvent[] = [];
+        for (const line of text.split("\n")) {
+            if (!line.trim()) continue;
+            let batch: StreamBatch;
+            try {
+                batch = JSON.parse(line) as StreamBatch;
+            } catch {
+                console.warn(`[EventLog] 跳过损坏的流式片段行 (session=${sessionId}): ${line.slice(0, 120)}`);
+                continue;
+            }
+            if (!Array.isArray(batch.deltas)) continue;
+            batch.deltas.forEach(delta => {
+                events.push({
+                    // seq 在此只是占位，由 read 统一改写为「日志末尾」语义
+                    seq: 0,
+                    ts: batch.ts,
+                    sessionId,
+                    type: "turn_stream_delta",
+                    payload: { turnId: batch.turnId, requestIndex: batch.requestIndex, delta },
+                } as AgentEvent);
+            });
+        }
+        return events;
     }
 
     /** 追加一条事件，返回带 seq 的完整事件。 */
@@ -67,27 +256,41 @@ export class EventLog {
         }
     }
 
-    /** 读取事件序列：fromSeq 起（默认从头），limit 限制条数（默认全部）。 */
+    /**
+     * 读取事件序列：fromSeq 起（默认从头），limit 限制条数（默认全部）。
+     * 主日志之后并入 pending 流文件里的未闭合回合片段，使崩溃恢复与逐条落盘时行为一致。
+     * 片段的 seq 统一取日志末尾值：它们只按 turnId 归组，不参与时间轴排序，
+     * 这样 lastSeq 不会被逐 token 片段抬高。
+     */
     async read(sessionId: string, fromSeq = 1, limit?: number): Promise<AgentEvent[]> {
         const text = await readFileIfExists(this.eventFilePath(sessionId));
-        if (!text) return [];
 
         const events: AgentEvent[] = [];
-        for (const line of text.split("\n")) {
-            if (!line.trim()) continue;
-            let event: AgentEvent;
-            try {
-                event = JSON.parse(line);
-            } catch {
-                // 追加中断可能留下半行，跳过损坏行，不阻断整条日志
-                console.warn(`[EventLog] 跳过损坏事件行 (session=${sessionId}): ${line.slice(0, 120)}`);
-                continue;
+        if (text) {
+            for (const line of text.split("\n")) {
+                if (!line.trim()) continue;
+                let event: AgentEvent;
+                try {
+                    event = JSON.parse(line);
+                } catch {
+                    // 追加中断可能留下半行，跳过损坏行，不阻断整条日志
+                    console.warn(`[EventLog] 跳过损坏事件行 (session=${sessionId}): ${line.slice(0, 120)}`);
+                    continue;
+                }
+                if (event.seq < fromSeq) continue;
+                events.push(event);
+                if (limit !== undefined && events.length >= limit) break;
             }
-            if (event.seq < fromSeq) continue;
-            events.push(event);
-            if (limit !== undefined && events.length >= limit) break;
         }
-        return events;
+
+        // 已达 limit 或 fromSeq 越过日志末尾时，片段排在更后面，不必读盘
+        if (limit !== undefined && events.length >= limit) return events;
+        const baseSeq = events.length > 0 ? events[events.length - 1].seq : 0;
+        if (events.length > 0 && fromSeq > baseSeq) return events;
+
+        const pending = await this.readStreamEvents(sessionId);
+        for (const event of pending) event.seq = baseSeq;
+        return pending.length === 0 ? events : events.concat(pending);
     }
 
     /** 截断日志到 upToSeq（时间点恢复 = 该点之后的未来全部作废）。 */
@@ -108,6 +311,8 @@ export class EventLog {
         }
         await fs.promises.writeFile(filePath, keptLines.join("\n") + "\n", "utf8");
         this.seqCache.set(sessionId, upToSeq);
+        // 截断到过去：pending 里的流式片段属于被作废的未来回合
+        await this.clearStream(sessionId);
     }
 
     /** 删除会话的完整事件日志（/delete 彻底删除）。 */
@@ -118,11 +323,13 @@ export class EventLog {
             if (error?.code !== "ENOENT") throw error;
         }
         this.seqCache.delete(sessionId);
+        await this.clearStream(sessionId);
     }
 
     /** 清掉某会话的 seq 缓存（日志已在外部删除时用）。 */
     forget(sessionId: string): void {
         this.seqCache.delete(sessionId);
+        this.streamStates.delete(sessionId);
     }
 
 }
@@ -205,4 +412,9 @@ async function readFileIfExists(filePath: string): Promise<string | null> {
         if (error?.code === "ENOENT") return null;
         throw error;
     }
+}
+
+/** 一条 delta 的近似字节数，用于判断缓冲区何时该落盘。 */
+function estimateDeltaBytes(delta: StreamDelta): number {
+    return JSON.stringify(delta).length;
 }

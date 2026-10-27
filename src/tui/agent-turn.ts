@@ -130,12 +130,9 @@ export async function runSessionTurn(
                 return appended.seq;
             },
             persistStreamDelta: async (delta, tid, requestIndex) => {
-                const appended = await host.eventLog.append(sessionId, "turn_stream_delta", {
-                    turnId: tid,
-                    requestIndex,
-                    delta,
-                });
-                host.updateActiveSeq(sessionId, appended.seq);
+                // 流式片段只进 pending 缓冲（不占主日志 seq、不逐条落盘），回合定稿后剔除。
+                // 片段不推进 seq：seq 是会话状态时间轴，不能被逐 token 数据抬高
+                await host.eventLog.appendStreamDelta(sessionId, tid, requestIndex, delta);
             },
             persistSegmentStart: async payload => {
                 const appended = await host.eventLog.append(sessionId, "turn_segment_start", payload);
@@ -144,6 +141,8 @@ export async function runSessionTurn(
             },
             persistTurn: async payload => {
                 await host.replay.appendAgentEvent(activeSession, "turn_commit", payload, false);
+                // 回合已定稿：内容以 turn_message 为准，流式片段可以丢弃
+                await host.eventLog.dropStream(sessionId, payload.turnId);
                 host.updateActiveSeq(sessionId, await host.eventLog.lastSeq(sessionId, { forceRefresh: true }));
             },
             // 续跑不做预压缩：压缩会把待补的 assistant(tool_calls) 前缀摘要掉，工具结果会悬空

@@ -696,3 +696,105 @@ describe("会话 cwd 持久化", () => {
         expect(result.session.turns).toHaveLength(1);
     });
 });
+
+describe("流式片段 pending 文件", () => {
+    const eventFile = (sessionId: string) =>
+        path.join(tmpDir, "sessions", "events", `${sessionId}.jsonl`);
+    const streamFile = (sessionId: string) =>
+        path.join(tmpDir, "sessions", "events", `${sessionId}.stream.jsonl`);
+
+    it("流式片段不落主日志，异常退出后从 pending 恢复文字、思考与工具参数", async () => {
+        const log = new EventLog();
+        const sessionId = "sess-stream-pending";
+        const turnId = "T1";
+        await log.append(sessionId, "user_message", { text: "查资料", turnId, trigger: "user" });
+        await log.appendStreamDelta(sessionId, turnId, 1, { text: "已找到" });
+        await log.appendStreamDelta(sessionId, turnId, 1, { reasoning: "先检查" });
+        await log.appendStreamDelta(sessionId, turnId, 1, {
+            toolCalls: [{ index: 0, name: "search", arguments: '{"q":' }],
+        });
+        await log.flushStream(sessionId);
+
+        expect(fs.readFileSync(eventFile(sessionId), "utf8")).not.toContain("turn_stream_delta");
+        expect(fs.existsSync(streamFile(sessionId))).toBe(true);
+
+        // 模拟进程重启：新实例只靠磁盘恢复
+        const { session } = await new SessionReplay(new EventLog()).replayTo(sessionId);
+        expect(session.turns[0]?.status).toBe("interrupted");
+        const partial = getSessionContextHistory(session)[1] as Extract<ChatMessage, { role: "assistant" }>;
+        expect(partial.content).toContain("已找到");
+        expect(partial.reasoning_content).toBe("先检查");
+        expect(partial.content).toContain('"q"');
+    });
+
+    it("回合提交后剔除该回合片段，其他未闭合回合的片段保留", async () => {
+        const log = new EventLog();
+        const sessionId = "sess-stream-drop";
+        await log.append(sessionId, "user_message", { text: "旧问题", turnId: "T-old", trigger: "user" });
+        await log.appendStreamDelta(sessionId, "T-old", 1, { text: "旧片段" });
+        await log.append(sessionId, "user_message", { text: "新问题", turnId: "T-new", trigger: "user" });
+        await log.appendStreamDelta(sessionId, "T-new", 1, { text: "新片段" });
+
+        await log.dropStream(sessionId, "T-new");
+
+        const text = fs.readFileSync(streamFile(sessionId), "utf8");
+        expect(text).toContain("旧片段");
+        expect(text).not.toContain("新片段");
+    });
+
+    it("片段聚合落盘：批量行数远少于 delta 条数，且不推进主日志 seq", async () => {
+        const log = new EventLog();
+        const sessionId = "sess-stream-batch";
+        const turnId = "T1";
+        await log.append(sessionId, "user_message", { text: "问题", turnId, trigger: "user" });
+        const seqBefore = await log.lastSeq(sessionId);
+        for (let index = 0; index < 200; index += 1) {
+            await log.appendStreamDelta(sessionId, turnId, 1, { text: "字" });
+        }
+        await log.flushStream(sessionId);
+
+        const lines = fs.readFileSync(streamFile(sessionId), "utf8").split("\n").filter(Boolean);
+        expect(lines.length).toBeLessThan(20);
+        const deltas = lines.flatMap(line => JSON.parse(line).deltas);
+        expect(deltas).toHaveLength(200);
+        // seq 是会话状态时间轴：逐 token 片段不能抬高它，否则按 seq 尾部窗口回查的逻辑会失准
+        expect(await log.lastSeq(sessionId)).toBe(seqBefore);
+
+        const commit = await log.append(sessionId, "turn_commit", {
+            turnId,
+            events: [],
+            userMessages: [],
+            stopReason: "stop",
+            usage: usage(),
+            interrupted: false,
+        });
+        expect(commit.seq).toBe(seqBefore + 1);
+        expect(fs.readFileSync(eventFile(sessionId), "utf8")).not.toContain("turn_stream_delta");
+    });
+
+    it("未落盘的缓冲也能被 read 读到（同进程即时可见）", async () => {
+        const log = new EventLog();
+        const sessionId = "sess-stream-memory";
+        await log.appendStreamDelta(sessionId, "T1", 1, { text: "在线" });
+
+        const events = await log.read(sessionId);
+        expect(events.filter(event => event.type === "turn_stream_delta")).toHaveLength(1);
+    });
+
+    it("truncate 与 delete 一并清掉 pending 片段", async () => {
+        const log = new EventLog();
+        const sessionId = "sess-stream-truncate";
+        await log.append(sessionId, "user_message", { text: "问题", turnId: "T1", trigger: "user" });
+        await log.appendStreamDelta(sessionId, "T1", 1, { text: "片段" });
+        await log.flushStream(sessionId);
+        expect(fs.existsSync(streamFile(sessionId))).toBe(true);
+
+        await log.truncate(sessionId, 1);
+        expect(fs.existsSync(streamFile(sessionId))).toBe(false);
+
+        await log.appendStreamDelta(sessionId, "T2", 1, { text: "片段" });
+        await log.flushStream(sessionId);
+        await log.delete(sessionId);
+        expect(fs.existsSync(streamFile(sessionId))).toBe(false);
+    });
+});
