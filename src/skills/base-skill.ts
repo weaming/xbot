@@ -1,7 +1,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
-import { getToolCwd, getUserMemoryFilePath, getUserMemoriesDir } from "../utils/runtime-paths.js";
+import {
+    formatDisplayPath,
+    getToolCwd,
+    getUserMemoryFilePath,
+    getUserMemoriesDir,
+} from "../utils/runtime-paths.js";
 import { getDateStringOffsetDays, getTodayDateString } from "../utils/time.js";
 
 const IDENTITY_FILES = ['AGENTS.md', 'SOUL.md', 'IDENTITY.md', 'USER.md'];
@@ -38,11 +43,12 @@ export function loadDailyMemoryContext(userId: number): string {
 
 /**
  * 将内容中的 {{VAR_NAME}} 替换为对应的环境变量值（overrides 优先于 process.env）。
- * 变量均不存在时保留原始占位符。
+ * 变量均不存在时保留原始占位符；HOME 前缀的路径值显示为 `~`，避免把机器用户名写进提示词。
  */
 function interpolateEnvVars(content: string, overrides?: Record<string, string>): string {
     return content.replace(/\{\{([A-Z0-9_]+)\}\}/g, (match, name) => {
-        return overrides?.[name] ?? process.env[name] ?? match;
+        const value = overrides?.[name] ?? process.env[name];
+        return value === undefined ? match : formatDisplayPath(value);
     });
 }
 

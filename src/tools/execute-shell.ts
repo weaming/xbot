@@ -4,6 +4,8 @@
 
 import * as fs from "fs";
 import type { ExecutableTool, ToolExecutionResult } from "./tool-interface.js";
+import { err } from "./tool-interface.js";
+import { resolveExistingDir, type ResolvedDir } from "./cwd-tool.js";
 import { backgroundTaskManager, type BackgroundTaskSummary } from "./background-tasks.js";
 import { buildExecutionEnv } from "../utils/skill-env.js";
 import { PROXY_URL } from "../utils/proxy.js";
@@ -39,21 +41,46 @@ function resolveTimeoutSeconds(timeout?: number): number {
   return Math.max(MIN_TIMEOUT_SECONDS, Math.min(MAX_TIMEOUT_SECONDS, Math.round(timeout)));
 }
 
-function getExecutionCwd(): string {
-  const toolCwd = getToolCwd();
-  if (fs.existsSync(toolCwd)) return toolCwd;
-  return process.cwd();
+/**
+ * 解析命令工作目录：cwd 必填，支持 ~（HOME）、相对会话目录的路径与绝对路径，
+ * 目标必须是已存在的目录，否则直接报错而不是静默换个目录执行。
+ */
+function resolveShellCwd(input: unknown): ResolvedDir {
+  if (typeof input !== "string" || input.trim() === "") {
+    return { error: `缺少 cwd：shell 命令必须指定工作目录，支持 ~（HOME）、相对会话目录的路径与绝对路径，例如 {"cwd":"~"}` };
+  }
+  return resolveExistingDir(input, getExistingBaseCwd());
 }
 
-async function executeLocal(
-  command: string,
-  enableProxy: boolean = true,
-  extraEnvs?: Record<string, string>,
-  signal?: AbortSignal,
-  timeoutSeconds: number = DEFAULT_COMMAND_TIMEOUT_SECONDS,
-    sessionId?: string,
-    autoBackgroundOnTimeout: boolean = false,
-): Promise<string> {
+/** 会话目录可能已被删除（换机器、清理临时目录）：回退进程目录，避免所有命令整体失效。 */
+function getExistingBaseCwd(): string {
+  const toolCwd = getToolCwd();
+  return fs.existsSync(toolCwd) ? toolCwd : process.cwd();
+}
+
+interface ShellRunOptions {
+  command: string;
+  cwd: string;
+  enableProxy?: boolean;
+  extraEnvs?: Record<string, string>;
+  signal?: AbortSignal;
+  timeoutSeconds?: number;
+  sessionId?: string;
+  autoBackgroundOnTimeout?: boolean;
+}
+
+async function executeLocal(options: ShellRunOptions): Promise<string> {
+  const {
+    command,
+    cwd,
+    enableProxy = true,
+    extraEnvs,
+    signal,
+    timeoutSeconds = DEFAULT_COMMAND_TIMEOUT_SECONDS,
+    sessionId,
+    autoBackgroundOnTimeout = false,
+  } = options;
+
   if (signal?.aborted) {
     throw new DOMException("The operation was aborted", "AbortError");
   }
@@ -73,7 +100,7 @@ async function executeLocal(
 
   const handle = backgroundTaskManager.startShell({
     command,
-    cwd: getExecutionCwd(),
+    cwd,
     env,
     shellPath: SHELL_PATH,
     sessionId,
@@ -131,7 +158,7 @@ function formatDetachedTask(task: BackgroundTaskSummary): string {
 
 export const executeShellTool: ExecutableTool = {
   name: "bash",
-  description: "Execute a shell command inside the container (where zbot runs). Uses /bin/bash when available, otherwise /bin/sh. Relative paths resolve against the current session cwd (see the cwd tool to inspect or change it). The default 120-second timeout moves long-running commands to the background; use background_task to inspect or stop them.",
+  description: "Execute a shell command inside the container (where zbot runs). Uses /bin/bash when available, otherwise /bin/sh. `cwd` is required: it accepts ~ for HOME, a path relative to the current session cwd (see the cwd tool), or an absolute path, and must be an existing directory. The default 120-second timeout moves long-running commands to the background; use background_task to inspect or stop them.",
   tags: ["core", "code"],
   inputSchema: {
     type: "object",
@@ -139,6 +166,10 @@ export const executeShellTool: ExecutableTool = {
       command: {
         type: "string",
         description: "The shell command to execute inside the container",
+      },
+      cwd: {
+        type: "string",
+        description: "命令的工作目录（必填）：支持 ~（HOME）、相对会话目录的路径与绝对路径，必须是已存在的目录",
       },
       enable_proxy: {
         type: "boolean",
@@ -158,19 +189,33 @@ export const executeShellTool: ExecutableTool = {
         default: 120,
       },
     },
-    required: ["command"],
+    required: ["command", "cwd"],
   },
   execute: async (
-    args: { command: string; enable_proxy?: boolean; envs?: Record<string, string>; timeout?: number; __sessionId?: string },
+    args: { command: string; cwd: string; enable_proxy?: boolean; envs?: Record<string, string>; timeout?: number; __sessionId?: string },
     signal?: AbortSignal,
   ): Promise<ToolExecutionResult> => {
-    const { command, enable_proxy = true, envs, timeout, __sessionId } = args;
+    const { command, cwd, enable_proxy = true, envs, timeout, __sessionId } = args;
+
+    const resolvedCwd = resolveShellCwd(cwd);
+    if ("error" in resolvedCwd) {
+      return err(resolvedCwd.error);
+    }
 
     const timeoutSec = resolveTimeoutSeconds(timeout);
     const autoBackgroundOnTimeout = typeof timeout !== "number" || Number.isNaN(timeout);
 
     try {
-      const result = await executeLocal(command, enable_proxy, envs, signal, timeoutSec, __sessionId, autoBackgroundOnTimeout);
+      const result = await executeLocal({
+        command,
+        cwd: resolvedCwd.cwd,
+        enableProxy: enable_proxy,
+        extraEnvs: envs,
+        signal,
+        timeoutSeconds: timeoutSec,
+        sessionId: __sessionId,
+        autoBackgroundOnTimeout,
+      });
       return {
         content: [{ type: "text", text: result }],
       };

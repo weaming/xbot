@@ -1,6 +1,6 @@
 import * as path from "path";
 import { formatToolArguments } from "../utils/tool-progress.js";
-import { getToolCwd } from "../utils/runtime-paths.js";
+import { getToolCwd, resolveCwdInput } from "../utils/runtime-paths.js";
 import { formatGoDuration } from "../utils/time.js";
 import { CUSTOM_ANSWER_PREFIX, questionLabel } from "../utils/user-question.js";
 import { theme } from "./theme.js";
@@ -62,9 +62,19 @@ export function formatToolBlockArgs(toolName: string, args?: string): string {
     if (otherArgs.enable_proxy === false) {
         delete otherArgs.enable_proxy;
     }
+    // cwd 必填：等于当前会话目录时省略，避免每条命令都重复一遍
+    if (typeof otherArgs.cwd === "string" && isSessionCwd(otherArgs.cwd)) {
+        delete otherArgs.cwd;
+    }
 
     const prefix = formatToolArguments(otherArgs);
     return [prefix, command.trim()].filter(Boolean).join(" ");
+}
+
+/** cwd 参数是否就是当前会话目录（`~` 与相对路径先按会话目录解析）。 */
+function isSessionCwd(value: string): boolean {
+    const sessionCwd = getToolCwd();
+    return resolveCwdInput(value, sessionCwd) === sessionCwd;
 }
 
 /** 状态后缀只看这些字段：单个工具块与合并的文件变更块都适用。 */

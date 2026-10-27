@@ -182,6 +182,29 @@ Alpha prompt body`,
         }
     });
 
+    test("身份文件里注入的路径把 HOME 前缀显示为 ~", () => {
+        const home = os.homedir();
+        const extraIdentityFile = path.join(tmpDir, "user-AGENTS.md");
+        fs.writeFileSync(extraIdentityFile, "用户级补充规则", "utf-8");
+        const previousExtraIdentityFile = process.env.ZBOT_EXTRA_IDENTITY_FILE;
+        process.env.ZBOT_EXTRA_IDENTITY_FILE = extraIdentityFile;
+        setEmbeddedIdentity("当前目录：{{TUI_CWD}}；源码：{{TUI_SRC_ROOT}}");
+
+        try {
+            const result = buildSystemPrompt({
+                cwd: path.join(home, "src", "zbot"),
+                includeMemory: false,
+                includeDailyMemory: false,
+            });
+            expect(result.systemPrompt).toContain("当前目录：~/src/zbot");
+            expect(result.systemPrompt).not.toContain(`${home}/src/zbot`);
+        } finally {
+            setEmbeddedIdentity();
+            if (previousExtraIdentityFile === undefined) delete process.env.ZBOT_EXTRA_IDENTITY_FILE;
+            else process.env.ZBOT_EXTRA_IDENTITY_FILE = previousExtraIdentityFile;
+        }
+    });
+
     test("tool calling rule section says all available tools are declared", () => {
         const result = buildSystemPrompt();
         expect(result.systemPrompt).toContain("不得臆想或假设工具存在");

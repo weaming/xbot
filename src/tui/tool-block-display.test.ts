@@ -38,6 +38,19 @@ describe("工具块参数转换", () => {
         );
     });
 
+    test("bash 的 cwd 等于当前会话目录时省略，不同则显示", () => {
+        const originalTuiCwd = process.env.TUI_CWD;
+        process.env.TUI_CWD = os.homedir();
+        try {
+            expect(formatToolBlockArgs("bash", JSON.stringify({ command: "ls", cwd: "~" }))).toBe("ls");
+            expect(formatToolBlockArgs("bash", JSON.stringify({ command: "ls", cwd: "." }))).toBe("ls");
+            expect(formatToolBlockArgs("bash", JSON.stringify({ command: "ls", cwd: "/tmp" }))).toBe("cwd=/tmp ls");
+        } finally {
+            if (originalTuiCwd === undefined) delete process.env.TUI_CWD;
+            else process.env.TUI_CWD = originalTuiCwd;
+        }
+    });
+
     test("非 bash 工具保持原始 JSON 参数", () => {
         const args = '{"command":"echo \\"hello\\""}';
 

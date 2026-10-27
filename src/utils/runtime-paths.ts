@@ -17,6 +17,23 @@ export function getToolCwd(): string {
     return path.resolve(expandEnv(tuiCwd));
 }
 
+/** 展示用路径：HOME 前缀替换为 `~`，其余原样。 */
+export function formatDisplayPath(target: string, home: string | undefined = process.env.HOME): string {
+    if (!home) return target;
+    const trimmed = target.replace(/[\\/]+$/, "");
+    if (trimmed === home) return "~";
+    return trimmed.startsWith(`${home}/`) ? `~${trimmed.slice(home.length)}` : target;
+}
+
+/** 解析用户输入：`~` / `~/x` 展开 home，相对路径相对 base 解析。 */
+export function resolveCwdInput(input: string, base: string, home: string | undefined = process.env.HOME): string {
+    const trimmed = input.trim();
+    const homeDir = home || os.homedir();
+    if (trimmed === "~") return path.resolve(homeDir);
+    if (trimmed.startsWith("~/")) return path.resolve(homeDir, trimmed.slice(2));
+    return path.resolve(base, trimmed);
+}
+
 let startupToolCwd: string | null = null;
 
 /** 登记进程启动目录（TUI 启动时调用）：旧会话缺 cwd 时回退到这里。 */

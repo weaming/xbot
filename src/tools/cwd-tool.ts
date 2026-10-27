@@ -10,11 +10,12 @@
  */
 
 import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import type { ExecutableTool, ToolExecutionResult } from "./tool-interface.js";
 import { err, ok } from "./tool-interface.js";
-import { getToolCwd } from "../utils/runtime-paths.js";
+import { formatDisplayPath, getToolCwd, resolveCwdInput } from "../utils/runtime-paths.js";
+
+// 路径解析与展示在 utils/runtime-paths 实现（身份文件插值等非工具层也要用）；这里继续对外导出。
+export { formatDisplayPath, resolveCwdInput };
 
 /** 会话 cwd 落盘入口：由宿主注入，工具层不直接触碰事件日志。 */
 export type SessionCwdSetter = (sessionId: string, cwd: string) => Promise<void>;
@@ -24,23 +25,6 @@ let sessionCwdSetter: SessionCwdSetter | null = null;
 /** 注入/清除会话 cwd 落盘入口（TUI 启动时注入，测试可替换）。 */
 export function setSessionCwdHandler(setter: SessionCwdSetter | null): void {
     sessionCwdSetter = setter;
-}
-
-/** 展示用路径：HOME 前缀替换为 `~`，其余原样。 */
-export function formatDisplayPath(target: string, home: string | undefined = process.env.HOME): string {
-    if (!home) return target;
-    const trimmed = target.replace(/[\\/]+$/, "");
-    if (trimmed === home) return "~";
-    return trimmed.startsWith(`${home}/`) ? `~${trimmed.slice(home.length)}` : target;
-}
-
-/** 解析用户输入：`~` / `~/x` 展开 home，相对路径相对 base 解析。 */
-export function resolveCwdInput(input: string, base: string, home: string | undefined = process.env.HOME): string {
-    const trimmed = input.trim();
-    const homeDir = home || os.homedir();
-    if (trimmed === "~") return path.resolve(homeDir);
-    if (trimmed.startsWith("~/")) return path.resolve(homeDir, trimmed.slice(2));
-    return path.resolve(base, trimmed);
 }
 
 /** 解析并校验目标目录：工具与 /cwd 命令共用，避免两处判定与文案漂移。 */
