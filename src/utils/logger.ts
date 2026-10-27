@@ -94,7 +94,7 @@ interface AIInteractionLogEntry {
 export interface LLMExchangeMeta {
     requestId?: string;
     parentRequestId?: string;
-    /** 该请求 messages 中已在日志记录过的条数；仅记录其后新增部分。 */
+    /** 无 sessionId 时的手工链起点：历史中已记录过的条数，仅记录其后新增部分。 */
     prevMessageCount?: number;
     /** 会话 id：提供时按 session 分离写入 sessions/http/<id>.jsonl。 */
     sessionId?: string;
@@ -118,37 +118,94 @@ export function getSessionExchangeLogFile(sessionId: string): string {
 /** 进程内缓存：tools 全量仅在变化时写入日志，未变化只写 hash。 */
 let lastLoggedToolsHash: string | undefined;
 
+/** 历史载体字段名：responses 协议用 input，chat_completions 用 messages。 */
+type HistoryField = "input" | "messages";
+
 interface SessionChainState {
     lastRequestId: string | null;
-    prevMessageCount: number;
+    historyField: HistoryField;
+    /** 已落盘的历史总条数（不是本条记录写入的增量条数）。 */
+    historyCount: number;
 }
+
+/** 尾部续链的初始读取窗口：只需最后一条 REQUEST，避免启动时解析整个文件。 */
+const CHAIN_TAIL_BYTES = 4 * 1024 * 1024;
+
+/** RESPONSE 中与 REQUEST 重复的回显字段（上游原样返回全套 tools，单条可达数百 KB）。 */
+const RESPONSE_ECHO_FIELDS = ["tools", "instructions"];
 
 /** 会话级请求链状态：同 session 跨 sendMessage 成链、messages 持续增量。 */
 const sessionChains = new Map<string, SessionChainState>();
 
-/** 惰性加载会话链：重启后从该会话日志尾部续链（最后一条 REQUEST 的 id 与累计条数）。 */
+/** 按协议取历史载体：responses 用 input，chat_completions 用 messages。 */
+function pickHistory(content: any): { field: HistoryField; items: any[] } {
+    if (Array.isArray(content?.input)) return { field: "input", items: content.input };
+    if (Array.isArray(content?.messages)) return { field: "messages", items: content.messages };
+    return { field: "messages", items: [] };
+}
+
+/** 丢弃 RESPONSE 里与请求重复的回显字段。 */
+function omitResponseEcho(content: any): any {
+    if (!content || typeof content !== "object") return content;
+    const rest: Record<string, unknown> = { ...content };
+    for (const key of RESPONSE_ECHO_FIELDS) delete rest[key];
+    return rest;
+}
+
+/** 解析一行 REQUEST 的链信息；非 REQUEST 或损坏行返回 null。 */
+function parseChainEntry(line: string): SessionChainState | null {
+    if (!line.includes('"REQUEST"')) return null;
+    let entry: any;
+    try {
+        entry = JSON.parse(line);
+    } catch {
+        return null; // 截断或损坏行。
+    }
+    if (entry?.type !== 'REQUEST') return null;
+
+    const c = entry.content ?? {};
+    const { field, items } = pickHistory(c);
+    return {
+        lastRequestId: typeof c.requestId === 'string' ? c.requestId : null,
+        // 旧格式没有 historyField/historyCount：其 input/messages 是全量快照，长度即总数。
+        historyField: c.historyField === 'input' || c.historyField === 'messages' ? c.historyField : field,
+        historyCount: typeof c.historyCount === 'number' ? c.historyCount : items.length,
+    };
+}
+
+/** 从尾部反向找最后一条可解析的 REQUEST；窗口不够（单行超窗口）时按倍数放大。 */
+function readChainFromTail(fd: number, size: number): SessionChainState | null {
+    let win = Math.min(size, CHAIN_TAIL_BYTES);
+    while (true) {
+        const from = Math.max(0, size - win - 1); // 多读 1 字节用于判断首行是否完整
+        const len = size - from;
+        const buf = Buffer.alloc(len);
+        fs.readSync(fd, buf, 0, len, from);
+        const lines = buf.toString('utf8').split('\n');
+        // 窗口起点不在行首时首段是半行，丢弃。
+        const start = from === 0 ? 0 : 1;
+        for (let i = lines.length - 1; i >= start; i--) {
+            const state = parseChainEntry(lines[i]);
+            if (state) return state;
+        }
+        if (from === 0) return null;
+        win = Math.min(size, win * 4);
+    }
+}
+
+/** 惰性加载会话链：重启后从该会话日志尾部续链（最后一条 REQUEST 的 id 与历史总数）。 */
 function loadSessionChain(sessionId: string): SessionChainState {
     const key = sessionId;
     const existing = sessionChains.get(key);
     if (existing) return existing;
 
-    const state: SessionChainState = { lastRequestId: null, prevMessageCount: 0 };
+    let state: SessionChainState = { lastRequestId: null, historyField: "messages", historyCount: 0 };
     try {
-        const file = getSessionExchangeLogFile(sessionId);
-        if (fs.existsSync(file)) {
-            for (const line of fs.readFileSync(file, 'utf-8').split('\n')) {
-                if (!line.trim()) continue;
-                try {
-                    const entry = JSON.parse(line);
-                    const c = entry?.content;
-                    if (entry?.type === 'REQUEST' && typeof c?.requestId === 'string') {
-                        state.lastRequestId = c.requestId;
-                        state.prevMessageCount += (c.messages ?? []).length;
-                    }
-                } catch {
-                    // 损坏行跳过。
-                }
-            }
+        const fd = fs.openSync(getSessionExchangeLogFile(sessionId), 'r');
+        try {
+            state = readChainFromTail(fd, fs.fstatSync(fd).size) ?? state;
+        } finally {
+            fs.closeSync(fd);
         }
     } catch {
         // 文件不存在视为新会话。
@@ -186,18 +243,24 @@ export function formatAIInteractionLogEntry(type: string, content: any): string 
 /**
  * 记录一次 LLM 协议交换。REQUEST 为链式增量记录：
  *  - requestId + parentRequestId 形成会话内的请求链（同轮重试也成链）；
- *  - messages 只写相对上一请求新增的部分；
+ *  - 历史（input 或 messages）只写相对上一请求新增的部分，另记 historyCount 供尾部续链；
  *  - tools 仅在内容变化时写全量，否则只写 toolsHash。
+ * RESPONSE 丢弃上游回显的 tools/instructions，其余原样记录。
  * 主路径写失败时兜底到 fallback 文件，避免数据丢失。
  */
 export function recordLLMExchange(type: "REQUEST" | "RESPONSE", content: any, meta: LLMExchangeMeta = {}): void {
     if (type === "REQUEST") {
         const chain = meta.sessionId
             ? loadSessionChain(meta.sessionId)
-            : { lastRequestId: meta.parentRequestId ?? null, prevMessageCount: meta.prevMessageCount ?? 0 };
+            : {
+                lastRequestId: meta.parentRequestId ?? null,
+                historyField: pickHistory(content).field,
+                historyCount: meta.prevMessageCount ?? 0,
+            };
         const requestId = meta.requestId ?? createUlid();
-        const messages = Array.isArray(content?.messages) ? content.messages : [];
-        const prevCount = Math.min(chain.prevMessageCount, messages.length);
+        const { field, items } = pickHistory(content);
+        // 协议切换或上下文压缩导致条数回退时整块重写，避免漏记。
+        const prevCount = field === chain.historyField && chain.historyCount <= items.length ? chain.historyCount : 0;
         const tools = Array.isArray(content?.tools) ? content.tools : [];
         const toolsHash = hashOf(tools);
         const toolsChanged = toolsHash !== lastLoggedToolsHash;
@@ -208,15 +271,20 @@ export function recordLLMExchange(type: "REQUEST" | "RESPONSE", content: any, me
             ...content,
             requestId,
             ...(chain.lastRequestId ? { parentRequestId: chain.lastRequestId } : {}),
-            messages: messages.slice(prevCount),
+            [field]: items.slice(prevCount),
+            historyField: field,
+            historyBase: prevCount,
+            historyCount: items.length,
             toolsHash,
             tools: toolsChanged ? tools : undefined,
         };
         chain.lastRequestId = requestId;
-        chain.prevMessageCount = messages.length;
+        chain.historyField = field;
+        chain.historyCount = items.length;
         if (meta.sessionId) sessionChains.set(meta.sessionId, chain);
     } else if (type === "RESPONSE") {
         const requestId = meta.requestId ?? (meta.sessionId ? loadSessionChain(meta.sessionId).lastRequestId : undefined);
+        content = omitResponseEcho(content);
         if (requestId) {
             content = { ...content, requestId, ...(meta.usage ? { usage: meta.usage } : {}) };
         }
@@ -343,4 +411,3 @@ function logUsageTotals(scope: 'hourly' | 'daily', date: string): void {
         + ` total_tokens=${totals.totalTokens}`,
     );
 }
-

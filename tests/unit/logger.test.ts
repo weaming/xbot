@@ -244,4 +244,112 @@ describe("LLM exchange 链式增量记录", () => {
         expect(response.content.requestId).toBeTypeOf("string");
     });
 
+    test("responses 协议（input）同样只写增量，并记 historyCount/historyField", () => {
+        const input = (n: number) => Array.from({ length: n }, (_, i) => ({ role: "user", content: `m${i}` }));
+
+        recordLLMExchange("REQUEST", { model: "m", input: input(2), tools: toolsA }, { sessionId: "sess-5" });
+        recordLLMExchange("REQUEST", { model: "m", input: input(5), tools: toolsA }, { sessionId: "sess-5" });
+
+        const requests = fs.readFileSync(path.join(tmpDir, "sessions", "http", "sess-5.jsonl"), "utf8")
+            .split("\n").filter(Boolean).map(line => JSON.parse(line).content);
+
+        expect(requests[0].input).toHaveLength(2);
+        expect(requests[0].historyCount).toBe(2);
+        expect(requests[0].historyField).toBe("input");
+        expect(requests[1].input).toHaveLength(3);           // 只写新增
+        expect(requests[1].input[2].content).toBe("m4");
+        expect(requests[1].historyCount).toBe(5);
+        expect(requests[1].messages).toBeUndefined();        // 不污染不存在的字段
+    });
+
+    test("历史条数回退（上下文压缩）时整块重写而不是漏记", () => {
+        const input = (n: number) => Array.from({ length: n }, (_, i) => ({ role: "user", content: `m${i}` }));
+
+        recordLLMExchange("REQUEST", { input: input(6) }, { sessionId: "sess-6" });
+        recordLLMExchange("REQUEST", { input: input(2) }, { sessionId: "sess-6" });
+
+        const requests = fs.readFileSync(path.join(tmpDir, "sessions", "http", "sess-6.jsonl"), "utf8")
+            .split("\n").filter(Boolean).map(line => JSON.parse(line).content);
+        expect(requests[1].input).toHaveLength(2);
+        expect(requests[1].historyCount).toBe(2);
+    });
+
+    test("RESPONSE 丢弃回显的 tools/instructions", () => {
+        recordLLMExchange("RESPONSE", { id: "resp-1", tools: toolsA, instructions: "sys", output: [] }, { requestId: "r1" });
+
+        const response = readRequests()[0];
+        expect(response.content.tools).toBeUndefined();
+        expect(response.content.instructions).toBeUndefined();
+        expect(response.content.id).toBe("resp-1");
+        expect(response.content.output).toEqual([]);
+    });
+
+    test("重启后续链只写新增（从日志尾部恢复历史总数）", async () => {
+        // 带查询串导入得到独立模块实例，模拟进程重启后 sessionChains 为空。
+        const mod = await import(`../../src/utils/logger.js?reload=${Date.now()}`) as typeof import("../../src/utils/logger.js");
+        const input = (n: number) => Array.from({ length: n }, (_, i) => ({ role: "user", content: `m${i}` }));
+
+        recordLLMExchange("REQUEST", { input: input(3) }, { sessionId: "sess-7" });
+        mod.recordLLMExchange("REQUEST", { input: input(4) }, { sessionId: "sess-7" });
+
+        const requests = fs.readFileSync(path.join(tmpDir, "sessions", "http", "sess-7.jsonl"), "utf8")
+            .split("\n").filter(Boolean).map(line => JSON.parse(line).content);
+        expect(requests[1].input).toHaveLength(1);
+        expect(requests[1].input[0].content).toBe("m3");
+        expect(requests[1].parentRequestId).toBe(requests[0].requestId);
+    });
+
+    test("旧格式日志（无 historyCount，input 为全量快照）续链仍只写新增", async () => {
+        const mod = await import(`../../src/utils/logger.js?legacy=${Date.now()}`) as typeof import("../../src/utils/logger.js");
+        const input = (n: number) => Array.from({ length: n }, (_, i) => ({ role: "user", content: `m${i}` }));
+        const file = path.join(tmpDir, "sessions", "http", "sess-8.jsonl");
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, [
+            { timestamp: "t", type: "REQUEST", schemaVersion: 1, content: { model: "m", input: input(2), messages: [], requestId: "old-1" } },
+            { timestamp: "t", type: "RESPONSE", schemaVersion: 1, content: { id: "r", requestId: "old-1" } },
+            { timestamp: "t", type: "REQUEST", schemaVersion: 1, content: { model: "m", input: input(4), messages: [], requestId: "old-2", parentRequestId: "old-1" } },
+        ].map(entry => `${JSON.stringify(entry)}\n`).join(""));
+
+        mod.recordLLMExchange("REQUEST", { model: "m", input: input(5) }, { sessionId: "sess-8" });
+
+        const requests = fs.readFileSync(file, "utf8").split("\n").filter(Boolean)
+            .map(line => JSON.parse(line)).filter(entry => entry.type === "REQUEST").map(entry => entry.content);
+        expect(requests).toHaveLength(3);
+        expect(requests[2].input).toEqual([{ role: "user", content: "m4" }]);
+        expect(requests[2].parentRequestId).toBe("old-2");
+        expect(requests[2].historyCount).toBe(5);
+    });
+
+    test("单行超过尾部读取窗口时放大窗口续链，不重写全量", async () => {
+        const mod = await import(`../../src/utils/logger.js?bigline=${Date.now()}`) as typeof import("../../src/utils/logger.js");
+        const file = path.join(tmpDir, "sessions", "http", "sess-9.jsonl");
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+
+        const big = "x".repeat(5 * 1024 * 1024); // 大于 4 MB 初始窗口
+        const legacyInput = [
+            { role: "user", content: "m0" },
+            { role: "user", content: big },
+            { role: "user", content: "m2" },
+        ];
+        fs.writeFileSync(file, `${JSON.stringify({
+            timestamp: "t", type: "REQUEST", schemaVersion: 1,
+            content: { model: "m", input: legacyInput, messages: [], requestId: "old-big" },
+        })}\n`);
+
+        mod.recordLLMExchange("REQUEST", {
+            model: "m",
+            input: [...legacyInput, { role: "user", content: "m3" }, { role: "user", content: "m4" }],
+        }, { sessionId: "sess-9" });
+
+        const requests = fs.readFileSync(file, "utf8").split("\n").filter(Boolean)
+            .map(line => JSON.parse(line)).filter(entry => entry.type === "REQUEST").map(entry => entry.content);
+        expect(requests).toHaveLength(2);
+        expect(requests[1].input).toEqual([
+            { role: "user", content: "m3" },
+            { role: "user", content: "m4" },
+        ]);
+        expect(requests[1].historyCount).toBe(5);
+        expect(requests[1].parentRequestId).toBe("old-big");
+    });
+
 });
