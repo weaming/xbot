@@ -13,11 +13,18 @@ import type { ActiveSession } from "./agent-types.js";
  */
 type RunTurnImpl = (spec: any, hooks: any) => Promise<TurnOutcome>;
 
+// mock 注册前先取真实实现：mock.module 是进程级的，同进程后续测试文件会继续拿到它。
+// 因此每个用例结束后必须把注入点还原成真实骨架，否则后面的测试文件会拿到本文件的假实现。
+const realRunTurn = await import("../services/run-turn.js");
+
+const delegateRealRunTurn: RunTurnImpl = (spec, hooks) => realRunTurn.runTurnCore(spec, hooks);
+
 let runTurnCoreImpl: RunTurnImpl = async () => {
     throw new Error("runTurnCore 未在测试中设置");
 };
 
 mock.module("../services/run-turn.js", () => ({
+    ...realRunTurn,
     runTurnCore: (spec: any, hooks: any) => runTurnCoreImpl(spec, hooks),
 }));
 
@@ -104,6 +111,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+    runTurnCoreImpl = delegateRealRunTurn;
     if (originalStateDir === undefined) delete process.env.ZBOT_STATE_DIR;
     else process.env.ZBOT_STATE_DIR = originalStateDir;
     fs.rmSync(tmpDir, { recursive: true, force: true });
