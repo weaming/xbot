@@ -6,7 +6,7 @@ import {
     buildConversationHistory,
     buildSystemPrompt,
     formatChatProviderError,
-    getOrCreateSessionSystemPrompt,
+    resolveSessionSystemPrompt,
     validateChatApiSettings,
 } from "../../src/services/chat-runtime.js";
 import { setEmbeddedIdentity } from "../../src/skills/base-skill.js";
@@ -116,22 +116,19 @@ Alpha prompt body`,
 
         await skillRegistry.load();
 
-        const result = buildSystemPrompt({
+        const prompt = buildSystemPrompt({
             activeSkillName: "alpha",
-            sentSkillsMtime: {},
         });
 
-        expect(result.systemPrompt).toContain("你是测试身份");
-        expect(result.systemPrompt).toContain("## 当前激活技能：alpha");
-        expect(result.systemPrompt).toContain("Alpha prompt body");
-        expect(result.systemPrompt).toContain("## 可用技能");
-        expect(result.systemPrompt).toContain("Alpha skill");
-        expect(result.updatedSkillListing).toBe(true);
-        expect(result.nextSentSkillsMtime?.alpha).toBeDefined();
-        expect(result.systemPrompt.indexOf("你是测试身份")).toBeLessThan(result.systemPrompt.indexOf("## 可用技能"));
-        expect(result.systemPrompt.indexOf("## 可用技能")).toBeLessThan(result.systemPrompt.indexOf("<!-- 核心记忆"));
-        expect(result.systemPrompt.indexOf("<!-- 核心记忆")).toBeLessThan(result.systemPrompt.indexOf("<!-- 昨日记忆"));
-        expect(result.systemPrompt.indexOf("<!-- 今日记忆")).toBeLessThan(result.systemPrompt.indexOf("## 当前激活技能：alpha"));
+        expect(prompt).toContain("你是测试身份");
+        expect(prompt).toContain("## 当前激活技能：alpha");
+        expect(prompt).toContain("Alpha prompt body");
+        expect(prompt).toContain("## 可用技能");
+        expect(prompt).toContain("Alpha skill");
+        expect(prompt.indexOf("你是测试身份")).toBeLessThan(prompt.indexOf("## 可用技能"));
+        expect(prompt.indexOf("## 可用技能")).toBeLessThan(prompt.indexOf("<!-- 核心记忆"));
+        expect(prompt.indexOf("<!-- 核心记忆")).toBeLessThan(prompt.indexOf("<!-- 昨日记忆"));
+        expect(prompt.indexOf("<!-- 今日记忆")).toBeLessThan(prompt.indexOf("## 当前激活技能：alpha"));
     });
 
     test("buildSystemPrompt appends the optional extra identity file", () => {
@@ -146,9 +143,9 @@ Alpha prompt body`,
         process.env.ZBOT_EXTRA_IDENTITY_FILE = extraIdentityFile;
 
         try {
-            const result = buildSystemPrompt({ includeMemory: false, includeDailyMemory: false });
-            expect(result.systemPrompt.indexOf("TUI 身份")).toBeGreaterThanOrEqual(0);
-            expect(result.systemPrompt.indexOf("用户级补充规则")).toBeGreaterThan(result.systemPrompt.indexOf("TUI 身份"));
+            const prompt = buildSystemPrompt({ includeMemory: false, includeDailyMemory: false });
+            expect(prompt.indexOf("TUI 身份")).toBeGreaterThanOrEqual(0);
+            expect(prompt.indexOf("用户级补充规则")).toBeGreaterThan(prompt.indexOf("TUI 身份"));
         } finally {
             if (previousIdentityFile === undefined) delete process.env.ZBOT_IDENTITY_FILE;
             else process.env.ZBOT_IDENTITY_FILE = previousIdentityFile;
@@ -167,10 +164,10 @@ Alpha prompt body`,
         setEmbeddedIdentity("内置 TUI 身份\n当前目录（pwd）：{{TUI_CWD}}");
 
         try {
-            const result = buildSystemPrompt({ includeMemory: false, includeDailyMemory: false });
-            expect(result.systemPrompt.indexOf("内置 TUI 身份")).toBeGreaterThanOrEqual(0);
-            expect(result.systemPrompt).toContain("当前目录（pwd）：/tmp/tui-working-directory");
-            expect(result.systemPrompt.indexOf("用户级补充规则")).toBeGreaterThan(result.systemPrompt.indexOf("内置 TUI 身份"));
+            const prompt = buildSystemPrompt({ includeMemory: false, includeDailyMemory: false });
+            expect(prompt.indexOf("内置 TUI 身份")).toBeGreaterThanOrEqual(0);
+            expect(prompt).toContain("当前目录（pwd）：/tmp/tui-working-directory");
+            expect(prompt.indexOf("用户级补充规则")).toBeGreaterThan(prompt.indexOf("内置 TUI 身份"));
         } finally {
             setEmbeddedIdentity();
             if (previousExtraIdentityFile === undefined) delete process.env.ZBOT_EXTRA_IDENTITY_FILE;
@@ -189,13 +186,13 @@ Alpha prompt body`,
         setEmbeddedIdentity("当前目录：{{TUI_CWD}}；源码：{{TUI_SRC_ROOT}}");
 
         try {
-            const result = buildSystemPrompt({
+            const prompt = buildSystemPrompt({
                 cwd: path.join(home, "src", "zbot"),
                 includeMemory: false,
                 includeDailyMemory: false,
             });
-            expect(result.systemPrompt).toContain("当前目录：~/src/zbot");
-            expect(result.systemPrompt).not.toContain(`${home}/src/zbot`);
+            expect(prompt).toContain("当前目录：~/src/zbot");
+            expect(prompt).not.toContain(`${home}/src/zbot`);
         } finally {
             setEmbeddedIdentity();
             if (previousExtraIdentityFile === undefined) delete process.env.ZBOT_EXTRA_IDENTITY_FILE;
@@ -218,17 +215,10 @@ Beta prompt body`,
 
         await skillRegistry.load();
 
-        const first = buildSystemPrompt({
-            sentSkillsMtime: {},
-        });
-        const second = buildSystemPrompt({
-            sentSkillsMtime: first.nextSentSkillsMtime,
-        });
+        const prompt = buildSystemPrompt();
 
-        expect(first.updatedSkillListing).toBe(true);
-        expect(second.updatedSkillListing).toBe(true);
-        expect(second.systemPrompt).toContain("## 可用技能");
-        expect(second.systemPrompt).toContain("- beta: Beta skill");
+        expect(prompt).toContain("## 可用技能");
+        expect(prompt).toContain("- beta: Beta skill");
     });
 
     test("can omit daily memory for stateless CLI tasks", () => {
@@ -236,11 +226,11 @@ Beta prompt body`,
         fs.mkdirSync(memoriesDir, { recursive: true });
         fs.writeFileSync(path.join(memoriesDir, "2026-08-04.md"), "不应注入的每日记忆", "utf-8");
 
-        const result = buildSystemPrompt({ includeDailyMemory: false });
+        const prompt = buildSystemPrompt({ includeDailyMemory: false });
 
-        expect(result.systemPrompt).not.toContain("<!-- 昨日记忆");
-        expect(result.systemPrompt).not.toContain("<!-- 今日记忆");
-        expect(result.systemPrompt).not.toContain("不应注入的每日记忆");
+        expect(prompt).not.toContain("<!-- 昨日记忆");
+        expect(prompt).not.toContain("<!-- 今日记忆");
+        expect(prompt).not.toContain("不应注入的每日记忆");
     });
 
     test("daily memory uses an isolated neutral default user id", () => {
@@ -253,10 +243,10 @@ Beta prompt body`,
         fs.writeFileSync(path.join(defaultMemoryDir, `${today}.md`), "默认用户记忆", "utf-8");
         fs.writeFileSync(path.join(otherMemoryDir, `${today}.md`), "其他用户记忆", "utf-8");
 
-        const result = buildSystemPrompt({ userId: DEFAULT_MEMORY_USER_ID });
+        const prompt = buildSystemPrompt({ userId: DEFAULT_MEMORY_USER_ID });
 
-        expect(result.systemPrompt).toContain("默认用户记忆");
-        expect(result.systemPrompt).not.toContain("其他用户记忆");
+        expect(prompt).toContain("默认用户记忆");
+        expect(prompt).not.toContain("其他用户记忆");
         expect(defaultMemoryDir).toBe(path.join(tmpDir, "memories", "0"));
     });
 
@@ -266,10 +256,10 @@ Beta prompt body`,
         fs.writeFileSync(getUserMemoryFilePath(DEFAULT_MEMORY_USER_ID), "默认用户核心记忆", "utf-8");
         fs.writeFileSync(getUserMemoryFilePath(7), "其他用户核心记忆", "utf-8");
 
-        const result = buildSystemPrompt({ userId: DEFAULT_MEMORY_USER_ID });
+        const prompt = buildSystemPrompt({ userId: DEFAULT_MEMORY_USER_ID });
 
-        expect(result.systemPrompt).toContain("默认用户核心记忆");
-        expect(result.systemPrompt).not.toContain("其他用户核心记忆");
+        expect(prompt).toContain("默认用户核心记忆");
+        expect(prompt).not.toContain("其他用户核心记忆");
     });
 
     test("buildSystemPrompt sorts the skill listing by name", async () => {
@@ -284,33 +274,28 @@ Beta prompt body`,
         }
         await skillRegistry.load();
 
-        const result = buildSystemPrompt({ sentSkillsMtime: {} });
+        const prompt = buildSystemPrompt();
 
-        expect(result.systemPrompt.indexOf("- alpha: alpha skill")).toBeLessThan(
-            result.systemPrompt.indexOf("- zeta: zeta skill"),
+        expect(prompt.indexOf("- alpha: alpha skill")).toBeLessThan(
+            prompt.indexOf("- zeta: zeta skill"),
         );
     });
 
-    test("每个 session 缓存 system prompt", () => {
-        const session: {
-            cachedSystemPrompt?: string;
-            activeSkill?: string;
-            sentSkillsMtime?: Record<string, number>;
-        } = {
-            activeSkill: undefined,
-            sentSkillsMtime: {},
-        };
+    test("session system prompt 逐次构建，身份文件改动立即生效", () => {
+        const session = { cwd: tmpDir };
 
         fs.writeFileSync(path.join(tmpDir, "AGENTS.md"), "初始 TUI 规则", "utf-8");
-        const initialPrompt = getOrCreateSessionSystemPrompt(session);
+        const initialPrompt = resolveSessionSystemPrompt(session);
         fs.writeFileSync(path.join(tmpDir, "AGENTS.md"), "更新后的 TUI 规则", "utf-8");
-        const laterPrompt = getOrCreateSessionSystemPrompt(session);
+        const laterPrompt = resolveSessionSystemPrompt(session);
 
-        expect(laterPrompt).toBe(initialPrompt);
-        expect(session.cachedSystemPrompt).toBe(initialPrompt);
+        expect(initialPrompt).toContain("初始 TUI 规则");
+        expect(laterPrompt).toContain("更新后的 TUI 规则");
+        expect(laterPrompt).not.toBe(initialPrompt);
+        expect(Object.keys(session)).toEqual(["cwd"]);
     });
 
-    test("技能集合变化后重建 session system prompt 缓存", async () => {
+    test("技能集合变化后 session system prompt 跟着变", async () => {
         const skillPath = path.join(tmpDir, "skills", "reloadable", "SKILL.md");
         fs.mkdirSync(path.dirname(skillPath), { recursive: true });
         fs.writeFileSync(skillPath, "---\nname: reloadable\ndescription: 初始描述\n---\n初始指令", "utf-8");
@@ -319,15 +304,14 @@ Beta prompt body`,
         const session = {
             cwd: tmpDir,
             activeSkill: "reloadable",
-            sentSkillsMtime: {},
         } as any;
-        const initialPrompt = getOrCreateSessionSystemPrompt(session, { includeMemory: false });
+        const initialPrompt = resolveSessionSystemPrompt(session, { includeMemory: false });
 
         fs.writeFileSync(skillPath, "---\nname: reloadable\ndescription: 更新描述\n---\n更新指令", "utf-8");
         fs.utimesSync(skillPath, new Date(), new Date(Date.now() + 1_000));
         await skillRegistry.load();
 
-        const reloadedPrompt = getOrCreateSessionSystemPrompt(session, { includeMemory: false });
+        const reloadedPrompt = resolveSessionSystemPrompt(session, { includeMemory: false });
         expect(reloadedPrompt).not.toBe(initialPrompt);
         expect(reloadedPrompt).toContain("更新描述");
         expect(reloadedPrompt).toContain("更新指令");
@@ -365,39 +349,37 @@ describe("system prompt PWD 与会话绑定目录一致", () => {
         const sessionA = makeSession("/sessions/a");
         const sessionB = makeSession("/sessions/b");
 
-        const promptA = getOrCreateSessionSystemPrompt(sessionA, { includeMemory: false });
+        const promptA = resolveSessionSystemPrompt(sessionA, { includeMemory: false });
         expect(promptA).toContain("/sessions/a");
         expect(promptA).not.toContain("/global/activated/cwd");
 
-        const promptB = getOrCreateSessionSystemPrompt(sessionB, { includeMemory: false });
+        const promptB = resolveSessionSystemPrompt(sessionB, { includeMemory: false });
         expect(promptB).toContain("/sessions/b");
         expect(promptA).toContain("/sessions/a");
-        expect(sessionA.cachedSystemPromptCwd).toBe("/sessions/a");
-        expect(sessionB.cachedSystemPromptCwd).toBe("/sessions/b");
     });
 
-    test("缓存命中不随全局 TUI_CWD 变化失效", () => {
+    test("全局 TUI_CWD 变化不改变会话绑定目录的 PWD", () => {
         const sessionA = makeSession("/sessions/a");
-        const first = getOrCreateSessionSystemPrompt(sessionA, { includeMemory: false });
+        const first = resolveSessionSystemPrompt(sessionA, { includeMemory: false });
 
         process.env.TUI_CWD = "/switched/to/other";
-        expect(getOrCreateSessionSystemPrompt(sessionA, { includeMemory: false })).toBe(first);
+        const second = resolveSessionSystemPrompt(sessionA, { includeMemory: false });
+
         expect(first).toContain("/sessions/a");
+        expect(second).toContain("/sessions/a");
+        expect(second).not.toContain("/switched/to/other");
     });
 
-    test("cwd 与缓存记录不一致时重建 prompt", () => {
+    test("会话 cwd 改变后 prompt 跟着换 PWD", () => {
         const sessionA = makeSession("/sessions/a");
-        // 模拟旧版遗留的错误缓存：PWD 按全局 TUI_CWD 固化、未记录 cwd
-        sessionA.cachedSystemPrompt = "旧缓存 PWD=/global/activated/cwd";
-        sessionA.cachedSystemPromptIncludesMemory = false;
+        const before = resolveSessionSystemPrompt(sessionA, { includeMemory: false });
 
-        const rebuilt = getOrCreateSessionSystemPrompt(sessionA, { includeMemory: false });
-        expect(rebuilt).not.toContain("/global/activated/cwd");
-        expect(rebuilt).toContain("/sessions/a");
-        expect(sessionA.cachedSystemPromptCwd).toBe("/sessions/a");
+        sessionA.cwd = "/sessions/b";
+        const after = resolveSessionSystemPrompt(sessionA, { includeMemory: false });
 
-        // 重建后再次调用命中缓存
-        expect(getOrCreateSessionSystemPrompt(sessionA, { includeMemory: false })).toBe(rebuilt);
+        expect(before).toContain("/sessions/a");
+        expect(after).toContain("/sessions/b");
+        expect(after).not.toContain("/sessions/a");
     });
 });
 

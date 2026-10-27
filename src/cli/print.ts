@@ -89,7 +89,7 @@ export async function runPrintCli(argv: string[]): Promise<void> {
                     cwd: args.cwd,
                     includeMemory: false,
                     includeDailyMemory: false,
-                }).systemPrompt;
+                });
                 const result = await runtime.runChatQuery({
                     query: prompt,
                     systemPrompt,

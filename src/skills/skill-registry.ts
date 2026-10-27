@@ -189,26 +189,9 @@ export class SkillRegistry {
         return Array.from(this.skillMetas.values());
     }
 
-    /** 返回当前技能集合的稳定指纹，用于判断 system prompt 缓存是否仍然有效。 */
-    getFingerprint(): string {
-        return JSON.stringify(
-            this.getAllSkillMetas()
-                .sort((left, right) => left.name.localeCompare(right.name))
-                .map((skill) => [skill.name, skill.description, skill.mtime]),
-        );
-    }
-
     /** 技能实际所在目录（含 SKILL.md），便于定位脚本等伴生文件。 */
     getSkillDir(name: string): string | undefined {
         return this.skillDirs.get(name);
-    }
-
-    /** 返回相比上次注入有变化的技能（新增或文件已更新）*/
-    getChangedSkills(sentSkillsMtime: Record<string, number>): SkillMeta[] {
-        return this.getAllSkillMetas().filter(meta => {
-            const lastSentMtime = sentSkillsMtime[meta.name];
-            return lastSentMtime === undefined || lastSentMtime !== meta.mtime;
-        });
     }
 
     /** 构建按名称稳定排序的完整技能列表。 */

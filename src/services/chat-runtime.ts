@@ -185,18 +185,10 @@ export function formatChatProviderError(error: unknown, currentSettings = getCha
 export interface BuildSystemPromptOptions {
     userId: number;
     activeSkillName?: string;
-    sentSkillsMtime?: Record<string, number>;
     includeMemory?: boolean;
     includeDailyMemory?: boolean;
-    /** 会话绑定工作目录：identity 中 {{TUI_CWD}} 插值用它，缺省回退进程级 TUI_CWD。
-     *  system prompt 按会话缓存，PWD 必须与该会话绑定目录一致。 */
+    /** 会话绑定工作目录：identity 中 {{TUI_CWD}} 插值用它，缺省回退进程级 TUI_CWD。 */
     cwd?: string;
-}
-
-export interface BuildSystemPromptResult {
-    systemPrompt: string;
-    nextSentSkillsMtime?: Record<string, number>;
-    updatedSkillListing: boolean;
 }
 
 export interface ChatRunOptions {
@@ -332,7 +324,7 @@ export function getChatModelOptions(): ChatModelOption[] {
     return options;
 }
 
-export function buildSystemPrompt(options: BuildSystemPromptOptions = { userId: DEFAULT_MEMORY_USER_ID }): BuildSystemPromptResult {
+export function buildSystemPrompt(options: BuildSystemPromptOptions = { userId: DEFAULT_MEMORY_USER_ID }): string {
     const sections: string[] = [];
     const memoryUserId = normalizeMemoryUserId(options.userId);
     const identity = loadIdentityContext(options.cwd ? { TUI_CWD: options.cwd } : undefined).trim();
@@ -340,18 +332,8 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = { userId: 
         sections.push(identity);
     }
 
-    let nextSentSkillsMtime = options.sentSkillsMtime;
-    let updatedSkillListing = false;
-
     const skillListing = skillRegistry.buildSkillListing();
     sections.push(skillListing);
-    if (options.sentSkillsMtime) {
-        nextSentSkillsMtime = { ...options.sentSkillsMtime };
-        for (const meta of skillRegistry.getAllSkillMetas()) {
-            nextSentSkillsMtime[meta.name] = meta.mtime;
-        }
-        updatedSkillListing = true;
-    }
 
     if (options.includeMemory !== false) {
         const coreMemory = loadCoreMemoryContext(memoryUserId).trim();
@@ -374,50 +356,23 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = { userId: 
         }
     }
 
-    return {
-        systemPrompt: sections.join("\n\n"),
-        nextSentSkillsMtime,
-        updatedSkillListing,
-    };
+    return sections.join("\n\n");
 }
 
-/** 为会话创建并缓存 system prompt，后续请求复用同一份内容。 */
-export function getOrCreateSessionSystemPrompt(
-    session: Pick<Session, 'cwd' | 'cachedSystemPrompt' | 'cachedSystemPromptIncludesMemory' | 'cachedSystemPromptCwd' | 'cachedSystemPromptUserId' | 'cachedSystemPromptRuntimeFingerprint' | 'activeSkill' | 'sentSkillsMtime'>,
+/**
+ * 逐次构建会话的 system prompt：不缓存、不落盘。
+ * 技能清单、记忆文件、身份文件的改动下一次请求即生效，重启也不会带回旧文本。
+ */
+export function resolveSessionSystemPrompt(
+    session: Pick<Session, 'cwd' | 'activeSkill'>,
     options: { includeMemory?: boolean; userId: number } = { userId: DEFAULT_MEMORY_USER_ID },
 ): string {
-    const includeMemory = options.includeMemory !== false;
-    const memoryUserId = normalizeMemoryUserId(options.userId);
-    const hasCompatibleCachedPrompt = includeMemory
-        ? session.cachedSystemPromptIncludesMemory !== false
-        : session.cachedSystemPromptIncludesMemory === false;
-    const cachedMemoryUserId = session.cachedSystemPromptUserId ?? DEFAULT_MEMORY_USER_ID;
-    const cachedMemoryScopeMatches = !includeMemory || cachedMemoryUserId === memoryUserId;
-    // 缓存里的 PWD 必须与该会话绑定目录一致（旧缓存无记录时重建一次以纠正错位 PWD）
-    const cachedCwdMatchesSession = session.cachedSystemPromptCwd === session.cwd;
-    const runtimeFingerprint = skillRegistry.getFingerprint();
-    const cachedRuntimeMatches = session.cachedSystemPromptRuntimeFingerprint === runtimeFingerprint;
-    if (session.cachedSystemPrompt && hasCompatibleCachedPrompt && cachedCwdMatchesSession && cachedMemoryScopeMatches && cachedRuntimeMatches) {
-        return session.cachedSystemPrompt;
-    }
-
-    const promptResult = buildSystemPrompt({
+    return buildSystemPrompt({
         activeSkillName: session.activeSkill,
-        sentSkillsMtime: session.sentSkillsMtime ?? {},
-        includeMemory,
-        userId: memoryUserId,
+        includeMemory: options.includeMemory,
+        userId: options.userId,
         cwd: session.cwd,
     });
-    if (promptResult.updatedSkillListing && promptResult.nextSentSkillsMtime) {
-        session.sentSkillsMtime = promptResult.nextSentSkillsMtime;
-    }
-
-    session.cachedSystemPrompt = promptResult.systemPrompt;
-    session.cachedSystemPromptIncludesMemory = includeMemory;
-    session.cachedSystemPromptUserId = memoryUserId;
-    session.cachedSystemPromptCwd = session.cwd;
-    session.cachedSystemPromptRuntimeFingerprint = runtimeFingerprint;
-    return session.cachedSystemPrompt;
 }
 
 export function buildConversationHistory(

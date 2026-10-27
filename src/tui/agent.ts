@@ -11,7 +11,7 @@
 
 import fs from "fs";
 import path from "node:path";
-import { getOrCreateSessionSystemPrompt } from "../services/chat-runtime.js";
+import { resolveSessionSystemPrompt } from "../services/chat-runtime.js";
 import { createEmptySession, eventCwd, SessionReplay } from "../events/session-replay.js";
 import { EventLog } from "../events/event-log.js";
 import { getSessionExchangeLogFile } from "../utils/logger.js";
@@ -681,11 +681,11 @@ export class LocalTuiAgent implements TuiAgent {
         const diskSeq = await this.eventLog.lastSeq(sessionId, { forceRefresh: true });
         const active = this.activeSessions.get(sessionId);
         if (active && active.lastSeq >= diskSeq) {
-            return getOrCreateSessionSystemPrompt(active.session, { includeMemory: false, userId: DEFAULT_MEMORY_USER_ID });
+            return resolveSessionSystemPrompt(active.session, { includeMemory: false, userId: DEFAULT_MEMORY_USER_ID });
         }
 
         if (diskSeq === 0) {
-            if (active) return getOrCreateSessionSystemPrompt(active.session, { includeMemory: false, userId: DEFAULT_MEMORY_USER_ID });
+            if (active) return resolveSessionSystemPrompt(active.session, { includeMemory: false, userId: DEFAULT_MEMORY_USER_ID });
             throw new Error(`会话不存在: ${sessionId}`);
         }
 
@@ -695,7 +695,7 @@ export class LocalTuiAgent implements TuiAgent {
             lastSeq: replayed.lastSeq,
             abortController: active?.abortController,
         });
-        return getOrCreateSessionSystemPrompt(replayed.session, { includeMemory: false, userId: DEFAULT_MEMORY_USER_ID });
+        return resolveSessionSystemPrompt(replayed.session, { includeMemory: false, userId: DEFAULT_MEMORY_USER_ID });
     }
 
     async closeSession(sessionId: string): Promise<void> {
@@ -924,7 +924,7 @@ export class LocalTuiAgent implements TuiAgent {
         await Promise.race([inflight, timeout]);
     }
 
-    /** 重读磁盘技能和 MCP 工具，并清理当前进程中的 system prompt 缓存。 */
+    /** 重读磁盘技能和 MCP 工具：system prompt 与工具定义都在每次请求现构建，无需清理缓存。 */
     async reloadRuntime(): Promise<TuiRuntimeReloadResult> {
         const [{ skillRegistry }, mcp] = await Promise.all([
             import("../skills/skill-registry.js"),
@@ -935,14 +935,6 @@ export class LocalTuiAgent implements TuiAgent {
             skillRegistry.reload(),
             mcp.reloadMcpClients({ mode: "tui" }),
         ]);
-
-        for (const active of this.activeSessions.values()) {
-            delete active.session.cachedSystemPrompt;
-            delete active.session.cachedSystemPromptIncludesMemory;
-            delete active.session.cachedSystemPromptUserId;
-            delete active.session.cachedSystemPromptCwd;
-            delete active.session.cachedSystemPromptRuntimeFingerprint;
-        }
 
         const statuses = mcp.getMcpServersStatus();
         return {

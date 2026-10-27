@@ -298,6 +298,72 @@ describe("EventLog", () => {
         expect(result.session.turns.at(-1)?.messages[1]).toMatchObject({ role: "assistant", content: "done" });
     });
 
+    it("快照只写会话事实：system prompt 与工具定义不落盘", async () => {
+        const log = new EventLog();
+        const replay = new SessionReplay(log);
+        const sessionId = "sess-snapshot-whitelist";
+
+        await log.append(sessionId, "session_created", {});
+        for (let index = 0; index < 33; index += 1) {
+            await appendTurn(log, sessionId, {
+                turnId: `W${index}`,
+                userMessages: [`msg-${index}`],
+                messages: [{ role: "assistant", content: `reply-${index}` } as ChatMessage],
+            });
+        }
+
+        const session = (await replay.replayTo(sessionId)).session;
+        // 模拟运行时内容混入：system prompt 缓存与工具定义都不该进快照
+        (session as any).cachedSystemPrompt = "旧 system prompt";
+        (session as any).cachedSystemPromptCwd = "/old/cwd";
+        (session as any).tools = [{ type: "function", function: { name: "bash" } }];
+        await replay.writeSnapshotIfDue(sessionId, session);
+
+        const snapshotPath = path.join(tmpDir, "sessions", "events", `${sessionId}.snapshot.json`);
+        const raw = JSON.parse(fs.readFileSync(snapshotPath, "utf8"));
+        expect(raw.session.sessionId).toBe(sessionId);
+        expect(Array.isArray(raw.session.turns)).toBe(true);
+        expect(raw.session.cachedSystemPrompt).toBeUndefined();
+        expect(raw.session.cachedSystemPromptCwd).toBeUndefined();
+        expect(raw.session.tools).toBeUndefined();
+    });
+
+    it("旧快照里的 system prompt 缓存字段在重放时被丢弃", async () => {
+        const log = new EventLog();
+        const replay = new SessionReplay(log);
+        const sessionId = "sess-legacy-snapshot";
+
+        await log.append(sessionId, "session_created", {});
+        await appendTurn(log, sessionId, {
+            turnId: "L1",
+            userMessages: ["hello"],
+            messages: [{ role: "assistant", content: "hi" } as ChatMessage],
+        });
+
+        const snapshotPath = path.join(tmpDir, "sessions", "events", `${sessionId}.snapshot.json`);
+        fs.mkdirSync(path.dirname(snapshotPath), { recursive: true });
+        fs.writeFileSync(snapshotPath, JSON.stringify({
+            lastSeq: 1,
+            ts: new Date().toISOString(),
+            session: {
+                ...createEmptySession(sessionId),
+                cachedSystemPrompt: "旧缓存 prompt",
+                cachedSystemPromptIncludesMemory: false,
+                cachedSystemPromptCwd: "/legacy/cwd",
+                cachedSystemPromptRuntimeFingerprint: "legacy",
+                sentSkillsMtime: { alpha: 1 },
+            },
+        }), "utf8");
+
+        const replayed = await replay.replayTo(sessionId);
+        const restored = replayed.session as Record<string, unknown>;
+        expect(replayed.session.turns).toHaveLength(1);
+        expect(restored.cachedSystemPrompt).toBeUndefined();
+        expect(restored.cachedSystemPromptCwd).toBeUndefined();
+        expect(restored.cachedSystemPromptRuntimeFingerprint).toBeUndefined();
+        expect(restored.sentSkillsMtime).toBeUndefined();
+    });
+
     it("turn 进行中（最后事件为 user_message）不写快照，避免该用户消息被排除在重放之外", async () => {
         const log = new EventLog();
         const replay = new SessionReplay(log);

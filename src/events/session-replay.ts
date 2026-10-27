@@ -80,7 +80,7 @@ export class SessionReplay {
             : events;
 
         const session = snapshotUsable && snapshot
-            ? { ...snapshot.session, cwd: snapshot.session.cwd ?? getStartupToolCwd() }
+            ? { ...pickSessionFields(snapshot.session), cwd: snapshot.session.cwd ?? getStartupToolCwd() }
             : createEmptySession(sessionId);
 
         // turn_message 让回合进行中的完整消息即时落盘；重放时按 turnId 归组，
@@ -376,7 +376,42 @@ export function createEmptySession(sessionId: string, cwd = getToolCwd()): Sessi
     };
 }
 
-/** 快照直接引用持久化 Session（无运行时字段可剥离）。 */
+/**
+ * 快照字段白名单：只有会话事实可以落盘。
+ * system prompt 与工具定义都只在请求期构造，既不缓存也不写快照，
+ * 重启后必定按当前技能/记忆/MCP 状态重建；旧版本快照里的缓存字段在读入时被丢弃。
+ */
+const SNAPSHOT_SESSION_FIELDS = [
+    "sessionId",
+    "cwd",
+    "title",
+    "contextEpochId",
+    "turns",
+    "compactedContext",
+    "compactedThroughTurnId",
+    "compactedKeepFromMessageId",
+    "contextState",
+    "totalUserTurnCount",
+    "hardTrimCount",
+    "compactCount",
+    "lastPromptTokens",
+    "createdAt",
+    "updatedAt",
+    "archivedAt",
+    "activeSkill",
+    "modelSelection",
+] as const;
+
+/** 读写快照共用的字段投影：未列入白名单的键一律不落盘、也不恢复。 */
+function pickSessionFields(source: Session | Record<string, unknown>): Session {
+    const projected: Record<string, unknown> = {};
+    for (const field of SNAPSHOT_SESSION_FIELDS) {
+        const value = (source as Record<string, unknown>)[field];
+        if (value !== undefined) projected[field] = value;
+    }
+    return projected as unknown as Session;
+}
+
 function serializeSession(session: Session): Session {
-    return session;
+    return pickSessionFields(session);
 }
