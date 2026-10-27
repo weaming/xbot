@@ -2,6 +2,7 @@
   "entry": [
     "src/decision/index.ts",
     "src/scripts/decision-cli.ts",
+    "src/scripts/compact-event-log.ts",
     "tests/integration/helpers/peer-child.ts"
   ],
   "project": [
