@@ -9,7 +9,6 @@ import type { ExecutableTool, ToolContentBlock, ToolExecutionResult } from "./to
 import { ok, err } from "./tool-interface.js";
 import { getToolCwd } from "../utils/runtime-paths.js";
 import { resolvePath } from "./path-utils.js";
-import { grepFileTool } from "./grep-tool.js";
 
 type FileEdit = {
     oldText: string;
@@ -239,5 +238,4 @@ export const FILE_OPS_TOOLS: ExecutableTool[] = [
     readMediaFileTool,
     writeFileTool,
     editFileTool,
-    grepFileTool,
 ];
