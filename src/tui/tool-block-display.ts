@@ -1,6 +1,6 @@
 import * as path from "path";
 import { formatToolArguments } from "../utils/tool-progress.js";
-import { getToolCwd, resolveCwdInput } from "../utils/runtime-paths.js";
+import { formatDisplayPath, getToolCwd, resolveCwdInput } from "../utils/runtime-paths.js";
 import { formatGoDuration } from "../utils/time.js";
 import { CUSTOM_ANSWER_PREFIX, questionLabel } from "../utils/user-question.js";
 import { theme } from "./theme.js";
@@ -62,19 +62,23 @@ export function formatToolBlockArgs(toolName: string, args?: string): string {
     if (otherArgs.enable_proxy === false) {
         delete otherArgs.enable_proxy;
     }
-    // cwd 必填：等于当前会话目录时省略，避免每条命令都重复一遍
-    if (typeof otherArgs.cwd === "string" && isSessionCwd(otherArgs.cwd)) {
-        delete otherArgs.cwd;
-    }
+    // executeShellTool 未显式提供 cwd 时，实际执行目录为当前会话目录；渲染时始终展示有效目录。
+    const cwd = typeof otherArgs.cwd === "string"
+        ? resolveCwdInput(otherArgs.cwd, getToolCwd())
+        : getToolCwd();
+    otherArgs.cwd = formatDisplayCwd(cwd, getToolCwd());
 
     const prefix = formatToolArguments(otherArgs);
     return [prefix, command.trim()].filter(Boolean).join(" ");
 }
 
-/** cwd 参数是否就是当前会话目录（`~` 与相对路径先按会话目录解析）。 */
-function isSessionCwd(value: string): boolean {
-    const sessionCwd = getToolCwd();
-    return resolveCwdInput(value, sessionCwd) === sessionCwd;
+/** 目录位于会话 cwd 内时用带尾斜线的相对路径；其余路径缩写 HOME。 */
+function formatDisplayCwd(cwd: string, sessionCwd: string): string {
+    const relative = path.relative(sessionCwd, cwd);
+    if (relative === "") return ".";
+    if (!relative.startsWith("..") && !path.isAbsolute(relative)) return `${relative}/`;
+    const displayPath = formatDisplayPath(cwd);
+    return displayPath === "~" ? displayPath : `${displayPath.replace(/\/$/, "")}/`;
 }
 
 /** 状态后缀只看这些字段：单个工具块与合并的文件变更块都适用。 */

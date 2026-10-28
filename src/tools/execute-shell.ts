@@ -169,7 +169,7 @@ export const executeShellTool: ExecutableTool = {
       },
       cwd: {
         type: "string",
-        description: "命令的工作目录（必填）：支持 ~（HOME）、相对会话目录的路径与绝对路径，必须是已存在的目录",
+        description: "命令的工作目录：支持 ~（HOME）、相对会话目录的路径与绝对路径，必须是已存在的目录",
       },
       enable_proxy: {
         type: "boolean",

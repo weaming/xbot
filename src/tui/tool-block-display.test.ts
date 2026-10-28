@@ -23,7 +23,7 @@ describe("工具块参数转换", () => {
 
         // enable_proxy=false 为默认值时省略，避免噪音
         expect(formatToolBlockArgs("bash", args)).toBe(
-            'envs={"API_KEY":"secret value"} curl https://example.com/a\\b | jq \'.data\'',
+            'envs={"API_KEY":"secret value"} cwd=. curl https://example.com/a\\b | jq \'.data\'',
         );
     });
 
@@ -34,17 +34,24 @@ describe("工具块参数转换", () => {
         });
 
         expect(formatToolBlockArgs("bash", args)).toBe(
-            "enable_proxy=true curl https://example.com",
+            "enable_proxy=true cwd=. curl https://example.com",
         );
     });
 
-    test("bash 的 cwd 等于当前会话目录时省略，不同则显示", () => {
+    test("bash 始终显示有效 cwd，且相对 cwd 按当前会话目录解析", () => {
         const originalTuiCwd = process.env.TUI_CWD;
-        process.env.TUI_CWD = os.homedir();
+        process.env.TUI_CWD = path.join(os.homedir(), "workspace");
         try {
-            expect(formatToolBlockArgs("bash", JSON.stringify({ command: "ls", cwd: "~" }))).toBe("ls");
-            expect(formatToolBlockArgs("bash", JSON.stringify({ command: "ls", cwd: "." }))).toBe("ls");
-            expect(formatToolBlockArgs("bash", JSON.stringify({ command: "ls", cwd: "/tmp" }))).toBe("cwd=/tmp ls");
+            expect(formatToolBlockArgs("bash", JSON.stringify({ command: "ls" })))
+                .toBe("cwd=. ls");
+            expect(formatToolBlockArgs("bash", JSON.stringify({ command: "ls", cwd: "." })))
+                .toBe("cwd=. ls");
+            expect(formatToolBlockArgs("bash", JSON.stringify({ command: "ls", cwd: "~/" })))
+                .toBe("cwd=~ ls");
+            expect(formatToolBlockArgs("bash", JSON.stringify({ command: "ls", cwd: "a/b/c" })))
+                .toBe("cwd=a/b/c/ ls");
+            expect(formatToolBlockArgs("bash", JSON.stringify({ command: "ls", cwd: "/tmp" })))
+                .toBe("cwd=/tmp/ ls");
         } finally {
             if (originalTuiCwd === undefined) delete process.env.TUI_CWD;
             else process.env.TUI_CWD = originalTuiCwd;
@@ -63,7 +70,7 @@ describe("工具块参数转换", () => {
             timeout: 10,
         });
 
-        expect(formatToolBlockArgs("Shell__bash", args)).toBe("timeout=10 printf out | head -n 1");
+        expect(formatToolBlockArgs("Shell__bash", args)).toBe("timeout=10 cwd=. printf out | head -n 1");
     });
 
     test("bash 参数解析失败时保持原文", () => {
