@@ -66,7 +66,7 @@ OPENAI_RESPONSES_EFFORTS=low,high,max
 | `OPENAI_CHAT_EFFORTS` | Chat Completions 可选思考强度，逗号分隔 |
 | `OPENAI_RESPONSES_EFFORTS` | Responses API 可选思考强度，逗号分隔 |
 | `OPENAI_RESPONSES_HOSTED_TOOLS` | Responses 可选托管工具（如 `web_search,tool_search`），上游执行；Chat Completions 无托管工具 |
-| `APPLY_PATCH_MODE` | `apply_patch`（MCP codex 等）的下发形态：`custom` 自由文本、`function` 加固 JSON 描述、`off` 原样。默认按模型推导（`gpt-*` → `custom`，DeepSeek → `function`，其余 `off`） |
+| `APPLY_PATCH_MODE` | `apply_patch`（MCP codex 等）的下发形态：`custom` 自由文本（模型直接输出补丁原文）、`off` 原样下发（`function` 为历史值，等价 `off`）。默认 `gpt-*` 用 `custom`，其余（含 DeepSeek）原样 |
 | `ZBOT_MEMORY_USER_ID` | 记忆用户标识，默认 `0` |
 | `NETWORK_PROXY` | 网络和命令行工具使用的代理；TUI 会将容器默认代理地址调整为 `http://localhost:7890` |
 | `OPENAI_PROXY` | 模型 API 请求使用的代理 |

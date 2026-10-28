@@ -123,7 +123,7 @@ export async function prepareRequest(options: PrepareRequestOptions): Promise<Pr
     const { client, model } = options;
     const protocol = resolveProtocol(client);
     const useResponses = protocol === "responses";
-    // apply_patch 是自由文本工具：gpt-* 发 custom，DeepSeek 留在 function 上加固，其余不动
+    // apply_patch 是自由文本工具：只有 gpt-* 发 custom，其余上游原样下发
     const applyPatchMode = resolveApplyPatchToolMode({ model, baseURL: client.baseURL });
 
     // 全量工具始终按名称排序，确保不同请求使用稳定的工具前缀。

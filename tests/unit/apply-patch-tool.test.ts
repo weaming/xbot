@@ -43,9 +43,9 @@ describe("resolveApplyPatchToolMode", () => {
         )).toBe("custom");
     });
 
-    test("DeepSeek 端点留在 function 上加固", () => {
+    test("DeepSeek 端点原样下发（只有 function 工具可用）", () => {
         expect(resolveApplyPatchToolMode({ model: "deepseek-chat", baseURL: "https://api.deepseek.com/v1" }, {}))
-            .toBe("function");
+            .toBe("off");
     });
 
     test("其他模型不做处理", () => {
@@ -69,6 +69,13 @@ describe("resolveApplyPatchToolMode", () => {
             { model: "gpt-6-luna", baseURL: "https://api.openai.com/v1" },
             { APPLY_PATCH_MODE: "grammar" },
         )).toBe("custom");
+    });
+
+    test("历史取值 function 等价于 off", () => {
+        expect(resolveApplyPatchToolMode(
+            { model: "gpt-6-luna", baseURL: "https://api.openai.com/v1" },
+            { APPLY_PATCH_MODE: "function" },
+        )).toBe("off");
     });
 });
 
@@ -111,17 +118,9 @@ describe("adaptToolsForUpstream", () => {
         expect(patchTool).not.toHaveProperty("name");
     });
 
-    test("DeepSeek：保留 function，描述里点明 JSON 字符串与转义", () => {
-        const [patchTool] = adaptToolsForUpstream([PATCH_TOOL], { mode: "function", protocol: "chat_completions" });
-
-        expect(patchTool.type).toBe("function");
-        expect(patchTool.function.description).toContain("JSON 对象");
-        expect(patchTool.function.parameters.properties.patch.description).toContain("JSON 字符串");
-        expect(patchTool.function.parameters.required).toEqual(["patch"]);
-    });
-
-    test("off 模式原样返回", () => {
-        expect(adaptToolsForUpstream([PATCH_TOOL], { mode: "off", protocol: "responses" })).toEqual([PATCH_TOOL]);
+    test("off 模式原样返回（DeepSeek 不再加固描述）", () => {
+        expect(adaptToolsForUpstream([PATCH_TOOL], { mode: "off", protocol: "responses" })[0]).toBe(PATCH_TOOL);
+        expect(adaptToolsForUpstream([PATCH_TOOL], { mode: "off", protocol: "chat_completions" })[0]).toBe(PATCH_TOOL);
     });
 
     test("重复适配幂等：描述尾巴只加一次，deferLoading 不丢", () => {
@@ -140,13 +139,6 @@ describe("adaptToolsForUpstream", () => {
         expect(adaptToolsForUpstream(chatOnce, { mode: "custom", protocol: "chat_completions" })).toEqual(chatOnce);
     });
 
-    test("function 形态重复加固幂等", () => {
-        const once = adaptToolsForUpstream([PATCH_TOOL], { mode: "function", protocol: "chat_completions" });
-        const twice = adaptToolsForUpstream(once, { mode: "function", protocol: "chat_completions" });
-
-        expect(twice).toEqual(once);
-        expect(twice[0].function.description.split("JSON 对象").length - 1).toBe(1);
-    });
 });
 
 describe("Responses 工具定义", () => {
@@ -260,7 +252,7 @@ describe("历史物化", () => {
         ]);
     });
 
-    test("切到 function 上游时历史调用降级成 function_call", async () => {
+    test("切到不支持 custom 的上游时历史调用降级成 function_call", async () => {
         const shaped = normalizeToolCallShapes([
             {
                 role: "assistant",
@@ -271,7 +263,7 @@ describe("历史物化", () => {
                     custom: { name: "codex__apply_patch", input: PATCH_TEXT },
                 }],
             },
-        ] as any, "function");
+        ] as any, "off");
 
         expect(shaped[0]!.tool_calls).toEqual([{
             id: "call_1",
@@ -350,14 +342,14 @@ describe("prepareRequest 发送前适配", () => {
         expect(patchTool!.format).toEqual({ type: "text" });
     });
 
-    test("DeepSeek 模型下发加固后的 function 工具", async () => {
+    test("DeepSeek 模型原样下发 function 工具", async () => {
         const prepared = await prepare("deepseek-chat", "chat_completions", "https://api.deepseek.com/v1");
         const patchTool = prepared.requestBody.tools.find(
             (tool: any) => tool.function?.name === "codex__apply_patch",
         );
 
         expect(patchTool!.type).toBe("function");
-        expect(patchTool!.function.description).toContain("JSON 对象");
+        expect(patchTool).toEqual(PATCH_TOOL);
     });
 
     test("其他模型不动工具定义", async () => {
