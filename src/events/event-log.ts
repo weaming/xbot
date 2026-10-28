@@ -14,9 +14,12 @@ import type { AgentEvent, AgentEventPayloads, AgentEventType } from "./agent-eve
 const TAIL_WINDOW_BYTES = 8 * 1024;
 const TAIL_WINDOW_MAX_BYTES = 1024 * 1024;
 
-/** 流式片段聚合窗口：攒够字节数或静默这么久就落盘，把逐 token 写降成批量写。 */
-const STREAM_FLUSH_BYTES = 512;
-const STREAM_FLUSH_MS = 150;
+/**
+ * 流式片段聚合窗口：每这么久把缓冲里的片段落盘一次，把逐 token 写降成批量写。
+ * 只按时间触发即可——pending 文件在进程活着时没有读取方，缓冲上限就等于这个窗口内
+ * 产生的输出；崩溃时最多丢一个窗口的片段，而定稿内容由 turn_message 另外承载。
+ */
+const STREAM_FLUSH_MS = 1000;
 
 /** pending 流文件的一行：一个请求里连续的若干 delta。片段不占主日志 seq。 */
 interface StreamBatch {
@@ -30,7 +33,6 @@ interface StreamBatch {
 interface StreamState {
     active: StreamBatch | null;
     batches: StreamBatch[];
-    bytes: number;
     timer: ReturnType<typeof setTimeout> | null;
     chain: Promise<void>;
 }
@@ -85,12 +87,6 @@ export class EventLog {
 
         const active = state.active;
         active.deltas.push(delta);
-        state.bytes += estimateDeltaBytes(delta);
-
-        if (state.bytes >= STREAM_FLUSH_BYTES) {
-            await this.flushStream(sessionId);
-            return;
-        }
         this.scheduleFlush(sessionId, state);
     }
 
@@ -107,7 +103,6 @@ export class EventLog {
 
         const batches = state.batches;
         state.batches = [];
-        state.bytes = 0;
         const text = batches.map(batch => JSON.stringify(batch) + "\n").join("");
         state.chain = state.chain
             .then(() => fs.promises.appendFile(this.streamFilePath(sessionId), text, "utf8"))
@@ -165,7 +160,7 @@ export class EventLog {
     private streamState(sessionId: string): StreamState {
         let state = this.streamStates.get(sessionId);
         if (!state) {
-            state = { active: null, batches: [], bytes: 0, timer: null, chain: Promise.resolve() };
+            state = { active: null, batches: [], timer: null, chain: Promise.resolve() };
             this.streamStates.set(sessionId, state);
         }
         return state;
@@ -412,9 +407,4 @@ async function readFileIfExists(filePath: string): Promise<string | null> {
         if (error?.code === "ENOENT") return null;
         throw error;
     }
-}
-
-/** 一条 delta 的近似字节数，用于判断缓冲区何时该落盘。 */
-function estimateDeltaBytes(delta: StreamDelta): number {
-    return JSON.stringify(delta).length;
 }

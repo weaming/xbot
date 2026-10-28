@@ -16,8 +16,6 @@ import path from "node:path";
 import readline from "node:readline";
 import { getSessionsDir } from "../utils/runtime-paths.js";
 
-/** 与新写入路径一致的聚合口径：一行不超过这么多字节。 */
-const STREAM_FLUSH_BYTES = 512;
 /** 最近被改动的日志视为可能有进程在写，默认跳过。 */
 const ACTIVE_WINDOW_MS = 60_000;
 
@@ -102,12 +100,10 @@ async function compactFile(filePath: string, options: Options): Promise<FileStat
     const out = options.apply ? fs.createWriteStream(tempPath, { encoding: "utf8" }) : null;
     const salvaged: string[] = [];
     let batch: StreamBatch | null = null;
-    let batchBytes = 0;
 
     const sealBatch = (): void => {
         if (batch && batch.deltas.length > 0) salvaged.push(JSON.stringify(batch));
         batch = null;
-        batchBytes = 0;
     };
 
     const write = (text: string): void => {
@@ -144,9 +140,7 @@ async function compactFile(filePath: string, options: Options): Promise<FileStat
             batch = { ts: event.ts ?? new Date().toISOString(), turnId, requestIndex, deltas: [] };
         }
         batch.deltas.push(event.payload?.delta);
-        batchBytes += JSON.stringify(event.payload?.delta ?? null).length;
         stat.salvaged += 1;
-        if (batchBytes >= STREAM_FLUSH_BYTES) sealBatch();
     });
     sealBatch();
 
