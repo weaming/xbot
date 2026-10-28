@@ -187,7 +187,7 @@ export class SkillRegistry {
         const lines = this.getAllSkillMetas()
             .sort((left, right) => left.name.localeCompare(right.name))
             .map((skill) => `- ${skill.name}: ${skill.description}`);
-        return `## 可用技能\n技能通过 use_skill(skill) 工具动态加载。\n${lines.length > 0 ? lines.join('\n') : '- 暂无可用技能'}`;
+        return `## 可用技能\n\n技能通过 use_skill(skill) 工具动态加载。\n\n${lines.length > 0 ? lines.join('\n') : '- 暂无可用技能'}`;
     }
 
     getUseSkillDescription(): string {
