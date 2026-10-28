@@ -28,16 +28,30 @@ export function normalizeResponsesResponse(response: any): any {
       .map((part: any) => part.text ?? "")
     : []);
   const content = textParts.join("") || response?.output_text || null;
-  const toolCalls = output
-    .filter((item: any) => item?.type === "function_call")
-    .map((item: any) => ({
-      id: item.call_id ?? item.id,
-      type: "function",
-      function: {
-        name: item.name,
-        arguments: item.arguments ?? "{}",
-      },
-    }));
+  const toolCalls = output.flatMap((item: any) => {
+    if (item?.type === "function_call") {
+      return [{
+        id: item.call_id ?? item.id,
+        type: "function",
+        function: {
+          name: item.name,
+          arguments: item.arguments ?? "{}",
+        },
+      }];
+    }
+    // 自由文本工具：input 是模型给出的原始文本，本地按 {"patch": ...} 执行
+    if (item?.type === "custom_tool_call") {
+      return [{
+        id: item.call_id ?? item.id,
+        type: "custom",
+        custom: {
+          name: item.name,
+          input: item.input ?? "",
+        },
+      }];
+    }
+    return [];
+  });
   const message: any = {
     role: "assistant",
     content,

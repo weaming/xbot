@@ -89,6 +89,14 @@ export function isOfficialDeepSeekEndpoint(apiBase?: string): boolean {
 }
 
 /**
+ * 接入端是否跑 DeepSeek 模型：模型名含 deepseek，或端点就是官方 host。
+ * 两者任一命中都按 DeepSeek 口径处理（能力集合、计费、工具形态都依赖它）。
+ */
+export function isDeepSeekEndpoint(model: string, baseURL?: string): boolean {
+    return model.toLowerCase().includes("deepseek") || isOfficialDeepSeekEndpoint(baseURL);
+}
+
+/**
  * 是否为高峰时段：北京时间周一至周五 9:00-12:00、14:00-18:00（半开区间）。
  * 上海无夏令时，用固定 +8 偏移换算，避免依赖运行环境 TZ。
  */

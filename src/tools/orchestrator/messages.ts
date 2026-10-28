@@ -11,7 +11,107 @@ import type { ChatMessage } from "../../types/session.js";
 import type { ToolImageContent } from "../tool-interface.js";
 import type { InputAudioContent } from "../../types/audio.js";
 import { materializeImageMessages } from "../../utils/image-assets.js";
+import { isApplyPatchTool, patchArgumentsJson, patchFromArguments } from "../tool-kinds.js";
+import type { ApplyPatchToolMode } from "./apply-patch-tool.js";
 import { repairResponsesFunctionCallItemIds } from "./responses-input-repair.js";
+
+/** function_call → custom_tool_call：同一个补丁从 JSON 参数挪到裸文本 input。 */
+function toCustomToolCallItem(item: any): any {
+  return {
+    type: "custom_tool_call",
+    call_id: item.call_id ?? item.id,
+    ...(item.id ? { id: item.id } : {}),
+    name: item.name,
+    input: patchFromArguments(item.arguments) ?? "",
+    status: "completed",
+  };
+}
+
+/** custom_tool_call → function_call：裸文本重新包成 {"patch": ...} 的参数。 */
+function toFunctionCallItem(item: any): any {
+  return {
+    type: "function_call",
+    call_id: item.call_id ?? item.id,
+    ...(item.id ? { id: item.id } : {}),
+    name: item.name,
+    arguments: patchArgumentsJson(typeof item.input === "string" ? item.input : ""),
+    status: "completed",
+  };
+}
+
+/** response_output 只装模型的输出项，apply_patch 的调用项就是 function_call / custom_tool_call。 */
+function isApplyPatchCallItem(item: any): boolean {
+  if (item?.type !== "function_call" && item?.type !== "custom_tool_call") return false;
+  return typeof item.name === "string" && isApplyPatchTool(item.name);
+}
+
+/**
+ * 历史里的 apply_patch 调用按当前上游形态重写（custom ↔ function 双向）。
+ * 换模型或换协议后历史仍能复用，否则上游会因工具形态不匹配拒绝请求。
+ */
+export function normalizeToolCallShapes(
+  messages: ChatMessage[],
+  mode: ApplyPatchToolMode,
+): ChatMessage[] {
+  // 非 custom 上游（含不处理工具定义的模型）都要拿到 function 形态：历史里的自由文本调用
+  // 换模型后仍能复用，否则上游会因工具形态不匹配直接拒绝请求。
+  const wantsCustom = mode === "custom";
+
+  return messages.map(message => {
+    if (message.role !== "assistant") return message;
+
+    const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+    let changed = false;
+    const normalizedCalls = toolCalls.map((call: any) => {
+      const isCustom = call?.type === "custom";
+      const name = isCustom ? call?.custom?.name : call?.function?.name;
+      if (typeof name !== "string" || !isApplyPatchTool(name)) return call;
+
+      if (wantsCustom && !isCustom) {
+        changed = true;
+        return {
+          id: call.id,
+          type: "custom",
+          custom: { name, input: patchFromArguments(call?.function?.arguments) ?? "" },
+        };
+      }
+      if (!wantsCustom && isCustom) {
+        changed = true;
+        const input = typeof call?.custom?.input === "string" ? call.custom.input : "";
+        return {
+          id: call.id,
+          type: "function",
+          function: { name, arguments: patchArgumentsJson(input) },
+        };
+      }
+      return call;
+    });
+
+    // response_output 是原样回放的模型输出项：形态跟着当前上游走，否则上游会认不出调用类型
+    const responseOutput = Array.isArray(message.response_output) ? message.response_output : [];
+    let outputChanged = false;
+    const hasPatchCall = responseOutput.some(isApplyPatchCallItem);
+    const normalizedOutput = hasPatchCall ? responseOutput.map((item: any) => {
+      if (!isApplyPatchCallItem(item)) return item;
+      if (wantsCustom && item.type === "function_call") {
+        outputChanged = true;
+        return toCustomToolCallItem(item);
+      }
+      if (!wantsCustom && item.type === "custom_tool_call") {
+        outputChanged = true;
+        return toFunctionCallItem(item);
+      }
+      return item;
+    }) : responseOutput;
+
+    if (!changed && !outputChanged) return message;
+    return {
+      ...message,
+      ...(changed ? { tool_calls: normalizedCalls } : {}),
+      ...(outputChanged ? { response_output: normalizedOutput } : {}),
+    } as ChatMessage;
+  });
+}
 
 function responseImagePart(part: any): any {
   return {
@@ -24,6 +124,18 @@ function responseImagePart(part: any): any {
 export async function materializeResponsesInput(messages: ChatMessage[]): Promise<any[]> {
   const materializedUsers = await materializeImageMessages(messages);
   const result: any[] = [];
+
+  // custom 工具调用的结果必须回成 custom_tool_call_output，否则上游对不上调用类型
+  const customCallIds = new Set<string>();
+  for (const message of messages) {
+    if (message.role !== "assistant") continue;
+    for (const toolCall of message.tool_calls ?? []) {
+      if (toolCall?.type === "custom" && typeof toolCall.id === "string") customCallIds.add(toolCall.id);
+    }
+    for (const item of Array.isArray(message.response_output) ? message.response_output : []) {
+      if (item?.type === "custom_tool_call" && typeof item.call_id === "string") customCallIds.add(item.call_id);
+    }
+  }
 
   for (let index = 0; index < messages.length; index++) {
     const message = messages[index];
@@ -47,11 +159,9 @@ export async function materializeResponsesInput(messages: ChatMessage[]): Promis
           }
         }
       }
-      result.push({
-        type: "function_call_output",
-        call_id: message.tool_call_id,
-        output,
-      });
+      result.push(customCallIds.has(message.tool_call_id)
+        ? { type: "custom_tool_call_output", call_id: message.tool_call_id, output }
+        : { type: "function_call_output", call_id: message.tool_call_id, output });
       continue;
     }
 
@@ -70,6 +180,16 @@ export async function materializeResponsesInput(messages: ChatMessage[]): Promis
         });
       }
       for (const toolCall of message.tool_calls ?? []) {
+        if (toolCall?.type === "custom") {
+          result.push({
+            type: "custom_tool_call",
+            call_id: toolCall.id,
+            name: toolCall.custom?.name,
+            input: typeof toolCall.custom?.input === "string" ? toolCall.custom.input : "",
+            status: "completed",
+          });
+          continue;
+        }
         result.push({
           type: "function_call",
           call_id: toolCall.id,

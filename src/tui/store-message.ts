@@ -4,6 +4,7 @@
  */
 
 import type { AssistantTimelineItem, UiMessage } from "./store-types.js";
+import { patchArgumentsJson } from "../tools/tool-kinds.js";
 
 /**
  * 回合被中途打断时的收尾措辞：实时投影（store-projector 的 aborted 事件）与重放投影
@@ -194,6 +195,15 @@ export function extractToolCalls(
         for (const toolCall of message.tool_calls) {
             const id = toolCall?.id ?? toolCall?.call_id;
             if (typeof id !== "string" || !id) continue;
+            // 自由文本工具（apply_patch）的调用参数是裸文本，展示与历史统一成 {"patch": ...}
+            if (toolCall?.type === "custom" && toolCall.custom) {
+                const input = typeof toolCall.custom.input === "string" ? toolCall.custom.input : "";
+                toolCalls.set(id, {
+                    name: toolCall.custom.name,
+                    args: patchArgumentsJson(input),
+                });
+                continue;
+            }
             const rawArgs = toolCall?.function?.arguments ?? toolCall?.arguments;
             toolCalls.set(id, {
                 name: toolCall?.function?.name ?? toolCall?.name,

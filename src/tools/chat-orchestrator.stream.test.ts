@@ -866,4 +866,133 @@ describe("executeWithChat 流式聚合", () => {
         const requestMessages = requests[0].messages;
         expect(requestMessages.filter((message: any) => message.role === "tool")).toHaveLength(1);
     });
+
+    it("Responses 流式 custom_tool_call 收成自由文本调用并按 {patch} 执行", async () => {
+        const saved: any[] = [];
+        const calls: any[] = [];
+        const patchText = "*** Begin Patch\n*** Add File: a.txt\n+hi\n*** End Patch";
+        let round = 0;
+        const client: ChatClient = {
+            baseURL: "http://test.local/v1",
+            protocol: "responses",
+            create: async () => undefined,
+            createResponse: async () => ({
+                [Symbol.asyncIterator]: async function* () {
+                    round += 1;
+                    if (round === 1) {
+                        yield { type: "response.output_item.added", output_index: 0, item: {
+                            type: "custom_tool_call", id: "ctc_1", call_id: "call-1", name: "codex__apply_patch", input: "",
+                        } };
+                        yield { type: "response.custom_tool_call_input.delta", item_id: "ctc_1", output_index: 0, delta: patchText };
+                        yield { type: "response.completed", response: { status: "completed", output: [] } };
+                        return;
+                    }
+                    yield { type: "response.output_text.delta", delta: "完成" };
+                    yield { type: "response.completed", response: { status: "completed", output: [] } };
+                },
+            }),
+        };
+
+        await executeWithChat({
+            query: "改文件",
+            client,
+            model: "gpt-6-luna",
+            stream: true,
+            executeTool: async (name, args) => {
+                calls.push({ name, args });
+                return "ok";
+            },
+            onTurnMessage: message => { saved.push(message); },
+        });
+
+        expect(calls).toEqual([{ name: "codex__apply_patch", args: { patch: patchText } }]);
+        expect(saved[0]?.tool_calls?.[0]).toEqual({
+            id: "call-1",
+            type: "custom",
+            custom: { name: "codex__apply_patch", input: patchText },
+        });
+    });
+
+    it("Chat Completions 流式 custom 工具调用按增量拼出补丁原文", async () => {
+        const saved: any[] = [];
+        const calls: any[] = [];
+        let round = 0;
+        const client: ChatClient = {
+            baseURL: "http://test.local/v1",
+            create: async () => ({
+                [Symbol.asyncIterator]: async function* () {
+                    round += 1;
+                    if (round > 1) {
+                        yield textChunk("完成");
+                        yield { ...textChunk(""), choices: [{ index: 0, delta: {}, finish_reason: "stop" }] };
+                        return;
+                    }
+                    yield toolCallChunk({ index: 0, id: "call-1", type: "custom", custom: { name: "codex__apply_patch", input: "*** Begin Patch\n" } });
+                    yield toolCallChunk({ index: 0, custom: { input: "*** End Patch" } }, "tool_calls");
+                },
+            }),
+        };
+
+        await executeWithChat({
+            query: "改文件",
+            client,
+            model: "gpt-6-luna",
+            stream: true,
+            history: [],
+            executeTool: async (name, args) => {
+                calls.push({ name, args });
+                return "ok";
+            },
+            onTurnMessage: message => { saved.push(message); },
+        });
+
+        expect(calls).toEqual([{ name: "codex__apply_patch", args: { patch: "*** Begin Patch\n*** End Patch" } }]);
+        expect(saved[0]?.tool_calls?.[0]).toEqual({
+            id: "call-1",
+            type: "custom",
+            custom: { name: "codex__apply_patch", input: "*** Begin Patch\n*** End Patch" },
+        });
+    });
+
+    it("Responses 只在 custom input.done 里给全文时也能收到补丁", async () => {
+        const saved: any[] = [];
+        const calls: any[] = [];
+        const patchText = "*** Begin Patch\n*** Add File: b.txt\n+ok\n*** End Patch";
+        let round = 0;
+        const client: ChatClient = {
+            baseURL: "http://test.local/v1",
+            protocol: "responses",
+            create: async () => undefined,
+            createResponse: async () => ({
+                [Symbol.asyncIterator]: async function* () {
+                    round += 1;
+                    if (round === 1) {
+                        yield { type: "response.output_item.added", output_index: 0, item: {
+                            type: "custom_tool_call", id: "ctc_2", call_id: "call-2", name: "codex__apply_patch", input: "",
+                        } };
+                        yield { type: "response.custom_tool_call_input.done", item_id: "ctc_2", output_index: 0, input: patchText };
+                        yield { type: "response.completed", response: { status: "completed", output: [] } };
+                        return;
+                    }
+                    yield { type: "response.output_text.delta", delta: "完成" };
+                    yield { type: "response.completed", response: { status: "completed", output: [] } };
+                },
+            }),
+        };
+
+        await executeWithChat({
+            query: "改文件",
+            client,
+            model: "gpt-6-luna",
+            stream: true,
+            executeTool: async (name, args) => {
+                calls.push({ name, args });
+                return "ok";
+            },
+            onTurnMessage: message => { saved.push(message); },
+        });
+
+        expect(calls).toEqual([{ name: "codex__apply_patch", args: { patch: patchText } }]);
+        expect(saved[0]?.tool_calls?.[0]?.custom?.input).toBe(patchText);
+    });
 });

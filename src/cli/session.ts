@@ -23,6 +23,7 @@ import { sortSessions, type SessionOrderItem } from "../utils/session-order.js";
 import { formatRelativeTime } from "../utils/time.js";
 import { createUlid } from "../utils/ulid.js";
 import { getSessionsDir, resolveCwdInput } from "../utils/runtime-paths.js";
+import { patchArgumentsJson } from "../tools/tool-kinds.js";
 import { isUlid, sanitizeSessionId, shortSessionId } from "../utils/session-id.js";
 import { acquireSessionLock } from "../utils/session-lock.js";
 import { removeSessionArtifacts } from "../events/session-cleanup.js";
@@ -759,8 +760,10 @@ function renderMessage(message: StoredChatMessage, full: boolean): string[] {
             const lines: string[] = [];
             if (message.content) lines.push(`assistant: ${formatBody(message.content, full)}`);
             for (const call of message.tool_calls ?? []) {
-                const name = call?.function?.name ?? call?.name ?? "tool";
-                const args = call?.function?.arguments ?? "";
+                const name = call?.function?.name ?? call?.custom?.name ?? call?.name ?? "tool";
+                // 自由文本工具的参数按 {"patch": ...} 展示，与 function 调用同形
+                const args = call?.function?.arguments
+                    ?? (typeof call?.custom?.input === "string" ? patchArgumentsJson(call.custom.input) : "");
                 lines.push(`  ⤷ ${name}(${formatBody(String(args), full)})`);
             }
             return lines.length > 0 ? lines : ["assistant:（空）"];

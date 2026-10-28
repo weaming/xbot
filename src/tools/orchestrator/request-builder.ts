@@ -17,18 +17,32 @@ export function resolveProtocol(client: { protocol?: ChatProtocol; createRespons
     return client.protocol === "responses" ? "responses" : "chat_completions";
 }
 
-/** Chat Completions 的 function 定义 → Responses 的扁平工具定义。 */
+/** Chat Completions 的 function 定义 → Responses 的扁平工具定义（custom 工具同样扁平）。 */
 export function toResponsesToolDefinitions(tools: any[], enableDeferredLoading = false): any[] {
     return tools
-        .filter(tool => tool?.type === "function" && tool.function?.name)
-        .map(tool => ({
-            type: "function",
-            name: tool.function.name,
-            ...(tool.function.description ? { description: tool.function.description } : {}),
-            ...(tool.function.parameters ? { parameters: tool.function.parameters } : {}),
-            ...(tool.function.strict !== undefined ? { strict: tool.function.strict } : {}),
-            ...(enableDeferredLoading && tool.deferLoading === true ? { defer_loading: true } : {}),
-        }));
+        .filter(tool => (tool?.type === "function" && tool.function?.name)
+            || (tool?.type === "custom" && typeof tool.name === "string"))
+        .map(tool => {
+            const deferred = enableDeferredLoading && tool.deferLoading === true ? { defer_loading: true } : {};
+            if (tool.type === "custom") {
+                // 自由文本工具：input 不再走 JSON schema，format 决定约束方式（text 表示不约束）
+                return {
+                    type: "custom",
+                    name: tool.name,
+                    ...(tool.description ? { description: tool.description } : {}),
+                    ...(tool.format ? { format: tool.format } : {}),
+                    ...deferred,
+                };
+            }
+            return {
+                type: "function",
+                name: tool.function.name,
+                ...(tool.function.description ? { description: tool.function.description } : {}),
+                ...(tool.function.parameters ? { parameters: tool.function.parameters } : {}),
+                ...(tool.function.strict !== undefined ? { strict: tool.function.strict } : {}),
+                ...deferred,
+            };
+        });
 }
 
 export interface HostedToolScope {

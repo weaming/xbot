@@ -5,7 +5,7 @@
  * 循环只剩：准备一轮 → 决策 → 执行工具。
  */
 
-import { DEEPSEEK_OFFICIAL_HOST, endpointHost } from "../../pricing/deepseek.js";
+import { isDeepSeekEndpoint } from "../../pricing/deepseek.js";
 import type { ChatMessage } from "../../types/session.js";
 import { projectChatMessagesForPrompt } from "../../utils/tool-result-context.js";
 import {
@@ -35,8 +35,10 @@ import {
 import {
   expandToolMediaMessages,
   materializeResponsesInput,
+  normalizeToolCallShapes,
   stripResponsesMetadata,
 } from "./messages.js";
+import { adaptToolsForUpstream, resolveApplyPatchToolMode } from "./apply-patch-tool.js";
 
 /** 把工具结果中的图片上传成 DeepSeek Files，返回 file id。 */
 async function uploadImageForDeepSeek(client: ChatClient, image: any): Promise<string> {
@@ -50,12 +52,8 @@ async function uploadImageForDeepSeek(client: ChatClient, image: any): Promise<s
     return uploaded.id;
 }
 
-/**
- * DeepSeek 兼容：部分兼容端点要求接入 DeepSeek 模型。另外价格表依赖官方 host 判定。
- */
-export function isDeepSeekEndpoint(model: string, baseURL: string): boolean {
-    return model.toLowerCase().includes("deepseek") || endpointHost(baseURL) === DEEPSEEK_OFFICIAL_HOST;
-}
+/** 历史调用方从本模块取该判定，实现已下沉到 pricing（无上游依赖）。 */
+export { isDeepSeekEndpoint };
 
 /**
  * 判定接入端是否接受 Chat Completions 的 `input_audio` 内容块。
@@ -125,6 +123,8 @@ export async function prepareRequest(options: PrepareRequestOptions): Promise<Pr
     const { client, model } = options;
     const protocol = resolveProtocol(client);
     const useResponses = protocol === "responses";
+    // apply_patch 是自由文本工具：gpt-* 发 custom，DeepSeek 留在 function 上加固，其余不动
+    const applyPatchMode = resolveApplyPatchToolMode({ model, baseURL: client.baseURL });
 
     // 全量工具始终按名称排序，确保不同请求使用稳定的工具前缀。
     const currentTools = sortToolsByName(options.getToolDefinitions ? options.getToolDefinitions() : options.tools);
@@ -136,9 +136,11 @@ export async function prepareRequest(options: PrepareRequestOptions): Promise<Pr
         ? [...promptMessages, ...reminders.map((content) => ({ role: "user" as const, content }))]
         : promptMessages;
 
+    // 历史里的 apply_patch 调用先按当前上游形态归一，再按协议物化
+    const shapedMessages = normalizeToolCallShapes(sourceMessages, applyPatchMode);
     const requestMessages = useResponses
-        ? sourceMessages
-        : expandToolMediaMessages(stripResponsesMetadata(sourceMessages), {
+        ? shapedMessages
+        : expandToolMediaMessages(stripResponsesMetadata(shapedMessages), {
             allowAudio: supportsAudioInput(model, client.baseURL),
         });
 
@@ -149,6 +151,7 @@ export async function prepareRequest(options: PrepareRequestOptions): Promise<Pr
             : await materializeImageMessages(requestMessages);
 
     const normalizedTools = options.normalizedTools(currentTools);
+    const adaptedTools = adaptToolsForUpstream(normalizedTools, { mode: applyPatchMode, protocol });
     // 托管工具只在 Responses 协议声明：Chat Completions 只接受 function 类型，
     // 严格的上游会直接以 422 unknown variant 拒绝 web_search 等类型。
     // DeepSeek 兼容端只有 pro 档托管 web_search；flash 档与 tool_search 均由能力集合过滤掉。
@@ -158,12 +161,12 @@ export async function prepareRequest(options: PrepareRequestOptions): Promise<Pr
         : [];
     // tool_search 依赖至少一个延迟加载的 Responses function 工具；按实际声明的托管工具判断。
     const enableDeferredLoading = supportedHostedTools.some(tool => tool.type === "tool_search")
-        && normalizedTools.some(tool => tool.deferLoading === true);
+        && adaptedTools.some(tool => tool.deferLoading === true);
     const hostedTools = supportedHostedTools
         .filter(tool => tool.type !== "tool_search" || enableDeferredLoading);
     const requestTools = useResponses
-        ? appendHostedTools(toResponsesToolDefinitions(normalizedTools, enableDeferredLoading), hostedTools)
-        : normalizedTools.map(({ deferLoading: _deferLoading, ...tool }) => tool);
+        ? appendHostedTools(toResponsesToolDefinitions(adaptedTools, enableDeferredLoading), hostedTools)
+        : adaptedTools.map(({ deferLoading: _deferLoading, ...tool }) => tool);
 
     const isMiniMax = model.startsWith("MiniMax-");
     const requestBody = buildRequestBody({

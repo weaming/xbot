@@ -99,6 +99,8 @@ async function countMessageTokens(
             tokens += TOOL_CALL_OVERHEAD_TOKENS;
             if (call.function?.name) tokens += await countTextTokens(call.function.name, model);
             if (call.function?.arguments) tokens += await countTextTokens(call.function.arguments, model);
+            if (call.custom?.name) tokens += await countTextTokens(call.custom.name, model);
+            if (typeof call.custom?.input === "string") tokens += await countTextTokens(call.custom.input, model);
         }
     }
 

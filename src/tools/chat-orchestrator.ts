@@ -8,6 +8,7 @@ import OpenAI from "openai";
 import { createHash } from "node:crypto";
 import { recordLLMExchange, type LLMRequestKind, type LLMUsageLogEntry } from "../utils/logger.js";
 import { normalizeToolDefinitionsForDeepSeek } from "./tool-schema.js";
+import { patchArgumentsJson } from "./tool-kinds.js";
 import {
   compactJsonToolOutput,
   type ToolExecutionOutput,
@@ -411,7 +412,14 @@ async function collectResponsesResponse(
 
   let completedResponse: any;
   const outputItems: any[] = [];
-  const functionCalls = new Map<string, { index: number; id: string; name: string; arguments: string }>();
+  const functionCalls = new Map<string, {
+    index: number;
+    id: string;
+    name: string;
+    arguments: string;
+    /** custom 是自由文本工具（apply_patch）：arguments 存的是裸补丁文本，不是 JSON。 */
+    kind: "function" | "custom";
+  }>();
   let model = "";
   let usage: any;
   let partialText = "";
@@ -432,12 +440,14 @@ async function collectResponsesResponse(
         emit({ type: "reasoning_delta", delta: event.delta });
       } else if (event.type === "response.output_item.added") {
         const item = event.item;
-        if (item?.type === "function_call") {
+        if (item?.type === "function_call" || item?.type === "custom_tool_call") {
+          const isCustom = item.type === "custom_tool_call";
           const call = {
             index: event.output_index ?? functionCalls.size,
             id: item.call_id ?? item.id ?? `call_${crypto.randomUUID().slice(0, 8)}`,
             name: item.name ?? "",
-            arguments: item.arguments ?? "",
+            arguments: (isCustom ? item.input : item.arguments) ?? "",
+            kind: isCustom ? "custom" as const : "function" as const,
           };
           await persistDelta?.({ toolCalls: [{
             index: call.index,
@@ -448,18 +458,31 @@ async function collectResponsesResponse(
           functionCalls.set(item.id ?? call.id, call);
           emit({ type: "toolcall_start", index: call.index, id: call.id, name: call.name });
         }
-      } else if (event.type === "response.function_call_arguments.delta") {
+      } else if (event.type === "response.function_call_arguments.delta"
+        || event.type === "response.custom_tool_call_input.delta") {
         const key = event.item_id;
         const call = functionCalls.get(key) ?? {
           index: event.output_index ?? functionCalls.size,
           id: key,
           name: "",
           arguments: "",
+          kind: event.type === "response.custom_tool_call_input.delta" ? "custom" as const : "function" as const,
         };
-        await persistDelta?.({ toolCalls: [{ index: call.index, arguments: event.delta }] });
-        call.arguments += event.delta;
+        const delta = typeof event.delta === "string" ? event.delta : "";
+        await persistDelta?.({ toolCalls: [{ index: call.index, arguments: delta }] });
+        call.arguments += delta;
         functionCalls.set(key, call);
-        emit({ type: "toolcall_args_delta", index: call.index, delta: event.delta });
+        emit({ type: "toolcall_args_delta", index: call.index, delta });
+      } else if (event.type === "response.custom_tool_call_input.done") {
+        // 网关可能只在 done 里给完整文本；已有增量时不重复追加
+        const key = event.item_id;
+        const input = typeof event.input === "string" ? event.input : "";
+        const call = functionCalls.get(key);
+        if (call && call.arguments.length === 0 && input) {
+          await persistDelta?.({ toolCalls: [{ index: call.index, arguments: input }] });
+          call.arguments = input;
+          emit({ type: "toolcall_args_delta", index: call.index, delta: input });
+        }
       } else if (event.type === "response.output_text.done") {
         // 网关把增量合并成单个 done 事件时补上正文，已有 delta 时不重复追加
         const text = typeof event.text === "string" ? event.text : "";
@@ -524,7 +547,7 @@ async function collectResponsesResponse(
       index: call.index,
       id: call.id,
       name: call.name,
-      argsJson: call.arguments,
+      argsJson: toolCallArgsJson(call.kind, call.arguments),
     });
   }
 
@@ -546,7 +569,9 @@ async function collectResponsesResponse(
   const knownCallIds = new Set(output.map((item: any) => item?.call_id ?? item?.id).filter(Boolean));
   const missingCalls = [...functionCalls.values()]
     .filter(call => call.name && !knownCallIds.has(call.id))
-    .map(call => ({ type: "function_call", id: call.id, call_id: call.id, name: call.name, arguments: call.arguments }));
+    .map(call => (call.kind === "custom"
+      ? { type: "custom_tool_call", id: call.id, call_id: call.id, name: call.name, input: call.arguments, status: "completed" }
+      : { type: "function_call", id: call.id, call_id: call.id, name: call.name, arguments: call.arguments }));
   const mergedOutput = missingCalls.length > 0 ? [...output, ...missingCalls] : output;
   if (completedResponse) completedResponse.output = mergedOutput;
   if (completedResponse && partialReasoning) completedResponse.reasoning_content = partialReasoning;
@@ -556,6 +581,11 @@ async function collectResponsesResponse(
     ...(partialReasoning ? { reasoning_content: partialReasoning } : {}),
     usage,
   };
+}
+
+/** 工具调用的展示/落盘参数：custom 工具把裸文本重新包成 {"patch": ...}，与历史消息同形。 */
+function toolCallArgsJson(kind: "function" | "custom", argumentsText: string): string {
+  return kind === "custom" ? patchArgumentsJson(argumentsText) : argumentsText;
 }
 
 function withPartialMessage(error: unknown, message: ChatMessage | undefined): unknown {
@@ -576,6 +606,7 @@ async function collectStream(
     id: string;
     name: string;
     arguments: string;
+    kind: "function" | "custom";
     thoughtSignature?: string;
   }>();
   let usage: any;
@@ -597,14 +628,17 @@ async function collectStream(
         ...call,
         index: call.index ?? toolCallCursor++,
       }));
+      // custom 的增量续片不一定重复带 type：按字段存在与否取值，才能拼出完整补丁
+      const toolDeltaName = (call: any) => call?.custom?.name ?? call?.function?.name;
+      const toolDeltaArgs = (call: any) => call?.custom?.input ?? call?.function?.arguments;
       const streamDelta: StreamDelta = {
         ...(delta.content ? { text: delta.content } : {}),
         ...(delta.reasoning_content ? { reasoning: delta.reasoning_content } : {}),
         ...(toolDeltas.length > 0 ? { toolCalls: toolDeltas.map((call: any) => ({
           index: call.index,
           ...(call.id ? { id: call.id } : {}),
-          ...(call.function?.name ? { name: call.function.name } : {}),
-          ...(call.function?.arguments ? { arguments: call.function.arguments } : {}),
+          ...(toolDeltaName(call) ? { name: toolDeltaName(call) } : {}),
+          ...(toolDeltaArgs(call) ? { arguments: toolDeltaArgs(call) } : {}),
           ...((call.thought_signature ?? call.thoughtSignature)
             ? { thoughtSignature: call.thought_signature ?? call.thoughtSignature }
             : {}),
@@ -627,19 +661,26 @@ async function collectStream(
           const index = tc.index;
           let slot = toolCalls.get(index);
           if (!slot) {
-            slot = { id: "", name: "", arguments: "" };
+            slot = {
+              id: "",
+              name: "",
+              arguments: "",
+              kind: tc.type === "custom" || tc.custom ? "custom" : "function",
+            };
             toolCalls.set(index, slot);
           }
           if (tc.id) slot.id = tc.id;
           const thoughtSignature = tc.thought_signature ?? tc.thoughtSignature;
           if (thoughtSignature) slot.thoughtSignature = thoughtSignature;
-          if (tc.function?.name) {
-            slot.name = tc.function.name;
+          const name = toolDeltaName(tc);
+          const argsDelta = toolDeltaArgs(tc);
+          if (name) {
+            slot.name = name;
             emit({ type: "toolcall_start", index, id: slot.id, name: slot.name });
           }
-          if (tc.function?.arguments) {
-            slot.arguments += tc.function.arguments;
-            emit({ type: "toolcall_args_delta", index, delta: tc.function.arguments });
+          if (argsDelta) {
+            slot.arguments += argsDelta;
+            emit({ type: "toolcall_args_delta", index, delta: argsDelta });
           }
         }
       }
@@ -650,7 +691,13 @@ async function collectStream(
   }
 
   for (const [index, slot] of toolCalls) {
-    emit({ type: "toolcall_end", index, id: slot.id, name: slot.name, argsJson: slot.arguments });
+    emit({
+      type: "toolcall_end",
+      index,
+      id: slot.id,
+      name: slot.name,
+      argsJson: toolCallArgsJson(slot.kind, slot.arguments),
+    });
   }
 
   const assistantMsg: any = { role: "assistant", content: content || null };
@@ -660,8 +707,9 @@ async function collectStream(
       .sort(([left], [right]) => left - right)
       .map(([, slot]) => ({
         id: slot.id || `call_${crypto.randomUUID().slice(0, 8)}`,
-        type: "function",
-        function: { name: slot.name, arguments: slot.arguments },
+        ...(slot.kind === "custom"
+          ? { type: "custom", custom: { name: slot.name, input: slot.arguments } }
+          : { type: "function", function: { name: slot.name, arguments: slot.arguments } }),
         ...(slot.thoughtSignature ? { thought_signature: slot.thoughtSignature } : {}),
       }));
   }

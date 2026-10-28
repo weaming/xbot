@@ -34,6 +34,8 @@ export function estimateMessageTokens(message: ChatMessage | StoredChatMessage):
             tokens += 10;
             if (toolCall.function?.name) tokens += estimateTextTokens(toolCall.function.name);
             if (toolCall.function?.arguments) tokens += estimateTextTokens(toolCall.function.arguments);
+            if (toolCall.custom?.name) tokens += estimateTextTokens(toolCall.custom.name);
+            if (typeof toolCall.custom?.input === "string") tokens += estimateTextTokens(toolCall.custom.input);
         }
     }
     return tokens;

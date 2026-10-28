@@ -3,6 +3,7 @@
  * 只做纯函数解析，不依赖主题与渲染，便于单独测试。
  */
 import { CUSTOM_ANSWER_PREFIX } from "../utils/user-question.js";
+import { getPatchToolTag, isApplyPatchTool, isFileMutationTool } from "../tools/tool-kinds.js";
 import {
     isRecord,
     type AskUserDigest,
@@ -11,6 +12,9 @@ import {
     type EditFileDiff,
     type EditFileDiffLine,
 } from "./tool-block-model.js";
+
+// 工具类别判定与发送前适配共用一套口径，这里只做转发
+export { getPatchToolTag, isApplyPatchTool, isFileMutationTool };
 
 /** 判断是否为本地或远程 bash / shell 工具。 */
 export function isBashTool(toolName: string): boolean {
@@ -24,41 +28,6 @@ export function isBashTool(toolName: string): boolean {
         || normalizedName.endsWith("__zsh")
         || normalizedName.endsWith("__sh")
         || normalizedName.endsWith("__shell")
-    );
-}
-
-/** 判断是否为 apply_patch / codex patch 工具。 */
-export function isApplyPatchTool(toolName: string): boolean {
-    const normalized = toolName.toLowerCase();
-    return (
-        normalized === "apply_patch"
-        || normalized.endsWith("__apply_patch")
-        || normalized.endsWith(":apply_patch")
-        || normalized.includes("apply_patch")
-    );
-}
-
-/** 获取 patch 工具的显示标识标签。 */
-export function getPatchToolTag(toolName: string): string | undefined {
-    if (!isApplyPatchTool(toolName)) return undefined;
-    const normalized = toolName.toLowerCase();
-    if (normalized.includes("codex")) return "codex:apply_patch";
-    return "apply_patch";
-}
-
-/** 判断是否为文件变更工具（edit_file / write_file / apply_patch 等）。 */
-export function isFileMutationTool(toolName: string): boolean {
-    const normalized = toolName.toLowerCase();
-    return (
-        normalized === "edit_file"
-        || normalized === "write_file"
-        || normalized === "write_files"
-        || normalized.endsWith("__edit_file")
-        || normalized.endsWith("__write_file")
-        || normalized.endsWith("__write_files")
-        || normalized.endsWith(":edit_file")
-        || normalized.endsWith(":write_file")
-        || isApplyPatchTool(toolName)
     );
 }
 
