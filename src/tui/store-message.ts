@@ -4,7 +4,7 @@
  */
 
 import type { AssistantTimelineItem, UiMessage } from "./store-types.js";
-import { patchArgumentsJson } from "../tools/tool-kinds.js";
+import { patchArgumentsJson } from "../utils/patch-args.js";
 
 /**
  * 回合被中途打断时的收尾措辞：实时投影（store-projector 的 aborted 事件）与重放投影

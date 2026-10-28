@@ -8,7 +8,7 @@ import OpenAI from "openai";
 import { createHash } from "node:crypto";
 import { recordLLMExchange, type LLMRequestKind, type LLMUsageLogEntry } from "../utils/logger.js";
 import { normalizeToolDefinitionsForDeepSeek } from "./tool-schema.js";
-import { patchArgumentsJson } from "./tool-kinds.js";
+import { patchArgumentsJson } from "../utils/patch-args.js";
 import {
   compactJsonToolOutput,
   type ToolExecutionOutput,

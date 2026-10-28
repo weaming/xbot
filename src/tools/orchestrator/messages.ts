@@ -11,7 +11,8 @@ import type { ChatMessage } from "../../types/session.js";
 import type { ToolImageContent } from "../tool-interface.js";
 import type { InputAudioContent } from "../../types/audio.js";
 import { materializeImageMessages } from "../../utils/image-assets.js";
-import { isApplyPatchTool, patchArgumentsJson, patchFromArguments } from "../tool-kinds.js";
+import { isApplyPatchTool } from "../tool-kinds.js";
+import { patchArgumentsJson, patchFromArguments } from "../../utils/patch-args.js";
 import type { ApplyPatchToolMode } from "./apply-patch-tool.js";
 import { repairResponsesFunctionCallItemIds } from "./responses-input-repair.js";
 

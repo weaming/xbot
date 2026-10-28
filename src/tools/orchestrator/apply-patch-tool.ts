@@ -47,13 +47,18 @@ const JSON_STRING_DESCRIPTION_TAIL =
 /** patch 参数描述尾巴：单点强调它是一整个 JSON 字符串。 */
 const JSON_STRING_PATCH_PARAMETER_TAIL = "补丁全文，作为 JSON 字符串传递：换行写作 \\n。";
 
+/** 追加说明尾巴；已经带过的不再追加，保证重复适配幂等。 */
+function appendOnce(text: string, tail: string): string {
+    return text.endsWith(tail) ? text : `${text}${tail}`;
+}
+
 function customToolDefinition(tool: any, name: string): any {
     const description = tool.function?.description ?? tool.description;
     return {
         type: "custom" as const,
         name,
-        // 尾巴无条件追加：空描述时它正是唯一告诉模型「输出裸补丁」的线索
-        description: `${typeof description === "string" ? description : ""}${FREEFORM_DESCRIPTION_TAIL}`,
+        // 空描述时尾巴是唯一告诉模型「输出裸补丁」的线索，所以缺描述也要加；已带过则不重复加
+        description: appendOnce(typeof description === "string" ? description : "", FREEFORM_DESCRIPTION_TAIL),
         format: { type: "text" as const },
         // defer_loading 由调用方按 tool_search 能力决定，形态转换不能顺手丢掉它
         ...(tool.deferLoading === true ? { deferLoading: true } : {}),
@@ -85,14 +90,14 @@ function hardenedFunctionDefinition(tool: any): any {
         ...tool,
         function: {
             ...fn,
-            description: `${description}${JSON_STRING_DESCRIPTION_TAIL}`,
+            description: appendOnce(description, JSON_STRING_DESCRIPTION_TAIL),
             parameters: {
                 ...parameters,
                 properties: {
                     ...properties,
                     patch: {
                         ...patchProperty,
-                        description: `${patchDescription}${JSON_STRING_PATCH_PARAMETER_TAIL}`,
+                        description: appendOnce(patchDescription, JSON_STRING_PATCH_PARAMETER_TAIL),
                     },
                 },
             },
@@ -111,6 +116,8 @@ export function adaptToolsForUpstream(
     if (options.mode === "off") return tools;
 
     return tools.map(tool => {
+        // 只认 function 与扁平 custom 两种入参；Chat Completions 的嵌套 custom 读不到名字，
+        // 原样返回（再适配即 no-op）。prepareRequest 每次都用注册表里的原始定义，不依赖这条路径。
         const name = tool?.function?.name ?? tool?.name;
         if (typeof name !== "string" || !isApplyPatchTool(name)) return tool;
 
@@ -118,12 +125,8 @@ export function adaptToolsForUpstream(
             return tool?.type === "custom" ? tool : hardenedFunctionDefinition(tool);
         }
 
-        const flat = customToolDefinition(
-            tool?.type === "custom" && tool.function === undefined
-                ? { type: "custom", name: tool.name, description: tool.description, format: tool.format }
-                : tool,
-            name,
-        );
+        // 入参可能是 function 形状，也可能是已经转换过的扁平 custom：两种都能直接读描述与 deferLoading
+        const flat = customToolDefinition(tool, name);
         return options.protocol === "chat_completions" ? chatCompletionsCustomTool(flat) : flat;
     });
 }

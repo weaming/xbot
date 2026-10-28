@@ -123,6 +123,30 @@ describe("adaptToolsForUpstream", () => {
     test("off 模式原样返回", () => {
         expect(adaptToolsForUpstream([PATCH_TOOL], { mode: "off", protocol: "responses" })).toEqual([PATCH_TOOL]);
     });
+
+    test("重复适配幂等：描述尾巴只加一次，deferLoading 不丢", () => {
+        const once = adaptToolsForUpstream([{ ...PATCH_TOOL, deferLoading: true }], {
+            mode: "custom",
+            protocol: "responses",
+        });
+        const twice = adaptToolsForUpstream(once, { mode: "custom", protocol: "responses" });
+
+        expect(twice).toEqual(once);
+        expect(twice[0].deferLoading).toBe(true);
+        expect(twice[0].description.split("*** Begin Patch").length - 1).toBe(1);
+
+        // Chat Completions 的嵌套 custom 形状读不到名字，再适配原样返回（no-op）
+        const chatOnce = adaptToolsForUpstream([PATCH_TOOL], { mode: "custom", protocol: "chat_completions" });
+        expect(adaptToolsForUpstream(chatOnce, { mode: "custom", protocol: "chat_completions" })).toEqual(chatOnce);
+    });
+
+    test("function 形态重复加固幂等", () => {
+        const once = adaptToolsForUpstream([PATCH_TOOL], { mode: "function", protocol: "chat_completions" });
+        const twice = adaptToolsForUpstream(once, { mode: "function", protocol: "chat_completions" });
+
+        expect(twice).toEqual(once);
+        expect(twice[0].function.description.split("JSON 对象").length - 1).toBe(1);
+    });
 });
 
 describe("Responses 工具定义", () => {
@@ -186,6 +210,22 @@ describe("响应解析", () => {
         ] as any, "custom");
 
         expect((shaped[0]!.tool_calls![0] as any).custom.input).toBe(PATCH_TEXT);
+    });
+
+    test("截断的 JSON 参数不会把 {\"patch\": 前缀混进补丁", () => {
+        const shaped = normalizeToolCallShapes([
+            {
+                role: "assistant",
+                content: null,
+                tool_calls: [{
+                    id: "call_1",
+                    type: "function",
+                    function: { name: "codex__apply_patch", arguments: '{"cwd":"~","patch":"*** Beg' },
+                }],
+            },
+        ] as any, "custom");
+
+        expect((shaped[0]!.tool_calls![0] as any).custom.input).toBe("");
     });
 });
 

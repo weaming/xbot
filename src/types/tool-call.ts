@@ -3,7 +3,7 @@
  * 与 `ToolCall` 之间只通过本文件的适配器互转，避免各模块重复解析/拼装。
  */
 
-import { patchArgumentsJson } from "../tools/tool-kinds.js";
+import { patchArgumentsJson } from "../utils/patch-args.js";
 
 export interface ToolCall {
     id: string;

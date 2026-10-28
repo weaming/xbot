@@ -23,7 +23,7 @@ import { sortSessions, type SessionOrderItem } from "../utils/session-order.js";
 import { formatRelativeTime } from "../utils/time.js";
 import { createUlid } from "../utils/ulid.js";
 import { getSessionsDir, resolveCwdInput } from "../utils/runtime-paths.js";
-import { patchArgumentsJson } from "../tools/tool-kinds.js";
+import { patchArgumentsJson } from "../utils/patch-args.js";
 import { isUlid, sanitizeSessionId, shortSessionId } from "../utils/session-id.js";
 import { acquireSessionLock } from "../utils/session-lock.js";
 import { removeSessionArtifacts } from "../events/session-cleanup.js";
