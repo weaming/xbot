@@ -5,6 +5,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { setKittyProtocolActive } from "@earendil-works/pi-tui";
 import { bindGlobalKeys, type GlobalKeyHost } from "../../src/tui/keybindings.js";
 
 /** 常用按键的原始序列。 */
@@ -93,6 +94,23 @@ describe("全局快捷键", () => {
 
         expect(send(K.ctrlT)).toEqual({ consume: true });
         expect(calls).not.toContain("openTodoPanel");
+    });
+
+    test("面板打开时将 Kitty 长按重复事件交给面板，松开事件不触发面板", () => {
+        const received: string[] = [];
+        const { send } = setup({ handlePanelInput: data => { received.push(data); return true; } });
+
+        setKittyProtocolActive(true);
+        try {
+            const downRepeat = "\x1b[1;1:2B";
+            const downRelease = "\x1b[1;1:3B";
+
+            expect(send(downRepeat)).toEqual({ consume: true });
+            expect(send(downRelease)).toBeUndefined();
+            expect(received).toEqual([downRepeat]);
+        } finally {
+            setKittyProtocolActive(false);
+        }
     });
 
     test("面板 / 会话 / 清单快捷键", () => {

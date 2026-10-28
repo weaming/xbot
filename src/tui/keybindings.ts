@@ -89,10 +89,13 @@ export function bindGlobalKeys(tui: TuiAltScreen, host: GlobalKeyHost): void {
     tui.addInputListener((data) => {
         // 调试日志（写文件，避免污染 AltScreen 屏幕）：排查终端重复发送
         // kitty 协议编码的 release(;1~) / repeat(;2~) 事件不触发全局快捷键（一次按键两个事件）
-        if (isKittyRepeatOrRelease(data)) return undefined;
+        // release 不应触发面板动作；repeat 则必须先交给打开的面板，否则长按只生效一次。
+        if (isKeyRelease(data)) return undefined;
 
         // 浮层面板打开时独占键盘输入；鼠标滚轮只在面板矩形内生效（面板外滚动不动面板）
         if (host.handlePanelInput(data)) return { consume: true };
+
+        if (isKittyRepeatOrRelease(data)) return undefined;
 
         if (matchesKey(data, Key.ctrlShift("q"))) {
             host.toggleQuestionPanel();
