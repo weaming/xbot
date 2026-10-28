@@ -42,13 +42,26 @@ function peerLabel(peer: PeerMeta): string {
     return theme.chatRoom(label);
 }
 
-/** 状态标记：结果（成功/未完成/丢失）、期望结果。 */
+/** 状态标记：结果（成功/未完成/已取消/丢失）、期望结果。 */
 function peerTags(peer: PeerMeta): string[] {
     if (!peer.isResult) return peer.expectResult ? [theme.dim("期望结果")] : [];
 
     if (peer.lost) return [theme.chatMention("结果丢失")];
     if (peer.late) return [theme.statusWarn("迟到结果")];
+    // 取消优先于 ok：被取消的回合没有产出，标「结果」会误导成正常回传
+    if (peer.cancelled) return [theme.statusWarn("已取消")];
     return peer.ok ? [theme.chatSelf("结果")] : [theme.chatMention("结果（未完成）")];
+}
+
+/** 正文是否整体置灰：丢失、未完成、被取消的结果都没有可用产出。 */
+function isBodyDimmed(peer: PeerMeta): boolean {
+    return peer.isResult === true && !peer.lost && (peer.ok === false || peer.cancelled === true);
+}
+
+/** 正文兜底：没有产出时说明原因，避免只留一个没有内容的头部行。 */
+function peerBody(message: PeerContent): string {
+    if (message.text.trim() || !message.peer.isResult) return message.text;
+    return message.peer.cancelled ? "（本轮被取消，没有输出）" : "（无文本输出）";
 }
 
 /** 头部：`→ 💬 「标题」…id · 期望结果: `；inlineBody=false 时去掉尾部分隔。 */
@@ -61,11 +74,10 @@ function renderPeerHead(peer: PeerMeta, inlineBody = true): string {
     return `${arrow} ${icon} ${peerLabel(peer)}${suffix}${tail}`;
 }
 
-/** 会话间消息纯文本形态：头部 + 全文（失败结果整体置灰）。 */
+/** 会话间消息纯文本形态：头部 + 全文（未完成或被取消的结果整体置灰）。 */
 export function renderPeerPlain(message: PeerContent): string {
-    const body = message.peer.isResult && !message.peer.ok && !message.peer.lost
-        ? theme.chatBody(message.text)
-        : message.text;
+    const text = peerBody(message);
+    const body = isBodyDimmed(message.peer) ? theme.chatBody(text) : text;
     return `${renderPeerHead(message.peer)}${body}`;
 }
 
@@ -96,23 +108,23 @@ export class PeerMessageView implements Component {
         this.root.clear();
 
         const background = theme.chatBackground;
-        const useMarkdown = hasMarkdownSyntax(message.text);
+        const body = peerBody(message);
+        const useMarkdown = hasMarkdownSyntax(body);
         if (!useMarkdown) {
             this.root.addChild(backgroundPadding(background));
-            this.root.addChild(new Text(renderPeerPlain(message), 1, 0, background));
+            const text = isBodyDimmed(message.peer) ? theme.chatBody(body) : body;
+            this.root.addChild(new Text(`${renderPeerHead(message.peer)}${text}`, 1, 0, background));
             return;
         }
 
         this.root.addChild(backgroundPadding(background));
         this.root.addChild(new Text(renderPeerHead(message.peer, false), 1, 0, background));
         this.root.addChild(new Markdown(
-            message.text,
+            body,
             1,
             0,
             markdownTheme,
-            message.peer.isResult && message.peer.ok === false
-                ? { ...PEER_MARKDOWN_TEXT_STYLE, bgColor: background }
-                : { bgColor: background },
+            isBodyDimmed(message.peer) ? { ...PEER_MARKDOWN_TEXT_STYLE, bgColor: background } : { bgColor: background },
         ));
     }
 

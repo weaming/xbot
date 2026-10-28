@@ -53,6 +53,8 @@ export interface PeerMeta {
     ok?: boolean;
     lost?: boolean;
     late?: boolean;
+    /** 对方回合被取消（中止/中断），没有产出：结果只能反映"被取消"。 */
+    cancelled?: boolean;
     /** 对方回合结束时是否会自动回传结果。 */
     expectResult?: boolean;
 }

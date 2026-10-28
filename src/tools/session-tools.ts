@@ -16,6 +16,7 @@ import {
     type SessionControl,
 } from "../control/channel.js";
 import { describeOwnership } from "../control/registry.js";
+import { isCancelledStopReason } from "../control/protocol.js";
 import { shortSessionId } from "../utils/session-id.js";
 import { getPeerResultHistory, getSessionControl, getSessionDirectory } from "../control/runtime.js";
 import { err, ok, type ExecutableTool, type ToolExecutionResult } from "./tool-interface.js";
@@ -454,7 +455,13 @@ async function recentResultLines(sessionId: string): Promise<string[]> {
     const peer = latest.peerTitle
         ? `${shortSessionId(latest.peerId)}「${latest.peerTitle}」`
         : shortSessionId(latest.peerId);
-    const status = latest.lost ? "已丢失" : latest.late ? "迟到结果" : latest.ok ? "ok" : "失败";
+    const status = latest.lost
+        ? "已丢失"
+        : latest.late
+            ? "迟到结果"
+            : isCancelledStopReason(latest.stopReason)
+                ? "已取消"
+                : latest.ok ? "ok" : "失败";
     return ["", `最近结果（来自 ${peer} · ${latest.createdAt} · ${status}）：`, latest.text];
 }
 

@@ -34,7 +34,7 @@ import {
 } from "../control/registry.js";
 import { getSocketPath, removeSocketFile } from "../control/paths.js";
 import { PeerConnection } from "../control/client.js";
-import { createPeerMessage, type PeerResult } from "../control/protocol.js";
+import { createPeerMessage, isCancelledStopReason, type PeerResult } from "../control/protocol.js";
 import type { TuiSessionSummary } from "../tui/agent-types.js";
 import { MAX_SESSION_TITLE_LENGTH, type StoredChatMessage } from "../types/session.js";
 import type { ChatModelSelection } from "../types/chat-model.js";
@@ -611,7 +611,11 @@ async function runSend(
             write(`${JSON.stringify({ sessionId, ...result, delivered: true }, null, 2)}\n`);
             return;
         }
-        write(result.text ? `${result.text}\n` : "（对方回合没有输出）\n");
+        // 被取消的回合没有产出：如实说"已取消"，不要含糊成"没有输出"
+        const emptyText = isCancelledStopReason(result.stopReason)
+            ? "（对方回合已取消，没有输出）\n"
+            : "（对方回合没有输出）\n";
+        write(result.text ? `${result.text}\n` : emptyText);
     } finally {
         connection.close();
     }

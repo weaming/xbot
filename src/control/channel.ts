@@ -14,7 +14,7 @@
 import { PeerClientPool, PeerConnectError, requestOnce } from "./client.js";
 import { OutboxLedger, type WaitOutcome } from "./outbox-ledger.js";
 import { getSocketPath } from "./paths.js";
-import { createPeerMessage, type PeerMessage, type PeerResult } from "./protocol.js";
+import { createPeerMessage, isCancelledStopReason, type PeerMessage, type PeerResult } from "./protocol.js";
 import { listOwnership, probeOwnership, type PeerOwnership } from "./registry.js";
 import { PeerServer } from "./server.js";
 
@@ -590,7 +590,7 @@ export class SessionControl {
     /** 仅对本进程内存投递的期望结果自动归档；跨进程推送没有 ACK，不可据 write 成功关闭。 */
     private autoCloseAfterResult(sessionId: string, message: PeerMessage, result: PeerResult): void {
         if (!message.expectResult || (!message.closeOnResult && !this.autoCloseSpawned.has(sessionId))
-            || ["aborted", "interrupted", "cancelled"].includes(result.stopReason)) return;
+            || isCancelledStopReason(result.stopReason)) return;
         void this.closeSpawnedSession(sessionId, { automatic: true }).then(result => {
             if (!result.ok) console.warn(`⚠️ [SessionControl] 自动归档子会话失败: ${result.error}`);
         });
@@ -607,12 +607,16 @@ export class SessionControl {
 
 }
 
-/** 结果进入模型上下文时的文本形态：与时间线展示同源，避免两处措辞漂移。 */
+/**
+ * 结果进入模型上下文时的文本形态：与时间线展示同源，避免两处措辞漂移。
+ * 被取消的回合单独标出——它没有产出，不能与"正常完成但没说话"混为一谈。
+ */
 export function formatResultText(target: string, result: PeerResult, options: { late?: boolean } = {}): string {
-    const status = result.ok ? "" : "（未正常完成）";
+    const cancelled = isCancelledStopReason(result.stopReason);
+    const status = cancelled ? "（已取消）" : result.ok ? "" : "（未正常完成）";
     const late = options.late ? "（迟到）" : "";
     const header = `[会话 ${target} 的结果${status}${late}]`;
-    const body = result.text.trim() || "（无文本输出）";
+    const body = result.text.trim() || (cancelled ? "（本轮被取消，没有文本输出）" : "（无文本输出）");
     return [header, body, `（stopReason: ${result.stopReason}）`].join("\n");
 }
 

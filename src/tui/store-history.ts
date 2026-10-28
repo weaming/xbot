@@ -12,6 +12,7 @@
  */
 
 import type { AgentEvent } from "../events/agent-events.js";
+import { isCancelledStopReason } from "../control/protocol.js";
 import type { ChatMessage } from "../types/session.js";
 import { StreamRecovery } from "../utils/stream-recovery.js";
 import type { AssistantTimelineItem, SessionUiState, ToolBlock, UiMessage } from "./store-types.js";
@@ -47,7 +48,7 @@ function anchorOfPeerEvent(
         };
     }
 
-    const { msgId, peerId, peerTitle, ok, lost, late, text } = event.payload;
+    const { msgId, peerId, peerTitle, ok, lost, late, text, stopReason } = event.payload;
     const peer: PeerMeta = {
         direction: "in",
         msgId,
@@ -57,6 +58,7 @@ function anchorOfPeerEvent(
         ok,
         ...(lost ? { lost: true } : {}),
         ...(late ? { late: true } : {}),
+        ...(isCancelledStopReason(stopReason) ? { cancelled: true } : {}),
     };
     return { seq: event.seq, text, peer };
 }

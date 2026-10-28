@@ -87,6 +87,18 @@ describe("会话间消息纯文本形态", () => {
         expect(renderPeerPlain(peerMessage("done", { isResult: true, ok: true }))).not.toContain("\x1b[90mdone");
         expect(renderPeerPlain(peerMessage("普通一句话"))).not.toContain("\x1b[90m普通");
     });
+
+    test("被取消的结果标「已取消」，不显示成正常回传", () => {
+        const cancelled = plain(renderPeerPlain(peerMessage("", { isResult: true, ok: true, cancelled: true })));
+
+        expect(cancelled).toContain("已取消");
+        expect(cancelled).not.toContain("· 结果");
+        // 没有产出时说明是被取消，而不是留一个空的头部行
+        expect(cancelled).toContain("（本轮被取消，没有输出）");
+        // 取消的结果没有产出，正文整体置灰
+        expect(renderPeerPlain(peerMessage("半句话", { isResult: true, ok: true, cancelled: true })))
+            .toContain("\x1b[90m半句话");
+    });
 });
 
 describe("PeerMessageView 渲染分支", () => {

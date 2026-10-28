@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "fs";
 import net from "net";
-import { PeerSendFailure, SessionControl, type SessionControlHost } from "../../src/control/channel.js";
+import { formatResultText, PeerSendFailure, SessionControl, type SessionControlHost } from "../../src/control/channel.js";
 import { requestOnce } from "../../src/control/client.js";
 import { ensureControlDir, getSocketPath } from "../../src/control/paths.js";
 import { createPeerMessage, encodeFrame, splitFrames, type PeerFrame, type PeerMessage, type PeerResult } from "../../src/control/protocol.js";
@@ -336,6 +336,25 @@ describe("同进程直投", () => {
         expect(injected.length).toBe(1);
         expect(injected[0]).toContain("跑完了");
         expect(control.queuedResults("a")).toBe(0);
+    });
+
+    test("被取消的回合回传结果时，文本标明已取消而不是普通结果", async () => {
+        const host = makeHost();
+        const control = makeControl(host);
+        await control.claim("a");
+        await control.claim("b");
+
+        const message = await control.send("a", "b", "跑一下", { expectResult: true });
+        control.completeInbound("b", message, {
+            msgId: message.id,
+            ok: true,
+            text: "",
+            stopReason: "aborted",
+        });
+
+        const injected = control.takeResults("a");
+        expect(injected[0]).toContain("（已取消）");
+        expect(injected[0]).toContain("（本轮被取消，没有文本输出）");
     });
 
     test("accept 在 send 返回前完成时，预登记的期望仍能接住结果", async () => {
@@ -798,3 +817,14 @@ async function fetchRelease(_control: SessionControl, sessionId: string): Promis
     if (reply.type !== "release_result") return "error";
     return reply.ok ? "ok" : "busy";
 }
+
+describe("结果文本形态", () => {
+    test("正常完成、未完成、已取消三种终态措辞互不混淆", () => {
+        const base = { msgId: "msg-1", text: "" };
+
+        expect(formatResultText("s1", { ...base, ok: true, stopReason: "stop" })).toContain("[会话 s1 的结果]");
+        expect(formatResultText("s1", { ...base, ok: false, stopReason: "error" })).toContain("（未正常完成）");
+        expect(formatResultText("s1", { ...base, ok: true, stopReason: "aborted" })).toContain("（已取消）");
+        expect(formatResultText("s1", { ...base, ok: true, stopReason: "aborted" })).toContain("（本轮被取消，没有文本输出）");
+    });
+});

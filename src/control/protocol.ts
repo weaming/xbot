@@ -36,6 +36,17 @@ export interface PeerResult {
     error?: string;
 }
 
+/**
+ * 回合被取消的终态：用户中止（aborted）、进程中断（interrupted）、
+ * 跨会话取消（cancelled）。这类回合不会再有产出，结果只能如实反映"被取消"。
+ */
+const CANCELLED_STOP_REASONS = new Set(["aborted", "interrupted", "cancelled"]);
+
+/** 该终态是否表示回合被取消。结果文案与时间线标记共用，避免各写一份名单。 */
+export function isCancelledStopReason(stopReason: string | undefined): boolean {
+    return stopReason !== undefined && CANCELLED_STOP_REASONS.has(stopReason);
+}
+
 /** 持有者身份：由 who 握手实时返回，不落盘所以不会滞后。 */
 export interface PeerOwnerInfo {
     pid: number;

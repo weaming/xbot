@@ -26,6 +26,8 @@ const cancelled: Array<{ sessionId: string; close: boolean }> = [];
 const woken: string[] = [];
 /** 目标会话受理后自动回传的结果文本：设了才回，模拟对方跑完一轮。 */
 const replies = new Map<string, string>();
+/** 回传结果时的终态：默认 stop，设了 aborted 即模拟对方回合被取消。 */
+const replyStopReasons = new Map<string, string>();
 /** 各会话历史收到的会话间结果：模拟事件日志里的 peer_result。 */
 const peerResults = new Map<string, PeerResultRecord[]>();
 
@@ -69,7 +71,7 @@ function makeHost(): SessionControlHost {
                         msgId: message.id,
                         ok: true,
                         text: reply,
-                        stopReason: "stop",
+                        stopReason: replyStopReasons.get(message.to) ?? "stop",
                     });
                 }, 0);
             }
@@ -101,6 +103,7 @@ beforeEach(() => {
     cancelled.length = 0;
     woken.length = 0;
     replies.clear();
+    replyStopReasons.clear();
     peerResults.clear();
 
     control = new SessionControl(makeHost(), { probeTimeoutMs: 100, negotiateTimeoutMs: 200 });
@@ -551,6 +554,24 @@ describe("session_send", () => {
         expect(result.isError).toBeUndefined();
         expect(result.content[0]?.text).toContain("未见结果");
         expect(control.awaitingResults(SESSIONS[0]!.sessionId)).toBe(1);
+    });
+
+    test("对方回合被取消时 wait_seconds 明确回报已取消", async () => {
+        await control.claim(SESSIONS[0]!.sessionId);
+        await control.claim(SESSIONS[1]!.sessionId);
+        replies.set(SESSIONS[1]!.sessionId, "");
+        replyStopReasons.set(SESSIONS[1]!.sessionId, "aborted");
+
+        const result = await tool("session_send").execute({
+            session: SESSIONS[1]!.sessionId,
+            text: "跑一下再被取消",
+            wait_seconds: 5,
+            __sessionId: SESSIONS[0]!.sessionId,
+        });
+
+        expect(result.isError).toBeUndefined();
+        expect(result.content[0]?.text).toContain("（已取消）");
+        expect(result.content[0]?.text).toContain("本轮被取消");
     });
 
     test("wait_seconds 为零时发完即返回", async () => {

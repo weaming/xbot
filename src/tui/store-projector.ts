@@ -4,6 +4,7 @@
  */
 
 import type { UIEvent } from "../events/ui-events.js";
+import { isCancelledStopReason } from "../control/protocol.js";
 import type { UsageInfo } from "../types/chat.js";
 import type { PeerMeta, SessionUiState, ToolBlock, UiMessage } from "./store-types.js";
 import {
@@ -116,6 +117,7 @@ export function applyAgentEvent(
                 ok: event.ok,
                 ...(event.lost ? { lost: true } : {}),
                 ...(event.late ? { late: true } : {}),
+                ...(isCancelledStopReason(event.stopReason) ? { cancelled: true } : {}),
             }, deps);
             break;
         case "turn_start":

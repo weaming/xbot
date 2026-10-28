@@ -86,6 +86,30 @@ describe("会话间消息的时间线投影", () => {
         expect(store.messages[1]?.peer?.lost).toBe(true);
     });
 
+    test("重放被取消的 peer_result 带 cancelled 标记，不与正常结果混淆", () => {
+        const store = new ChatStore();
+        store.setCurrentSession("session-1");
+
+        store.loadHistory([
+            {
+                seq: 1,
+                ts: "2026-09-08T10:00:00+08:00",
+                sessionId: "session-1",
+                type: "peer_result",
+                payload: {
+                    msgId: "msg-1",
+                    peerId: "session-2",
+                    ok: true,
+                    text: "",
+                    stopReason: "aborted",
+                    createdAt: "2026-09-08T10:00:00+08:00",
+                },
+            },
+        ]);
+
+        expect(store.messages[0]?.peer?.cancelled).toBe(true);
+    });
+
     test("重放同一消息的 lost 通知与迟到结果时保留两条事实", () => {
         const store = new ChatStore();
         store.setCurrentSession("session-1");
@@ -261,6 +285,22 @@ describe("会话间消息的时间线投影", () => {
 
         expect(store.messages[0]?.peer?.lost).toBe(true);
         expect(store.messages[0]?.peer?.ok).toBe(false);
+    });
+
+    test("实时 peer_result 被取消时标记 cancelled", () => {
+        const store = new ChatStore();
+        store.setCurrentSession("session-1");
+
+        store.applyEvent(1, "session-1", {
+            type: "peer_result",
+            msgId: "msg-out",
+            peerId: "session-2",
+            ok: true,
+            text: "",
+            stopReason: "aborted",
+        });
+
+        expect(store.messages[0]?.peer?.cancelled).toBe(true);
     });
 
     test("实时 peer_result 迟到时标记 late", () => {
