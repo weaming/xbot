@@ -20,7 +20,7 @@ import { buildUsageStats, toUsageInfo } from "./usage.js";
 import { isDeepSeekEndpoint, prepareRequest } from "./turn-request.js";
 import type { LLMRequestKind } from "../../utils/logger.js";
 import { getPromptTooLongLimit, isInvalidAssistantMessageError } from "../../utils/provider-context-limit.js";
-import { filterEmptyAssistantMessages } from "./messages.js";
+import { filterEmptyAssistantMessages } from "../../utils/conversation-history-repair.js";
 import { extractCitations } from "./citations.js";
 
 /** 每轮请求的协议与客户端形状。 */

@@ -11,6 +11,7 @@ import type { ChatMessage } from "../../types/session.js";
 import type { ToolImageContent } from "../tool-interface.js";
 import type { InputAudioContent } from "../../types/audio.js";
 import { materializeImageMessages } from "../../utils/image-assets.js";
+import { repairResponsesFunctionCallItemIds } from "./responses-input-repair.js";
 
 function responseImagePart(part: any): any {
   return {
@@ -55,7 +56,7 @@ export async function materializeResponsesInput(messages: ChatMessage[]): Promis
     }
 
     if (message.role === "assistant" && Array.isArray(message.response_output)) {
-      result.push(...message.response_output);
+      result.push(...repairResponsesFunctionCallItemIds(message.response_output));
       continue;
     }
 
@@ -179,11 +180,4 @@ export function stripResponsesMetadata(messages: ChatMessage[]): ChatMessage[] {
     const { response_output: _responseOutput, citations: _citations, ...chatMessage } = message;
     return chatMessage as ChatMessage;
   });
-}
-
-/** Chat Completions 请求不能包含仅有思考内容的空助手消息。 */
-export function filterEmptyAssistantMessages(messages: ChatMessage[]): ChatMessage[] {
-  return messages.filter(message => message.role !== "assistant"
-    || Boolean(message.content)
-    || Boolean(message.tool_calls?.length));
 }

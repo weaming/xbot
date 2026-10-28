@@ -5,9 +5,9 @@ import {
     flattenTurns,
     getSessionContextHistory,
     getSessionHistory,
-    repairEmptyAssistantHistory,
     replaceWithCompactedContext,
 } from '../../src/utils/conversation-history.js';
+import { repairEmptyAssistantHistory } from '../../src/utils/conversation-history-repair.js';
 import type { ChatMessage, ConversationTurn, Session, StoredChatMessage } from '../../src/types/session.js';
 import { projectChatMessagesForPrompt } from '../../src/utils/tool-result-context.js';
 

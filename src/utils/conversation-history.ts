@@ -1,9 +1,9 @@
 import type { ChatMessage, ConversationTurn, Session, StoredChatMessage } from '../types/session.js';
-import { fromOpenAIToolCalls } from '../types/tool-call.js';
 import { getShanghaiISOString } from './time.js';
 import { projectToolMessageForPrompt } from './tool-result-context.js';
 import { createUlid } from './ulid.js';
 import { toUserContent, type UserMessageInput } from '../types/image.js';
+import { repairToolCallPairing } from './conversation-history-repair.js';
 
 type StoredUserInput = string | UserMessageInput;
 
@@ -48,34 +48,6 @@ export function flattenTurns(turns: ConversationTurn[]): ChatMessage[] {
 /** 获取完整历史，供每日总结等不受上下文窗口影响的消费者使用。 */
 export function getSessionHistory(session: Pick<Session, 'turns'>): ChatMessage[] {
     return flattenTurns(session.turns);
-}
-
-/** 移除会让 Chat Completions 拒绝请求的空助手消息，修正可能指向它的压缩边界。 */
-export function repairEmptyAssistantHistory(session: Session): number {
-    let removed = 0;
-    let nextKeepFromId: string | undefined;
-    let hasRemovedKeepFrom = false;
-
-    for (const turn of session.turns) {
-        turn.messages = turn.messages.filter(message => {
-            const isEmptyAssistant = message.role === 'assistant'
-                && !message.content
-                && !message.tool_calls?.length;
-            if (isEmptyAssistant) {
-                removed += 1;
-                if (message.id === session.compactedKeepFromMessageId) hasRemovedKeepFrom = true;
-                return false;
-            }
-            if (hasRemovedKeepFrom && !nextKeepFromId) nextKeepFromId = message.id;
-            return true;
-        });
-    }
-
-    if (hasRemovedKeepFrom) {
-        session.compactedKeepFromMessageId = nextKeepFromId;
-        if (!nextKeepFromId) session.compactedThroughTurnId = session.turns.at(-1)?.id;
-    }
-    return removed;
 }
 
 /** 获取当前上下文窗口：系统消息与总结消息分开，总结消息使用 user 消息作为代际前缀注入。 */
@@ -133,51 +105,6 @@ function collectRetainedMessages(
         }
     }
     return messages;
-}
-
-/** 工具调用缺失结果时补的合成内容：明确告知模型该调用未完成，由它决定是否重调。 */
-const MISSING_TOOL_RESULT_TEXT = '[工具调用被中断，未返回结果]';
-
-/**
- * 修复送 LLM 的工具消息配对：assistant 的 tool_calls 没有对应结果时补一条合成结果，
- * 没有对应声明的孤立 tool 消息直接丢弃。输出确定，保证前缀缓存稳定。
- * skipToolCallIds 里的调用跳过合成——续跑会真的重跑它们并补上真实结果。
- */
-function repairToolCallPairing(messages: ChatMessage[], skipToolCallIds?: ReadonlySet<string>): ChatMessage[] {
-    const repaired: ChatMessage[] = [];
-    // 当前 assistant(tool_calls) 尚未响应的调用：id → 工具名
-    const pending = new Map<string, string>();
-
-    const flushMissing = (): void => {
-        for (const [id, name] of pending) {
-            if (skipToolCallIds?.has(id)) continue;
-            repaired.push({
-                role: 'tool',
-                tool_call_id: id,
-                name: name || undefined,
-                content: MISSING_TOOL_RESULT_TEXT,
-            });
-        }
-        pending.clear();
-    };
-
-    for (const message of messages) {
-        if (message.role === 'tool') {
-            if (!pending.has(message.tool_call_id)) continue; // 孤立/错位的结果丢弃
-            pending.delete(message.tool_call_id);
-            repaired.push(message);
-            continue;
-        }
-        flushMissing();
-        repaired.push(message);
-        if (message.role === 'assistant') {
-            for (const call of fromOpenAIToolCalls(message.tool_calls)) {
-                pending.set(call.id, call.name);
-            }
-        }
-    }
-    flushMissing();
-    return repaired;
 }
 
 function updateContextEpoch(session: Session, reason: 'hard_trim' | 'compact', compactInstruction?: string): void {

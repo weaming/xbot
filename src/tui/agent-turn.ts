@@ -21,7 +21,7 @@ import type { UsageInfo } from "../types/chat.js";
 import type { Session } from "../types/session.js";
 import type { ActiveSession, TurnSpec } from "./agent-types.js";
 import { toUserContent, type UserMessageInput } from "../types/image.js";
-import { repairEmptyAssistantHistory } from "../utils/conversation-history.js";
+import { repairEmptyAssistantHistory } from "../utils/conversation-history-repair.js";
 
 /** turn 执行所需的宿主能力。 */
 export interface TurnHost {
