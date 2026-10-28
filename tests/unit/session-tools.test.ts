@@ -175,6 +175,21 @@ describe("session_spawn", () => {
         expect(control.spawnedCount).toBe(1);
     });
 
+    test("可在派生时发送初次任务消息并请求结果回传", async () => {
+        const result = await tool("session_spawn").execute({
+            title: "初次任务",
+            text: "检查这段日志",
+            __sessionId: SESSIONS[0]!.sessionId,
+        });
+
+        const sessionId = /完整 id：(\S+)/.exec(result.content[0]?.text ?? "")?.[1];
+        expect(result.isError).toBeUndefined();
+        expect(sessionId).toBeDefined();
+        expect(outbound).toHaveLength(1);
+        expect(outbound[0]).toMatchObject({ to: sessionId, text: "检查这段日志", expectResult: true });
+        expect(result.content[0]?.text).toContain("已发送初次任务消息");
+    });
+
     test("auto_close=true 在首个期望结果回传后自动归档并释放", async () => {
         const spawn = await tool("session_spawn").execute({
             auto_close: true,

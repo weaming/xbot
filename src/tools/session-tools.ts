@@ -28,6 +28,7 @@ const MAX_WAIT_SECONDS = 600;
 
 interface SessionSpawnArgs {
     title?: string;
+    text?: string;
     auto_close?: boolean;
     __sessionId?: string;
 }
@@ -69,6 +70,7 @@ const sessionSpawnTool: ExecutableTool = {
     name: "session_spawn",
     description: [
         "开一个子会话并与之协作：子会话立即创建、由本实例持有，并出现在用户的会话条里。",
+        "可选 text 会作为首条任务消息立即发送，并请求结果自动回传。",
         "返回的 sessionId 用 session_send 派活（expect_result=true 时结果会自动回传）。",
         "auto_close=true 时，本实例内 session_send 派发的首个 expect_result=true 任务完成并回传后自动归档；历史保留。",
         "跨进程 session_send 暂不自动关闭（结果推送尚无可靠 ACK），需用 session_close 手动归档。",
@@ -81,6 +83,7 @@ const sessionSpawnTool: ExecutableTool = {
         type: "object",
         properties: {
             title: { type: "string", description: "子会话标题（便于用户辨认；省略则由首条消息推导）" },
+            text: { type: "string", description: "可选的初次任务消息；创建后立即发送，并请求结果自动回传" },
             auto_close: {
                 type: "boolean",
                 description: "本实例内 session_send 的首个期望结果回传后自动归档（保留历史）；跨进程发送不会自动关闭；默认 false",
@@ -94,20 +97,36 @@ const sessionSpawnTool: ExecutableTool = {
         if (!from) return err("session_spawn 需要会话上下文（缺少 __sessionId）");
 
         const title = (args.title ?? "").trim();
+        const text = (args.text ?? "").trim();
+        const autoClose = args.auto_close === true;
         let result;
         try {
-            result = await control.spawnSession(from, title || undefined, { autoClose: args.auto_close === true });
+            result = await control.spawnSession(from, title || undefined, { autoClose });
         } catch (error) {
             return err(`派生会话失败：${(error as Error)?.message ?? error}`);
         }
         if (!result.ok) return err(result.error);
 
+        if (text) {
+            try {
+                await control.send(from, result.sessionId, text, {
+                    expectResult: true,
+                    ...(autoClose ? { closeOnResult: true } : {}),
+                });
+            } catch (error) {
+                return err(
+                    `已创建会话 ${result.sessionId}，但初次消息发送失败：${(error as Error)?.message ?? error}`,
+                );
+            }
+        }
+
         return ok(
             [
                 `已派生并接管会话 ${shortSessionId(result.sessionId)}`,
                 `完整 id：${result.sessionId}`,
-                ...(args.auto_close ? ["任务完成回传后会自动归档（保留历史）。"] : []),
-                `用 session_send(session="${result.sessionId}", text=…, expect_result=true) 派活。`,
+                ...(autoClose ? ["任务完成回传后会自动归档（保留历史）。"] : []),
+                ...(text ? ["已发送初次任务消息，结果会自动回传。"] : []),
+                ...(!text ? [`用 session_send(session="${result.sessionId}", text=…, expect_result=true) 派活。`] : []),
             ].join("\n"),
         );
     },
