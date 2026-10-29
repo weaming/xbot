@@ -300,9 +300,10 @@ export function CardDetail({
                 />
             </div>
 
-            <div className="flex-1 overflow-y-auto p-3">
+            {/* 外层只负责给高度：各 tab 自己决定滚动，会话历史才能吃满剩余空间 */}
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-3">
                 {tab === "props" && (
-                    <div className="flex flex-col gap-3 text-sm">
+                    <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto text-sm">
                         {/* 上下结构：长内容（描述、MCP、结果）能用满面板宽度 */}
                         <Field label="工作目录">
                             <span className="break-all">{abbreviateHome(job.input.workspace, home)}</span>
@@ -409,8 +410,8 @@ export function CardDetail({
                 )}
 
                 {tab === "sessions" && (
-                    <div className="flex flex-col gap-2">
-                        <div className="flex items-center gap-2">
+                    <div className="flex min-h-0 flex-1 flex-col gap-2">
+                        <div className="flex shrink-0 items-center gap-2">
                             {sessions.length === 0 ? (
                                 <span className="flex-1 text-xs text-muted">还没有执行会话</span>
                             ) : (
@@ -428,11 +429,11 @@ export function CardDetail({
                             )}
                             <Button onClick={() => void openBranch()}>+ 新会话</Button>
                         </div>
-                        <div ref={timelineRef} className="flex max-h-[420px] flex-col overflow-y-auto pr-1">
+                        <div ref={timelineRef} className="flex min-h-0 flex-1 flex-col overflow-y-auto pr-1">
                             <Timeline events={events} />
                         </div>
                         {activeSessionId && (
-                            <div className="flex flex-col gap-2 border-t border-border pt-2">
+                            <div className="flex shrink-0 flex-col gap-2 border-t border-border pt-2">
                                 <Textarea
                                     value={inputDraft}
                                     placeholder="随时输入：空闲会立刻开始；正在跑就按下面的方式排队（可直接粘贴图片）"
@@ -511,7 +512,7 @@ export function CardDetail({
                 )}
 
                 {tab === "comments" && (
-                    <div className="flex flex-col gap-2">
+                    <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
                         {comments.length === 0 && <p className="text-xs text-muted">还没有评论</p>}
                         {comments.map(comment => (
                             <div key={comment.id} className="flex flex-col gap-1.5">
