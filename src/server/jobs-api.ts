@@ -22,6 +22,7 @@ import {
     type JobRecord,
     type JobState,
 } from "../jobs/types.js";
+import { listLazyServerNames } from "../mcp/client-manager.js";
 import { toolCatalog } from "../tools/tool-catalog.js";
 import { fail, json, readJson } from "./respond.js";
 import { openSseStream, parseSseCursor, type SseSource } from "./sse.js";
@@ -388,7 +389,11 @@ export async function handleJobsRoute(
                 const body = await readJson(req);
                 const prompt = typeof body?.prompt === "string" ? body.prompt.trim() : "";
 
-                const created = await ctx.host.createSession(job.input.workspace);
+                // 与调度器建会话保持同一口径：勾选的 MCP 直接生效，没勾就把 lazy 服务全加载
+                const created = await ctx.host.createSession(job.input.workspace, {
+                    mcpServers: job.input.mcpServers,
+                    lazyMcpServers: job.input.mcpServers ?? listLazyServerNames(),
+                });
                 const claim = await ctx.host.claimSession(created.sessionId, { noNegotiate: true });
                 if (!claim.ok) return fail("会话认领失败，请稍后重试", 409);
 

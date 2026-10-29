@@ -631,6 +631,19 @@ export function getMcpServersStatus(): McpServerStatus[] {
     return list;
 }
 
+/**
+ * 配置里标了 lazy 的服务名（不含 disabled）。
+ *
+ * 任务会话默认就把它们加载上：网页上没有 /mcp 那样的开关，界面又把服务显示成"全选"，
+ * 不加载等于"看着勾上了但用不了"。
+ */
+export function listLazyServerNames(): string[] {
+    return getMcpServersStatus()
+        .filter(item => item.lazy === true)
+        .map(item => item.name)
+        .sort();
+}
+
 export function buildMcpStatusHelpText(): string {
     const statuses = getMcpServersStatus();
     if (statuses.length === 0) {

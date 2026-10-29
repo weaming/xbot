@@ -10,6 +10,7 @@ import type { AgentEvent } from "../events/agent-events.js";
 import type { SessionHost } from "../host/session-host-types.js";
 import { withJobContext } from "../tools/job-context.js";
 import { clearSessionMcpScope, setSessionMcpScope } from "../tools/session-mcp-scope.js";
+import { listLazyServerNames } from "../mcp/client-manager.js";
 import { JobStore } from "./store.js";
 import {
     DEFAULT_LEASE_MS,
@@ -244,12 +245,6 @@ export class JobRunner {
 
             // 本任务勾选的 MCP 白名单只影响这次执行；回合结束就撤掉
             setSessionMcpScope(sessionId, job.input.mcpServers);
-            // 勾选同时意味着「这次要加载」：只允许而不加载，勾了等于没勾。
-            // 未勾选（undefined = 不限制）不动会话已有的懒加载清单，避免把全部的懒服务器
-            // 一次性拉起来（工具数会爆）。
-            if (job.input.mcpServers?.length) {
-                await this.host.setSessionLazyMcpServers(sessionId, job.input.mcpServers);
-            }
             this.store.transition(job.id, "running");
 
             heartbeat = setInterval(() => {
@@ -334,7 +329,13 @@ export class JobRunner {
             // 原会话被别人拿走：退化为新建，避免和 TUI 抢
         }
 
-        const created = await this.host.createSession(job.input.workspace);
+        // 界面上的 MCP 勾选默认是"全选"，所以 undefined 不能当成"一个都不加载"：
+        // 显式勾了就按勾的加载，没勾（不限制）就把所有 lazy 服务也加载上，
+        // 否则网页里看着全选、实际工具缺失。init 在建会话时一次写好，不留空窗。
+        const created = await this.host.createSession(job.input.workspace, {
+            mcpServers: job.input.mcpServers,
+            lazyMcpServers: job.input.mcpServers ?? listLazyServerNames(),
+        });
         const claim = await this.host.claimSession(created.sessionId, { noNegotiate: true });
         if (!claim.ok) throw new Error(`会话认领失败：${claim.reason}`);
         await this.host.renameSession(created.sessionId, titleOf(job.input.prompt));

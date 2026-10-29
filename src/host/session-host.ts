@@ -23,6 +23,7 @@ import { getSessionLogFile } from "../utils/state-paths.js";
 import { getSessionTodosFile, getStartupToolCwd, getToolCwd } from "../utils/runtime-paths.js";
 import { planResume } from "../services/resume-plan.js";
 import { clearLazyServersCache, updateLazyServersCache } from "../tools/session-lazy-cache.js";
+import { setSessionMcpScope } from "../tools/session-mcp-scope.js";
 import {
     describeClaimFailure,
     formatInboundPrompt,
@@ -56,6 +57,7 @@ import type {
     SessionReleaseCause,
     SessionHost,
     SessionHostOptions,
+    SessionMcpInit,
     SessionSummary,
     TurnSpec,
     TurnUserMessage,
@@ -456,11 +458,19 @@ export class LocalSessionHost implements SessionHost {
         }
     }
 
-    async createSession(cwd?: string): Promise<{ sessionId: string }> {
+    async createSession(cwd?: string, mcp?: SessionMcpInit): Promise<{ sessionId: string }> {
         const sessionId = createUlid();
         // 缺省 cwd 固定为宿主启动目录；会话 cwd 会随后续切换变化，不能作为新建会话默认值。
         const session = createEmptySession(sessionId, cwd ?? this.startupCwd);
         this.activeSessions.set(sessionId, { session, lastSeq: 0 });
+        // MCP 初值必须在会话交出去之前写好：先建后设会留下一个"工具还不全"的窗口，
+        // 无人的任务会话可能正好在这个窗口里发出第一轮请求。
+        if (mcp?.mcpServers !== undefined) {
+            setSessionMcpScope(sessionId, mcp.mcpServers);
+        }
+        if (mcp?.lazyMcpServers?.length) {
+            await this.setSessionLazyMcpServers(sessionId, mcp.lazyMcpServers);
+        }
         return { sessionId };
     }
 
