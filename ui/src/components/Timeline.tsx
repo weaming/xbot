@@ -96,13 +96,9 @@ function UserMessage({ event, isFirst }: { event: AgentEvent; isFirst: boolean }
     );
 }
 
+/** AI 回复：不再贴「AI」标签，靠左对齐 + 正文样式区分于用户消息（右对齐、气泡）。 */
 function AssistantMessage({ content }: { content: string }) {
-    return (
-        <div className="flex flex-col gap-1">
-            <span className="text-xs text-muted">AI</span>
-            <MarkdownBlock content={content} />
-        </div>
-    );
+    return <MarkdownBlock content={content} />;
 }
 
 /** 思考：只留状态提示，不展开推理内容（和 TUI 的折叠口径一致）。 */
