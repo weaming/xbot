@@ -78,7 +78,7 @@ import {
     type UserQuestionRequest,
 } from "../utils/user-question.js";
 
-import { getTuiWheelLogFile } from "../utils/tui-state-paths.js";
+import { getWheelLogFile } from "../utils/state-paths.js";
 import { installTerminalExitGuard } from "../utils/terminal-state.js";
 import { ChatStore } from "./store.js";
 import { editorTheme, theme } from "./theme.js";
@@ -1296,7 +1296,7 @@ export class ChatApp {
     private writeWheelLog(line: string): void {
         if (process.env.ZBOT_TUI_DEBUG_WHEEL !== "1") return;
         try {
-            const file = getTuiWheelLogFile();
+            const file = getWheelLogFile();
             fs.mkdirSync(path.dirname(file), { recursive: true });
             fs.appendFileSync(file, `${new Date().toISOString()} ${line}\n`, "utf8");
         } catch {

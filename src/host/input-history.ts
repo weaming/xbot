@@ -2,7 +2,7 @@
 
 import fs from "fs";
 import path from "path";
-import { getTuiInputHistoryFile } from "../utils/tui-state-paths.js";
+import { getInputHistoryFile } from "../utils/state-paths.js";
 import { withFileLock } from "../utils/file-lock.js";
 
 const MAX_HISTORY = 100;
@@ -16,7 +16,7 @@ interface InputHistoryEntry {
 
 function readEntries(): InputHistoryEntry[] {
     try {
-        const parsed = JSON.parse(fs.readFileSync(getTuiInputHistoryFile(), "utf8"));
+        const parsed = JSON.parse(fs.readFileSync(getInputHistoryFile(), "utf8"));
         if (Array.isArray(parsed)) {
             return parsed
                 .map((entry) => {
@@ -52,7 +52,7 @@ export async function appendInputHistory(sessionId: string, text: string, ts = n
     const trimmed = text.trim();
     if (!trimmed) return;
 
-    await withFileLock(getTuiInputHistoryFile(), () => {
+    await withFileLock(getInputHistoryFile(), () => {
         const entries = readEntries();
         const latestOfSession = entries.find(entry => entry.sessionId === sessionId);
         if (latestOfSession?.text === trimmed) return;
@@ -61,7 +61,7 @@ export async function appendInputHistory(sessionId: string, text: string, ts = n
         entries.sort((left, right) => right.ts.localeCompare(left.ts));
         if (entries.length > MAX_HISTORY) entries.length = MAX_HISTORY;
 
-        const filePath = getTuiInputHistoryFile();
+        const filePath = getInputHistoryFile();
         fs.mkdirSync(path.dirname(filePath), { recursive: true });
         const tmpPath = `${filePath}.tmp`;
         fs.writeFileSync(tmpPath, JSON.stringify(entries, null, 2), "utf8");

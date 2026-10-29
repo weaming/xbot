@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { getTuiDraftsFile } from "../utils/tui-state-paths.js";
+import { getDraftsFile } from "../utils/state-paths.js";
 import { loadDrafts, persistDrafts } from "./draft-store.js";
 
 let tmpDir: string;
@@ -44,8 +44,8 @@ describe("会话草稿持久化", () => {
     });
 
     test("损坏的 JSON 视为无草稿", () => {
-        fs.mkdirSync(path.dirname(getTuiDraftsFile()), { recursive: true });
-        fs.writeFileSync(getTuiDraftsFile(), "{ not json", "utf8");
+        fs.mkdirSync(path.dirname(getDraftsFile()), { recursive: true });
+        fs.writeFileSync(getDraftsFile(), "{ not json", "utf8");
 
         expect(loadDrafts().size).toBe(0);
     });

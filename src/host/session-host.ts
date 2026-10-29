@@ -19,7 +19,7 @@ import { EventLog } from "../events/event-log.js";
 import { listSavedSessionIds } from "../events/session-files.js";
 import { getSessionExchangeLogFile } from "../utils/logger.js";
 import { appendInputHistory, loadInputHistory } from "./input-history.js";
-import { getTuiSessionLogFile } from "../utils/tui-state-paths.js";
+import { getSessionLogFile } from "../utils/state-paths.js";
 import { getSessionTodosFile, getStartupToolCwd, getToolCwd } from "../utils/runtime-paths.js";
 import { planResume } from "../services/resume-plan.js";
 import {
@@ -658,7 +658,7 @@ export class LocalSessionHost implements SessionHost {
             this.activeSessions.delete(sessionId);
             // 同步清理该会话的 console 日志。
             try {
-                fs.unlinkSync(getTuiSessionLogFile(sessionId));
+                fs.unlinkSync(getSessionLogFile(sessionId));
             } catch {
                 // 日志文件不存在时无需处理。
             }

@@ -28,7 +28,7 @@ import { getSessionToolNames } from "../tools/session-tools.js";
 import { getAskUserToolNames } from "../tools/ask-user-tool.js";
 import { isDeepSeekCostStatEnabled } from "../pricing/deepseek.js";
 import type { ChatApiProtocol, ChatModelSelection } from "../types/chat-model.js";
-import { getTuiModelPreferencesFile } from "../utils/tui-state-paths.js";
+import { getModelPreferencesFile } from "../utils/state-paths.js";
 import { withFileLock } from "../utils/file-lock.js";
 
 export interface ChatApiSettings {
@@ -51,7 +51,7 @@ let defaultModelOption: ChatModelOption | null | undefined;
 function getDefaultChatModelOption(): ChatModelOption | undefined {
     if (defaultModelOption !== undefined) return defaultModelOption ?? undefined;
     try {
-        const value = JSON.parse(fs.readFileSync(getTuiModelPreferencesFile(), "utf8")) as Partial<ChatModelOption>;
+        const value = JSON.parse(fs.readFileSync(getModelPreferencesFile(), "utf8")) as Partial<ChatModelOption>;
         if (
             (value.protocol === "responses" || value.protocol === "chat_completions")
             && typeof value.model === "string"
@@ -78,7 +78,7 @@ export async function setDefaultChatModelOption(option: ChatModelOption): Promis
         throw new Error(`模型配置不存在：${option.protocol} · ${option.model}`);
     }
 
-    const file = getTuiModelPreferencesFile();
+    const file = getModelPreferencesFile();
     await withFileLock(file, () => {
         fs.mkdirSync(path.dirname(file), { recursive: true });
         const temporaryFile = `${file}.tmp`;

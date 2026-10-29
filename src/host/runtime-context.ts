@@ -3,7 +3,7 @@ import os from "os";
 import path from "path";
 import embeddedIdentity from "./AGENTS.md" with { type: "text" };
 import { setEmbeddedIdentity } from "../skills/base-skill.js";
-import { getTuiSessionLogFile, getTuiStartupLogFile } from "../utils/tui-state-paths.js";
+import { getSessionLogFile, getStartupLogFile } from "../utils/state-paths.js";
 import { CONSOLE_TIMESTAMP_MARK } from "../utils/logger.js";
 import { setStartupToolCwd } from "../utils/runtime-paths.js";
 
@@ -59,7 +59,7 @@ export function getStartupCwd(): string {
 
 /** 将 agent 和 MCP 的后台日志写入文件，避免破坏 TUI 的终端绘制。 */
 export function redirectLogsToFile(): () => void {
-    currentLogFile = getTuiStartupLogFile();
+    currentLogFile = getStartupLogFile();
     const original = {
         log: console.log,
         info: console.info,
@@ -103,7 +103,7 @@ export function redirectLogsToFile(): () => void {
 /** 会话就绪后把日志目标切到该会话的文件；日志按 session 分离存储。 */
 export function setLogSession(sessionId: string): void {
     if (currentLogFile) {
-        currentLogFile = getTuiSessionLogFile(sessionId);
+        currentLogFile = getSessionLogFile(sessionId);
     }
 }
 

@@ -3,7 +3,7 @@ import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { getTuiWheelLogFile } from "../../src/utils/tui-state-paths.js";
+import { getWheelLogFile } from "../../src/utils/state-paths.js";
 import { SPINNER_FRAMES } from "../../src/tui/session-marker.js";
 import type { SessionReleaseCause } from "../../src/host/session-host-types.js";
 
@@ -905,7 +905,7 @@ describe("ChatApp pending queue", () => {
         pushFakePanel(app, { bounds: { row: 4, col: 4, width: 72, height: 16 } });
 
         // 默认关闭：不写文件
-        const logFile = getTuiWheelLogFile();
+        const logFile = getWheelLogFile();
         delete process.env.ZBOT_TUI_DEBUG_WHEEL;
         fs.rmSync(logFile, { force: true });
         expect((app as any).isWheelOutsidePanel("\x1b[<65;1;1M")).toBe(true);

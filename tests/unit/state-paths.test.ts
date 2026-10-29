@@ -4,11 +4,11 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import {
-    getTuiDraftsFile,
-    getTuiInputHistoryFile,
-    getTuiSessionLogFile,
-    getTuiStartupLogFile,
-} from "../../src/utils/tui-state-paths.js";
+    getDraftsFile,
+    getInputHistoryFile,
+    getSessionLogFile,
+    getStartupLogFile,
+} from "../../src/utils/state-paths.js";
 
 /**
  * TUI state 路径布局测试：进程级状态平铺在 state root 根目录，
@@ -34,14 +34,14 @@ afterEach(() => {
     fs.rmSync(stateRoot, { recursive: true, force: true });
 });
 
-describe("tui-state-paths", () => {
+describe("state-paths", () => {
     test("进程级状态文件平铺在 state root 根目录", () => {
-        expect(getTuiStartupLogFile(stateRoot)).toBe(path.join(stateRoot, "startup.log"));
-        expect(getTuiInputHistoryFile(stateRoot)).toBe(path.join(stateRoot, "input-history.json"));
+        expect(getStartupLogFile(stateRoot)).toBe(path.join(stateRoot, "startup.log"));
+        expect(getInputHistoryFile(stateRoot)).toBe(path.join(stateRoot, "input-history.json"));
     });
 
     test("会话草稿与日志在 sessions/ 下，路径不含 tui/", () => {
-        expect(getTuiDraftsFile(stateRoot)).toBe(path.join(stateRoot, "sessions", "session-drafts.json"));
-        expect(getTuiSessionLogFile("01JABC")).toBe(path.join(stateRoot, "sessions", "log", "01JABC.log"));
+        expect(getDraftsFile(stateRoot)).toBe(path.join(stateRoot, "sessions", "session-drafts.json"));
+        expect(getSessionLogFile("01JABC")).toBe(path.join(stateRoot, "sessions", "log", "01JABC.log"));
     });
 });

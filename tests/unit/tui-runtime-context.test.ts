@@ -4,7 +4,7 @@ import os from "os";
 import path from "path";
 
 import { redirectLogsToFile } from "../../src/host/runtime-context.js";
-import { getTuiStartupLogFile } from "../../src/utils/tui-state-paths.js";
+import { getStartupLogFile } from "../../src/utils/state-paths.js";
 
 describe("TUI 日志重定向", () => {
     let tmpDir: string;
@@ -32,6 +32,6 @@ describe("TUI 日志重定向", () => {
 
         console.debug("MCP stderr");
 
-        expect(fs.readFileSync(getTuiStartupLogFile(), "utf8")).toContain("MCP stderr");
+        expect(fs.readFileSync(getStartupLogFile(), "utf8")).toContain("MCP stderr");
     });
 });

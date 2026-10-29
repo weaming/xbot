@@ -6,14 +6,14 @@
 
 import fs from "fs";
 import path from "path";
-import { getTuiDraftsFile } from "../utils/tui-state-paths.js";
+import { getDraftsFile } from "../utils/state-paths.js";
 import { withFileLock } from "../utils/file-lock.js";
 import type { ImageAssetRef, TuiDraft } from "../types/image.js";
 
 /** 读取全部草稿；文件缺失或损坏时返回空表。 */
 export function loadDrafts(): Map<string, string> {
     try {
-        const parsed = JSON.parse(fs.readFileSync(getTuiDraftsFile(), "utf8"));
+        const parsed = JSON.parse(fs.readFileSync(getDraftsFile(), "utf8"));
         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
             const drafts = new Map<string, string>();
             for (const [sessionId, text] of Object.entries(parsed)) {
@@ -29,7 +29,7 @@ export function loadDrafts(): Map<string, string> {
 
 /** 全量写回草稿表（空草稿不落盘）。 */
 export async function persistDrafts(drafts: Map<string, string>): Promise<void> {
-    const file = getTuiDraftsFile();
+    const file = getDraftsFile();
     await withFileLock(file, () => {
         const payload: Record<string, string> = {};
         for (const [sessionId, text] of drafts) {
@@ -45,7 +45,7 @@ export async function persistDrafts(drafts: Map<string, string>): Promise<void> 
 /** 读取包含图片附件的新草稿格式；兼容旧字符串草稿。 */
 export function loadRichDrafts(): Map<string, TuiDraft | string> {
     try {
-        const parsed = JSON.parse(fs.readFileSync(getTuiDraftsFile(), "utf8"));
+        const parsed = JSON.parse(fs.readFileSync(getDraftsFile(), "utf8"));
         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
             const drafts = new Map<string, TuiDraft | string>();
             for (const [sessionId, value] of Object.entries(parsed)) {
@@ -69,7 +69,7 @@ export function loadRichDrafts(): Map<string, TuiDraft | string> {
 
 /** 写入包含图片附件的草稿；空文本和空附件都不落盘。 */
 export async function persistRichDrafts(drafts: Map<string, TuiDraft | string>): Promise<void> {
-    const file = getTuiDraftsFile();
+    const file = getDraftsFile();
     await withFileLock(file, () => {
         const payload: Record<string, TuiDraft | string> = {};
         for (const [sessionId, draftValue] of drafts) {
