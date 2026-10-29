@@ -47,7 +47,6 @@ export interface SessionEventView {
 const DROPPED_TYPES = new Set([
     "turn_segment_start",
     "turn_stream_delta",
-    "turn_commit",
     "usage_recorded",
     "standalone_turn",
     "session_created",
@@ -105,6 +104,9 @@ export function toSessionEventView(event: AgentEvent): SessionEventView | null {
         case "context_compacted":
         case "assistant_history_repaired":
             return { ...base, payload: {} };
+        case "turn_commit":
+            // 正文与事件 seq 列表都不需要；界面只关心"这一回合收尾了没有"
+            return { ...base, payload: { turnId: event.payload.turnId } };
         case "turn_message": {
             const message = event.payload.message as Record<string, unknown>;
             const role = message.role;
@@ -113,6 +115,8 @@ export function toSessionEventView(event: AgentEvent): SessionEventView | null {
                 return {
                     ...base,
                     payload: {
+                        // turnId 用于判断该回合是否已收尾（收尾后不再显示「思考中」）
+                        turnId: event.payload.turnId,
                         message: {
                             role,
                             ...(typeof message.content === "string" && message.content ? { content: message.content } : {}),
@@ -149,6 +153,8 @@ export function toSessionEventView(event: AgentEvent): SessionEventView | null {
                 return {
                     ...base,
                     payload: {
+                        // turnId 用于判断该回合是否已收尾（收尾后不再显示「思考中」）
+                        turnId: event.payload.turnId,
                         message: {
                             role,
                             ...(message.tool_call_id ? { tool_call_id: message.tool_call_id } : {}),

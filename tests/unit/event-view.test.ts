@@ -12,7 +12,7 @@ function event(type: string, payload: Record<string, unknown>, seq = 1): AgentEv
 
 describe("toSessionEventView", () => {
     test("界面不渲染的事件不下发", () => {
-        for (const type of ["turn_segment_start", "turn_commit", "turn_stream_delta", "usage_recorded", "lazy_mcp_changed"]) {
+        for (const type of ["turn_segment_start", "turn_stream_delta", "usage_recorded", "lazy_mcp_changed"]) {
             expect(toSessionEventView(event(type, {}))).toBeNull();
         }
     });
@@ -59,6 +59,28 @@ describe("toSessionEventView", () => {
         const bigCall = (big?.payload.message as any).tool_calls[0];
         expect(bigCall.arguments).toBeUndefined();
         expect(bigCall.summary.length).toBeLessThanOrEqual(121);
+    });
+
+    test("turn_commit 只发 turnId：界面靠它判断回合是否收尾", () => {
+        const view = toSessionEventView(event("turn_commit", {
+            turnId: "t1",
+            events: [1, 2, 3],
+            userMessages: ["hi"],
+            stopReason: "stop",
+            usage: { promptTokens: 1, completionTokens: 2, totalTokens: 3 },
+            interrupted: false,
+        }));
+
+        expect(view?.payload).toEqual({ turnId: "t1" });
+    });
+
+    test("turn_message 带上 turnId，便于判定该回合是否在跑", () => {
+        const view = toSessionEventView(event("turn_message", {
+            turnId: "t9",
+            message: { role: "assistant", content: "hi", reasoning_content: "想了" },
+        }));
+
+        expect(view?.payload.turnId).toBe("t9");
     });
 
     test("用户消息只带图片 id 与文件名", () => {
