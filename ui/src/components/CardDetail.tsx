@@ -643,7 +643,7 @@ export function CardDetail({
                             <div className="flex shrink-0 flex-col gap-2 border-t border-border pt-2">
                                 <Textarea
                                     value={inputDraft}
-                                    placeholder="你的创意灵感，真知灼见，命令指导（可直接粘贴图片）"
+                                    placeholder="你的创意灵感（可直接粘贴图片）"
                                     onChange={event => setInputDraft(event.target.value)}
                                     onPaste={event => {
                                         const file = Array.from(event.clipboardData.files)[0];
