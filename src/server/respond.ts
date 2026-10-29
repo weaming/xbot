@@ -1,7 +1,9 @@
 /** HTTP 响应与请求体工具：各前端路由共用，保持状态码与错误形状一致。 */
 
 export function json(data: unknown, status = 200): Response {
-    return new Response(JSON.stringify(data, null, 2), {
+    // 不缩进：会话事件动辄上万个对象，两个空格的缩进能白白多出 10%~20% 的字节。
+    // 人类的可读性交给浏览器开发者工具的"格式化"按钮，传输层只求小。
+    return new Response(JSON.stringify(data), {
         status,
         headers: { "content-type": "application/json; charset=utf-8" },
     });
