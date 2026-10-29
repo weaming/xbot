@@ -38,6 +38,8 @@ Responses API 和 Chat Completions 可使用各自的 `OPENAI_RESPONSES_*` 与 `
 ~/.bun/bin/zbot
 ```
 
+各子命令都支持 `-h` / `--help`（如 `zbot serve --help`）。
+
 会话也可以在命令行里增删查改（供其他 AI 或脚本调用）：
 
 ```sh

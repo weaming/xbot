@@ -10,6 +10,7 @@ import { herdrReporter } from "./herdr-reporter.js";
 import { officialDeepSeekCostYuan } from "../pricing/deepseek.js";
 import { isPrintCliInvocation } from "../cli/print.js";
 import { isSessionCliInvocation } from "../cli/session.js";
+import { printCliHelp } from "../cli/help.js";
 import type { ChatApp } from "./app.js";
 
 const DEFAULT_ENV_FILE = path.join(os.homedir(), ".zbot", "env");
@@ -24,6 +25,11 @@ const envFile = resolveEnvFile(process.env.ZBOT_ENV_FILE || DEFAULT_ENV_FILE);
 const cliArgs = process.argv.slice(2);
 const isSessionCli = isSessionCliInvocation(cliArgs);
 /**
+ * 帮助分支：必须在 dotenv 与 configureHostEnvironment 之前 ——
+ * 打印用法不该初始化宿主环境，更不能落回 TUI 把终端交给聊天界面。
+ */
+const isHelpCli = printCliHelp(cliArgs);
+/**
  * serve 分流用字面量判断而非常量导入：常量导入会把 cli/serve → server/http → host
  * 整条静态模块图拉进 TUI 进程，TUI 静态依赖里就会多出 HTTP 前端。
  */
@@ -36,7 +42,9 @@ const isServeCli = cliArgs[0] === "serve";
  * 收尾只设 exitCode、不调 process.exit：stdout 接管道时写入是异步的，
  * 提前退出会把 `--json`/`--full` 的大段输出截断在 64KiB，`| jq` 直接解析失败。
  */
-if (isSessionCli) {
+if (isHelpCli) {
+    // 用法已输出，不进入任何宿主分支
+} else if (isSessionCli) {
     try {
         const { runSessionCli } = await import("../cli/session.js");
         await runSessionCli(cliArgs.slice(1));
@@ -208,7 +216,7 @@ async function main(): Promise<void> {
 
 // 末尾启动：模块级常量（SHUTDOWN_SIGNALS 等）此时已初始化，main() 不会在 TDZ 里跑。
 // serve 分支自己跑完生命周期（长驻到收到终止信号），不能再落回 TUI 的 main()。
-if (!isSessionCli && !isServeCli) {
+if (!isHelpCli && !isSessionCli && !isServeCli) {
     main().catch((error) => {
         console.error(`💥 TUI main() rejected: ${error?.message ?? error}`);
         process.exit(1);

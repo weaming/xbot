@@ -9,6 +9,7 @@ import {
     resolvePathWithTilde,
     type McpServerConfig,
 } from "./config.js";
+import { MCP_CLI_USAGE } from "./help.js";
 
 interface McpCliOptions {
     configPath?: string;
@@ -146,18 +147,14 @@ function printList(servers: McpServerConfig[], asJson: boolean): void {
 }
 
 function printHelp(): void {
-    writeOutput(`用法：
-  zbot mcp list [--json]
-  zbot mcp add <名称> [--env KEY=VALUE] [--cwd <目录>] -- <命令> [参数...]
-  zbot mcp add <名称> --url <URL> [--header KEY=VALUE]
-  zbot mcp remove <名称>`);
+    writeOutput(MCP_CLI_USAGE);
 }
 
 export async function runMcpCli(args: string[], options: McpCliOptions = {}): Promise<void> {
     const [subcommand, ...subcommandArgs] = args;
     const configPath = options.configPath ?? getConfigPath();
 
-    if (!subcommand || subcommand === "--help" || subcommand === "-h") {
+    if (!subcommand || subcommand === "help" || subcommand === "--help" || subcommand === "-h") {
         printHelp();
         return;
     }
@@ -200,9 +197,5 @@ export async function runMcpCli(args: string[], options: McpCliOptions = {}): Pr
         return;
     }
 
-    if (subcommand === "--help" || subcommand === "-h") {
-        printHelp();
-        return;
-    }
     throw new Error(`未知 MCP 子命令：${subcommand}`);
 }

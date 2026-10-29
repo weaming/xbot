@@ -40,6 +40,7 @@ import type { SessionSummary } from "../host/session-host-types.js";
 import { MAX_SESSION_TITLE_LENGTH, type StoredChatMessage } from "../types/session.js";
 import type { ChatModelSelection } from "../types/chat-model.js";
 import type { UserContent } from "../types/image.js";
+import { SESSION_CLI_USAGE } from "./help.js";
 
 /** show 默认展示的轮数：够看上下文，又不至于刷屏。 */
 const DEFAULT_SHOW_TURNS = 3;
@@ -53,21 +54,6 @@ const DEFAULT_WAIT_SECONDS = 300;
 
 const eventLog = new EventLog();
 const replay = new SessionReplay(eventLog);
-
-const SESSION_CLI_USAGE = [
-    "用法：zbot session <子命令> [参数]",
-    "",
-    "  list [--all] [--json]                     列出会话（默认不含归档）",
-    "  show <id> [--turns N|--all] [--full] [--json]",
-    "                                            查看会话与消息（默认最近 3 轮）",
-    "  new [--title 标题] [--cwd 目录] [--json]  新建会话",
-    "  rename <id> <标题>                        重命名会话",
-    "  archive <id> / unarchive <id>             归档 / 取消归档",
-    "  delete <id>                               彻底删除会话的全部落盘数据",
-    "  send <id> <文本> [--wait[=秒]] [--json]   向运行中的会话投递消息（秒数写成 --wait=秒）",
-    "",
-    "id 支持完整 id、唯一前缀或末几位；写操作要求会话未被其他实例持有。",
-].join("\n");
 
 /** 列表行：摘要 + 归属（socket 探测结果）；排序键与摘要同源，供 sortSessions 使用。 */
 export interface SessionListRow extends SessionOrderItem {
