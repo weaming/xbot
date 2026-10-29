@@ -61,6 +61,11 @@ afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
+/**
+ * 注意：本文件依赖进程级的 `mock.module`（bun 无法撤回），必须**单独运行**：
+ * 与其他测试文件同进程时会因模块抢先加载导致 mock 失效，进而真发上游请求把整轮挂住。
+ * 全量测试用 `--path-ignore-patterns` 排除它，见 package.json 的 test / test:multi-instance。
+ */
 describe("LocalSessionHost 多实例并发协同", () => {
     test("实例 A 完成 Turn 1 后，实例 B 自动检测落盘版本并无缝接力 Turn 2", async () => {
         const agentA = new LocalSessionHost();

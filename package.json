@@ -11,7 +11,8 @@
     "tui": "bun src/tui/main.ts",
     "build": "tsgo && bun run build.mjs",
     "dev": "bun --watch src/tui/main.ts",
-    "test": "bun test tests/unit src",
+    "test": "bash scripts/test.sh",
+    "test:multi-instance": "bun test tests/unit/tui-multi-instance.test.ts",
     "test:render": "bun test src/tui",
     "test:watch": "bun test --watch tests/unit src",
     "test:integration": "bun test tests/integration"
