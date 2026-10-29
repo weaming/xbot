@@ -4,6 +4,7 @@ import { executeShellTool } from "./execute-shell.js";
 import { backgroundTaskTool } from "./background-task-tool.js";
 import { ghTool } from "./gh-tool.js";
 import { url2mdTool } from "./url2md-tool.js";
+import { jobCommentTool } from "./job-comment-tool.js";
 import { cwdTool } from "./cwd-tool.js";
 import { readMediaFileTool } from "./read-media-file.js";
 import { toolResultToText } from "./tool-interface.js";
@@ -35,16 +36,28 @@ const localRegisteredTools: ExecutableTool[] = [
     cwdTool,
     ghTool,
     url2mdTool,
+    jobCommentTool,
 ];
 
 toolCatalog.reserveNames(["use_skill"]);
 toolCatalog.registerLocalTools(localRegisteredTools);
 
-/** 所有非会话工具始终下发；会话工具仅在对应会话显式启用时下发。 */
-export const getOpenAIToolDefinitions = (extraToolNames: string[] = []) => {
-    const tools = toolCatalog.listAllTools().filter((tool) =>
-        !tool.sessionScoped || extraToolNames.includes(tool.name),
-    );
+/**
+ * 所有非会话工具始终下发；会话工具仅在对应会话显式启用时下发。
+ * mcpServers 为任务级白名单：只保留这些 server 的工具（undefined 表示不限制）。
+ */
+export const getOpenAIToolDefinitions = (
+    extraToolNames: string[] = [],
+    options: { mcpServers?: string[] } = {},
+) => {
+    // 空数组 = 一个都不允许；undefined = 不限制。两者必须区分开
+    const allowedServers = options.mcpServers ? new Set(options.mcpServers) : undefined;
+    const tools = toolCatalog.listAllTools().filter((tool) => {
+        if (tool.sessionScoped && !extraToolNames.includes(tool.name)) return false;
+        // 任务勾选了 MCP 白名单时，未列出的 server 的工具一律不下发
+        if (allowedServers && tool.fromServer && !allowedServers.has(tool.fromServer)) return false;
+        return true;
+    });
     return [getUseSkillToolDef(), ...tools].map(formatToolDef);
 };
 

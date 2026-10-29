@@ -26,6 +26,8 @@ const LAYER_RULES: Record<string, string[]> = {
     utils: ["tui", "server", "cli", "host"],
     format: ["tui", "server", "cli", "host"],
     host: ["tui", "server", "cli"],
+    /** Job 层依赖宿主执行，但不得反过来被宿主依赖，也不认识任何前端。 */
+    jobs: ["tui", "server", "cli"],
     tui: ["server"],
     server: ["tui", "cli"],
 };

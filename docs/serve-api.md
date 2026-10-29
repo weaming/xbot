@@ -12,19 +12,124 @@ zbot serve [--port 8787] [--bind 127.0.0.1] [--cwd <目录>] [--token <令牌>]
 - `--cwd` 是新建会话与工具的默认基准。
 - 令牌优先级：`--token` > `ZBOT_SERVE_TOKEN` > `~/.zbot/serve/token`（首次启动自动生成，权限 0600）。
 - 请求带 `Authorization: Bearer <token>`；SSE 用 `?token=<token>`（EventSource 不能自定义 header）。
+- **界面壳不需要令牌**（否则没法在页面里输入令牌）：`GET /` 与 `GET /ui` 公开，页面里输入一次后存 localStorage；
+  数据接口（`/jobs`、`/sessions`、`/endpoints` 等）一律要令牌。
 
 ## 路由
 
 | 方法与路径 | 说明 |
 | --- | --- |
-| `GET /` | 端点清单 |
-| `GET /healthz` | 存活与活跃会话数 |
-| `GET /sessions` | 会话摘要列表 |
-| `POST /sessions` | 建会话并立即认领，body `{cwd?, title?}`，返回 `{sessionId}` |
-| `GET /sessions/:id` | 单个会话摘要，不存在 404 |
-| `GET /sessions/:id/events?since=<seq>` | 事件流（SSE）；加 `format=json` 一次性拉取 |
-| `POST /sessions/:id/messages` | body `{text, wait?}`；不带 `wait` 返回 202 并后台执行，带 `wait: true` 等到回合结束 |
-| `POST /sessions/:id/cancel` | 中止当前回合 |
+| `GET /` | Web 界面（单页，公开） |
+| `GET /ui` | 同上（别名，保留兼容） |
+| `GET /api`（端点清单） | 端点清单（JSON，需令牌） |
+| `GET /api/healthz` | 存活与活跃会话数 |
+| `GET /api/sessions` | 会话摘要列表 |
+| `POST /api/sessions` | 建会话并立即认领，body `{cwd?, title?}`，返回 `{sessionId}` |
+| `GET /api/sessions/:id` | 单个会话摘要，不存在 404 |
+| `GET /api/sessions/:id/events?since=<seq>` | 事件流（SSE）；加 `format=json` 一次性拉取 |
+| `POST /api/sessions/:id/messages` | body `{text, wait?}`；不带 `wait` 返回 202 并后台执行，带 `wait: true` 等到回合结束 |
+| `POST /api/sessions/:id/cancel` | 中止当前回合 |
+| `POST /api/sessions/:id/inputs` | 随时输入：body `{text, mode?}`；空闲直接开跑，忙则排队 |
+| `GET /api/sessions/:id/inputs` | 查看排队数量 `{request, turn}` |
+
+### 随时输入（回合中追加）
+
+和 TUI 一致：回合进行中继续输入时不打断当前推理，而是排队，到点再带给模型。
+
+- `mode: "request"`（默认）：**下一次请求前**附加，模型当前回合就能看到（每次请求前消费，取走即清空）
+- `mode: "turn"`：等**当前回合结束后**作为新回合的第一条消息，不插进正在跑的推理里；多条排队输入会合成一段，不会拆成多个回合
+- 会话空闲时无论哪种模式都直接开始新一轮，返回 `{started: true}`
+- 队列在服务端（不是浏览器）：刷新页面、换设备后排队内容仍在，runner 驱动的回合也能消费
+
+## 任务（Jobs）
+
+会话接口是「直接驱动一次对话」，Job 接口是「提交一件要交付的事」：排队、并发、超时、重试与结果落库都由服务端负责。
+
+| 方法与路径 | 说明 |
+| --- | --- |
+| `POST /api/jobs` | body `{prompt, workspace?, idempotencyKey?, priority?, timeoutSec?, model?, maxAttempts?, freshSession?, retriedFrom?}`；新建 201，幂等命中 200 |
+| `GET /api/jobs?state=&limit=` | 任务列表（`state` 逗号分隔，如 `queued,running`） |
+| `GET /api/jobs/:id` | 单个任务 |
+| `GET /api/jobs/events?since=<seq>` | **列表状态流**（SSE），推所有任务的状态变迁 |
+| `GET /api/jobs/:id/events?since=<seq>` | **执行流**（SSE），转发该任务绑定会话的事件；未开始时 404 |
+| `POST /api/jobs/:id/cancel` | 取消；已结束返回 409 |
+
+### 卡片：属性、评论、会话、看板拖拽
+
+| 方法与路径 | 说明 |
+| --- | --- |
+| `PATCH /api/jobs/:id` | 改属性：`title / description / labels / dueAt / meta / mcpServers / priority / timeoutSec / autoStart`；执行中拒绝（409） |
+| `GET /api/jobs/:id/comments` | 评论列表（软删除的默认不返回） |
+| `POST /api/jobs/:id/comments` | `{body, sessionId?}`，作者记 `user` |
+| `PATCH /api/jobs/:id/comments/:cid` | 改正文（已删除的拒绝） |
+| `DELETE /api/jobs/:id/comments/:cid` | 软删除，保留历史 |
+| `GET /api/jobs/:id/sessions` | 该卡片的执行会话列表（每次 attempt 一条，人工新建为 `branch`） |
+| `POST /api/jobs/:id/sessions` | `{prompt?}` 手动开一个新会话（同卡片下换思路继续） |
+| `GET /api/jobs/:id/events?sessionId=` | 指定看哪个会话的执行流；不填看最近一个 |
+| `POST /api/jobs/:id/start` | 手动触发排队中的任务 |
+| `POST /api/jobs/:id/move` | `{column}` 看板拖拽：`todo / doing / done / cancelled` |
+| `POST /api/jobs/:id/archive` | 归档：从看板隐藏，状态与历史保留（运行中拒绝） |
+| `POST /api/jobs/:id/unarchive` | 取消归档 |
+| `DELETE /api/jobs/:id` | 彻底删除任务单：评论、执行会话记录、状态事件一并删除（对话本身保留） |
+| `GET /api/jobs/mcp/servers` | 可勾选的 MCP 来源（按 server 聚合工具数） |
+
+列表默认不返回已归档任务；`GET /api/jobs?archived=1` 才带上。
+
+**触发方式**：`autoStart` 默认 `true`（入队即跑）；置 `false` 时任务停在「手动」列，等 `start` 或拖到「进行中」。
+
+**拖拽语义**（刻意保守，不假装成功）：
+
+- 拖到「待办」：排队中的任务 → 打开自动执行，交给调度器领走
+- 拖到「手动」：排队中的任务 → 关掉自动执行，停在「手动」列等人点开始
+- 拖到「进行中」：排队中 → 触发执行；已在跑幂等；**终态拒绝**（要重跑请新建）
+- 拖到「已完成」：只接受本来就成功的任务；运行中拒绝
+- 拖到「已取消」：排队中或运行中 → 取消
+
+**卡片属性**（`JobInput`）：
+
+| 字段 | 说明 |
+| --- | --- |
+| `prompt` / `workspace` | 任务正文与工作目录（必填） |
+| `title` / `description` | 卡片标题与富说明（描述给人看，prompt 给模型） |
+| `labels` | 标签数组，看板筛选用 |
+| `dueAt` | 截止时间（ISO8601） |
+| `meta` | 自定义键值对，纯展示 |
+| `mcpServers` | 本任务允许的 MCP server；**不填 = 全部，空数组 = 不用任何 MCP** |
+| `timeoutSec` | 回合超时（秒），超时即取消并判 failed |
+| `autoStart` | 是否入队即执行 |
+
+**AI 评论**：agent 在任务执行期间会拿到 `job_comment` 工具，写进同一张卡片的评论流（作者记 `agent`，绑定当时执行的会话），人机评论是同一条时间线。
+
+## 界面辅助接口
+
+| 方法与路径 | 说明 |
+| --- | --- |
+| `POST /api/assets` | 上传图片：body `{data（base64 或 data URL）, filename}`，落盘后返回引用，随消息发送时带上 |
+| `GET /api/assets/:id?token=` | 读图片。`<img>` 不能带 header，所以用 query 令牌；id 形如 `img_<20 位 hex>` |
+| `GET /api/fs/dirs?path=` | 目录补全：按输入前缀返回最多 20 个子目录（只列目录名，不读文件） |
+
+**安全边界**：`fs/dirs` 能枚举本机任意目录，`assets` 能往状态目录写文件。两者都只依赖「仅绑回环 + 持有令牌」，
+令牌等价于本机 shell 权限——不要外借。若要暴露到局域网，先加 root 白名单。
+
+### 状态机
+
+```
+queued ──► leased ──► running ──► succeeded / failed / cancelled / interfered
+   │          │            │
+   └──────────┴────────────┴──► lost（租约过期，副作用未知）
+```
+
+- 终态不可逆：想再跑一次就新建任务（`retriedFrom` 记录来源）。
+- `lost` 不自动重试：worker 失联时回合可能已经改过文件，只能人工确认后重跑。
+- `interfered` 表示会话被别的实例（例如 TUI）接手，不算失败。
+
+### 幂等与调度
+
+- `idempotencyKey` 的作用域是 `(source, key)`（`source` 默认 `http`），由唯一索引保证并发下也只建一条；重复提交返回既有任务（200 而非 201）。
+- 并发上限由 `ZBOT_JOBS_MAX_CONCURRENT` 控制（默认 2，上限 16）；**同一 `workspace` 强制串行**，避免两次任务同时改同一个仓库。
+- 排队中的任务直接出队取消；在跑的任务会中止对应回合。
+- 任务绑定的会话是复用的：重试保留失败上下文，想让重试从干净上下文开始就传 `freshSession: true`。
+- 服务端每 1/3 租约周期续租；进程崩溃后租约过期，下次启动会把遗留任务标 `lost`。
 
 ## 行为约定
 
@@ -51,7 +156,7 @@ data: {}
 
 用 `format=json` 一次性拉取的客户端没有推送通道可依赖：truncate 后旧游标只会一直返回空数组，客户端需自行用「返回为空且会话仍在推进」或「`max(seq)` 变小」判定游标失效，并从 `since=0` 重取。
 
-`GET /sessions/:id/events` 对未知会话返回空流（不报 404），因为事件流是「订阅该 id 的时间轴」，会话之后可能被创建。
+`GET /api/sessions/:id/events` 对未知会话返回空流（不报 404），因为事件流是「订阅该 id 的时间轴」，会话之后可能被创建。
 
 ## 错误码
 

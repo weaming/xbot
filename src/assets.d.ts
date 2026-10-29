@@ -3,6 +3,12 @@ declare module "*.md" {
     export default content;
 }
 
+/** 内联 HTML 文本（Web 界面单页由服务端直接吐出，无需静态资源服务）。 */
+declare module "*.html" {
+    const content: string;
+    export default content;
+}
+
 /**
  * bun 的 file loader：`with { type: "file" }` 导入的是文件路径字符串，
  * bundle 时 bun 会把该文件复制到输出目录并改成相对输出目录的路径。

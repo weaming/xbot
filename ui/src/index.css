@@ -1,0 +1,144 @@
+@import "tailwindcss";
+
+/* 亮/暗两套语义色：组件只用语义 token，不写死颜色。
+   @theme 声明 token（生成 :root 变量），暗色在媒体查询里直接覆盖同名变量——
+   @theme 本身不能嵌在 @media 里。 */
+@theme {
+    --color-bg: oklch(0.98 0.002 250);
+    --color-panel: oklch(1 0 0);
+    --color-fg: oklch(0.22 0.01 250);
+    --color-muted: oklch(0.55 0.01 250);
+    --color-border: oklch(0.91 0.005 250);
+    --color-accent: oklch(0.55 0.19 258);
+    --color-accent-fg: oklch(1 0 0);
+    --color-ok: oklch(0.55 0.15 150);
+    --color-warn: oklch(0.62 0.15 70);
+    --color-bad: oklch(0.55 0.2 25);
+    --color-col: oklch(0.955 0.004 250);
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --color-bg: oklch(0.19 0.01 250);
+        /* 三层要拉开：页面 < 列 < 卡片，否则列边界看不出来 */
+        --color-panel: oklch(0.26 0.012 250);
+        --color-fg: oklch(0.93 0.005 250);
+        --color-muted: oklch(0.68 0.01 250);
+        --color-border: oklch(0.31 0.012 250);
+        --color-accent: oklch(0.72 0.14 258);
+        --color-accent-fg: oklch(0.18 0.02 258);
+        --color-ok: oklch(0.75 0.15 150);
+        --color-warn: oklch(0.8 0.14 75);
+        --color-bad: oklch(0.7 0.17 25);
+        --color-col: oklch(0.225 0.012 250);
+    }
+}
+
+html,
+body,
+#root {
+    height: 100%;
+}
+
+/* 移动端浏览器地址栏会让 100vh 溢出：有 dvh 就用 dvh */
+@supports (height: 100dvh) {
+    html,
+    body,
+    #root {
+        height: 100dvh;
+    }
+}
+
+body {
+    margin: 0;
+    background: var(--color-bg);
+    color: var(--color-fg);
+    /* 16px = 浏览器默认正文字号，也是 Material / iOS 的正文基准；
+       小于它会让移动端阅读吃力，输入框还会触发 iOS 自动放大 */
+    font:
+        16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+        sans-serif;
+}
+
+/* 拖拽时原卡片半透明，落点由 DragOverlay 呈现 */
+.dragging {
+    opacity: 0.4;
+}
+
+/* AI 输出的 markdown：只给必要样式，不引 typography 插件 */
+.markdown > :first-child {
+    margin-top: 0;
+}
+.markdown > :last-child {
+    margin-bottom: 0;
+}
+.markdown p,
+.markdown ul,
+.markdown ol,
+.markdown pre,
+.markdown table {
+    margin: 0.4em 0;
+}
+.markdown ul,
+.markdown ol {
+    padding-left: 1.3em;
+}
+.markdown ul {
+    list-style: disc;
+}
+.markdown ol {
+    list-style: decimal;
+}
+.markdown li {
+    margin: 0.15em 0;
+}
+.markdown h1,
+.markdown h2,
+.markdown h3 {
+    font-weight: 600;
+    margin: 0.7em 0 0.3em;
+}
+.markdown h1 {
+    font-size: 1.15em;
+}
+.markdown h2 {
+    font-size: 1.08em;
+}
+.markdown h3 {
+    font-size: 1em;
+}
+.markdown code {
+    background: var(--color-col);
+    padding: 0.1em 0.35em;
+    border-radius: 4px;
+    font-size: 0.92em;
+}
+.markdown pre {
+    background: var(--color-col);
+    padding: 0.6em 0.8em;
+    border-radius: 6px;
+    overflow-x: auto;
+}
+.markdown pre code {
+    background: none;
+    padding: 0;
+}
+.markdown blockquote {
+    border-left: 3px solid var(--color-border);
+    padding-left: 0.8em;
+    color: var(--color-muted);
+    margin: 0.4em 0;
+}
+.markdown table {
+    border-collapse: collapse;
+    font-size: 0.92em;
+}
+.markdown th,
+.markdown td {
+    border: 1px solid var(--color-border);
+    padding: 0.25em 0.6em;
+}
+.markdown a {
+    color: var(--color-accent);
+    text-decoration: underline;
+}

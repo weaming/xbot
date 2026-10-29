@@ -50,9 +50,21 @@ async function bunBuild(input, outDir) {
 // Clean and create output directory
 cleanDir(OUT_DIR);
 
+// UI 是独立工程（ui/），产物以文本形式内联进二进制；缺了就直接失败，别产出没有界面的包
+const UI_BUNDLE = 'src/server/.ui-dist/index.html';
+if (!fs.existsSync(UI_BUNDLE)) {
+  console.error(`缺少 UI 产物 ${UI_BUNDLE}：先运行 \`bun run build:ui\``);
+  process.exit(1);
+}
+
 // 身份文本按源码位置跟随模块：runtime-context 编译到 dist/host/，资源必须落在同一目录
 fs.mkdirSync(`${COMPILED_DIR}/host`, { recursive: true });
 fs.copyFileSync('src/host/AGENTS.md', `${COMPILED_DIR}/host/AGENTS.md`);
+
+// 同理：ui.js 编译到 dist/server/，它 import 的界面产物要一并放过去，bun 才能内联
+fs.mkdirSync(`${COMPILED_DIR}/server/.ui-dist`, { recursive: true });
+fs.copyFileSync(UI_BUNDLE, `${COMPILED_DIR}/server/.ui-dist/index.html`);
+
 await bunBuild(`${COMPILED_DIR}/tui/main.js`, OUT_DIR);
 
 console.log('Build complete');

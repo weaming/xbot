@@ -10,12 +10,30 @@ import os from "node:os";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { initializeSessionHostRuntime, LocalSessionHost } from "../host/session-host.js";
+import { JobRunner } from "../jobs/runner.js";
+import { JobStore } from "../jobs/store.js";
 import { startHttpServer, type HttpServerHandle } from "../server/http-server.js";
+import { joinInputs, takeInputs } from "../server/pending-inputs.js";
+import { setJobCommentWriter } from "../tools/job-context.js";
 import { getStateDir, setStartupToolCwd } from "../utils/runtime-paths.js";
+import { createUlid } from "../utils/ulid.js";
 
 const DEFAULT_PORT = 8787;
 const DEFAULT_BIND = "127.0.0.1";
 const TOKEN_BYTES = 24;
+/** 默认并发：两个任务同时跑够用，再多会互相抢 provider 速率与机器资源。 */
+const DEFAULT_MAX_CONCURRENT = 2;
+
+/** 收尾超时：MCP stdio 句柄或残留定时器可能让进程挂住，超时后强制退出。 */
+const SHUTDOWN_FORCE_EXIT_MS = 8_000;
+
+/** serve 生命周期里需要收尾的资源，按依赖顺序排列。 */
+interface ServeResources {
+    server: HttpServerHandle;
+    runner: JobRunner;
+    host: LocalSessionHost;
+    store: JobStore;
+}
 
 export interface ServeArgs {
     port: number;
@@ -104,9 +122,6 @@ export function resolveServeToken(explicit?: string): string {
     return token;
 }
 
-/** 收尾超时：MCP stdio 句柄或残留定时器可能让进程挂住，超时后强制退出。 */
-const SHUTDOWN_FORCE_EXIT_MS = 8_000;
-
 /** 让已写入 stdout/stderr 的内容先刷出去（写入回调触发即表示已交给内核），再结束进程。 */
 async function flushStdio(): Promise<void> {
     await Promise.all([
@@ -116,8 +131,7 @@ async function flushStdio(): Promise<void> {
 }
 
 async function shutdown(
-    server: HttpServerHandle,
-    host: LocalSessionHost,
+    resources: ServeResources,
     reason: string,
     exitCode = 0,
 ): Promise<void> {
@@ -130,9 +144,12 @@ async function shutdown(
 
     try {
         try {
-            // 先断连接再关宿主：SSE 订阅者不能在下游已经销毁后还收到回调
-            await server.stop();
-            await host.close();
+            // 顺序：先断连接（SSE 订阅者不能在下游销毁后还收到回调）→
+            // 再停调度（中止在跑的回合）→ 关宿主（等待落盘）→ 关存储
+            await resources.server.stop();
+            await resources.runner.stop();
+            await resources.host.close();
+            resources.store.close();
         } catch (error) {
             exitCode = 1;
             process.stderr.write(`zbot serve 停止失败：${(error as Error)?.message ?? error}\n`);
@@ -145,6 +162,16 @@ async function shutdown(
         // 收尾完成即退出：残留句柄（MCP stdio 等）不该让进程挂着
         process.exit(exitCode);
     }
+}
+
+/** SSE 心跳间隔：与 http-server 默认值保持一致。 */
+const SSE_HEARTBEAT_MS = 15_000;
+
+/** 并发上限：环境变量可调，但夹在 1..16，避免把 provider 速率打爆。 */
+function resolveMaxConcurrent(): number {
+    const parsed = Number.parseInt(process.env.ZBOT_JOBS_MAX_CONCURRENT ?? "", 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_MAX_CONCURRENT;
+    return Math.min(parsed, 16);
 }
 
 export async function runServe(argv: string[]): Promise<void> {
@@ -163,8 +190,54 @@ export async function runServe(argv: string[]): Promise<void> {
     const host = new LocalSessionHost(runtimeReady, { startupCwd: args.cwd });
     await runtimeReady;
 
-    const server = startHttpServer({ host, port: args.port, bind: args.bind, token });
+    // Job 存储与调度与宿主同进程：租约负责崩溃后判定 lost，队列本身持久化在 SQLite
+    const store = new JobStore({ path: getStateDir("jobs.sqlite") });
+    // agent 在任务里用 job_comment 工具写评论：装配层把工具层的写入意图接到存储上
+    setJobCommentWriter(({ jobId, sessionId, body }) => {
+        store.addComment({ jobId, ...(sessionId ? { sessionId } : {}), author: "agent", body });
+    });
+    const runner = new JobRunner({
+        store,
+        host,
+        owner: createUlid(),
+        maxConcurrent: resolveMaxConcurrent(),
+        // web 端在回合中输入的内容：下一次请求前带给模型
+        consumePendingInputs: sessionId => takeInputs(sessionId, "request"),
+    });
+    runner.start();
+
+    // 「下次 turn 才带上」的输入：等回合收尾、会话锁释放后再开一轮，
+    // 不打断正在跑的推理；多条排队输入合成一段，避免拆成多个回合。
+    host.onTurnFinished = sessionId => {
+        const queued = takeInputs(sessionId, "turn");
+        if (!queued || queued.length === 0) return;
+        void host
+            .sendMessage(sessionId, joinInputs(queued), {
+                consumePendingMessages: () => takeInputs(sessionId, "request"),
+            })
+            .catch(error => console.error(`[serve] 会话 ${sessionId} 追加回合失败:`, error));
+    };
+
+    let server: HttpServerHandle;
+    try {
+        server = startHttpServer({
+            host,
+            port: args.port,
+            bind: args.bind,
+            token,
+            heartbeatMs: SSE_HEARTBEAT_MS,
+            jobs: { store, runner, host, heartbeatMs: SSE_HEARTBEAT_MS },
+        });
+    } catch (error) {
+        // 端口被占用等启动失败必须退出：否则进程留着但没监听，调用方以为服务在跑
+        process.stderr.write(`zbot serve 启动失败：${(error as Error)?.message ?? error}\n`);
+        runner.stop();
+        host.close().catch(() => undefined);
+        process.exit(1);
+    }
+    const resources: ServeResources = { server, runner, host, store };
     process.stderr.write(`zbot serve 已就绪 ${server.url}\n`);
+    process.stderr.write(`任务队列：${getStateDir("jobs.sqlite")}（并发上限 ${resolveMaxConcurrent()}）\n`);
     process.stderr.write(`访问令牌：${token}\n`);
 
     // 长驻服务：单次漏处理的 rejection 不该带走服务；未捕获异常则视为状态不可信，走收尾退出。
@@ -173,7 +246,7 @@ export async function runServe(argv: string[]): Promise<void> {
     const stop = (reason: string, exitCode = 0): void => {
         if (stopping) return;
         stopping = true;
-        void shutdown(server, host, reason, exitCode);
+        void shutdown(resources, reason, exitCode);
     };
     process.on("unhandledRejection", reason => {
         console.error("[serve] 未处理的 Promise 拒绝:", reason);

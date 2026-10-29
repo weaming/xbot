@@ -7,6 +7,12 @@
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
+# 干净克隆没有 UI 产物（gitignore），而 src/server/ui.ts 静态 import 它，缺了连测试都加载不了
+if [ ! -f src/server/.ui-dist/index.html ]; then
+    echo "UI 产物缺失，先构建…"
+    bun run build:ui || exit 1
+fi
+
 MOCKED=$(grep -rl 'mock\.module' tests/unit src --include='*.test.ts' 2>/dev/null | sort)
 BATCH=$(find tests/unit src -name '*.test.ts' 2>/dev/null | sort | grep -vxF "$MOCKED")
 

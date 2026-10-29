@@ -12,3 +12,7 @@ env.*
 .DS_Store
 *.log
 dist-pack/
+
+# Web 界面构建产物（bun run build:ui 生成）
+src/server/.ui-dist/
+dist-ui/

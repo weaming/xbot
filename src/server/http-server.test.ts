@@ -144,29 +144,31 @@ describe("http-server 鉴权与路由", () => {
         const { host } = createStubHost();
         const handle = serve(host);
         try {
-            expect((await fetch(`${handle.url}/healthz`)).status).toBe(401);
-            expect((await fetch(`${handle.url}/healthz?token=wrong`)).status).toBe(401);
+            expect((await fetch(`${handle.url}/api/healthz`)).status).toBe(401);
+            expect((await fetch(`${handle.url}/api/healthz?token=wrong`)).status).toBe(401);
             expect(
                 (
-                    await fetch(`${handle.url}/healthz`, {
+                    await fetch(`${handle.url}/api/healthz`, {
                         headers: { authorization: "Bearer wrong" },
                     })
                 ).status,
             ).toBe(401);
-            expect((await fetch(`${handle.url}/healthz?token=${TOKEN}`)).status).toBe(200);
+            expect((await fetch(`${handle.url}/api/healthz?token=${TOKEN}`)).status).toBe(200);
         } finally {
             await handle.stop();
         }
     });
 
-    test("未知路径 404，根路径给出端点清单", async () => {
+    test("未知路径 404，端点清单在 /endpoints", async () => {
         const { host } = createStubHost();
         const handle = serve(host);
         try {
-            expect((await call(handle, "/nope")).status).toBe(404);
-            const root = await call(handle, "/");
-            expect(root.status).toBe(200);
-            expect((await root.json() as { endpoints: string[] }).endpoints.length).toBeGreaterThan(0);
+            expect((await call(handle, "/api/nope")).status).toBe(404);
+            const endpoints = await call(handle, "/api/endpoints");
+            expect(endpoints.status).toBe(200);
+            expect((await endpoints.json() as { endpoints: string[] }).endpoints.length).toBeGreaterThan(0);
+            // 没启用 Job 调度时不提供界面
+            expect((await call(handle, "/")).status).toBe(404);
         } finally {
             await handle.stop();
         }
@@ -178,7 +180,7 @@ describe("http-server 会话接口", () => {
         const { host, calls } = createStubHost();
         const handle = serve(host);
         try {
-            const res = await call(handle, "/sessions", {
+            const res = await call(handle, "/api/sessions", {
                 method: "POST",
                 headers: { "content-type": "application/json" },
                 body: JSON.stringify({ title: "任务 A" }),
@@ -196,7 +198,7 @@ describe("http-server 会话接口", () => {
         const { host, calls } = createStubHost();
         const handle = serve(host);
         try {
-            const res = await call(handle, "/sessions/s1/messages", {
+            const res = await call(handle, "/api/sessions/s1/messages", {
                 method: "POST",
                 headers: { "content-type": "application/json" },
                 body: JSON.stringify({ text: "跑测试", wait: true }),
@@ -214,7 +216,7 @@ describe("http-server 会话接口", () => {
         const { host, calls } = createStubHost({ claimed: false });
         const handle = serve(host);
         try {
-            const res = await call(handle, "/sessions/s1/messages", {
+            const res = await call(handle, "/api/sessions/s1/messages", {
                 method: "POST",
                 headers: { "content-type": "application/json" },
                 body: JSON.stringify({ text: "投递", wait: true }),
@@ -232,7 +234,7 @@ describe("http-server 会话接口", () => {
         const { host, calls } = createStubHost({ claimed: false, heldByOther: true });
         const handle = serve(host);
         try {
-            const res = await call(handle, "/sessions/s1/messages", {
+            const res = await call(handle, "/api/sessions/s1/messages", {
                 method: "POST",
                 headers: { "content-type": "application/json" },
                 body: JSON.stringify({ text: "投递", wait: true }),
@@ -250,14 +252,14 @@ describe("http-server 会话接口", () => {
         const idle = createStubHost();
         const idleHandle = serve(idle.host);
         try {
-            const accepted = await call(idleHandle, "/sessions/s1/messages", {
+            const accepted = await call(idleHandle, "/api/sessions/s1/messages", {
                 method: "POST",
                 headers: { "content-type": "application/json" },
                 body: JSON.stringify({ text: "后台跑" }),
             });
             expect(accepted.status).toBe(202);
 
-            const empty = await call(idleHandle, "/sessions/s1/messages", {
+            const empty = await call(idleHandle, "/api/sessions/s1/messages", {
                 method: "POST",
                 headers: { "content-type": "application/json" },
                 body: JSON.stringify({ text: "   " }),
@@ -270,7 +272,7 @@ describe("http-server 会话接口", () => {
         const busy = createStubHost({ busy: true });
         const busyHandle = serve(busy.host);
         try {
-            const res = await call(busyHandle, "/sessions/s1/messages", {
+            const res = await call(busyHandle, "/api/sessions/s1/messages", {
                 method: "POST",
                 headers: { "content-type": "application/json" },
                 body: JSON.stringify({ text: "并发任务" }),
@@ -285,12 +287,45 @@ describe("http-server 会话接口", () => {
         const { host, calls } = createStubHost();
         const handle = serve(host);
         try {
-            const res = await call(handle, "/sessions/s1/cancel", { method: "POST" });
+            const res = await call(handle, "/api/sessions/s1/cancel", { method: "POST" });
 
             expect(await res.json()).toMatchObject({ cancelled: true, sessionId: "s1" });
             expect(calls.cancelled).toEqual(["s1"]);
         } finally {
             await handle.stop();
+        }
+    });
+
+    test("随时输入：空闲直接开跑，忙则按模式排队并可查询", async () => {
+        const idle = createStubHost();
+        const idleHandle = serve(idle.host);
+        try {
+            const res = await call(idleHandle, "/api/sessions/sess-idle/inputs", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ text: "补充一句" }),
+            });
+            expect(res.status).toBe(202);
+            expect((await res.json() as { started: boolean }).started).toBe(true);
+            expect(idle.calls.sent).toEqual([{ sessionId: "sess-idle", text: "补充一句" }]);
+        } finally {
+            await idleHandle.stop();
+        }
+
+        const busy = createStubHost({ busy: true });
+        const busyHandle = serve(busy.host);
+        try {
+            const queued = await call(busyHandle, "/api/sessions/sess-busy/inputs", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ text: "下轮再带上", mode: "turn" }),
+            });
+            expect((await queued.json() as { queued: boolean }).queued).toBe(true);
+
+            const stats = await call(busyHandle, "/api/sessions/sess-busy/inputs");
+            expect(await stats.json()).toEqual({ request: 0, turn: 1 });
+        } finally {
+            await busyHandle.stop();
         }
     });
 });
@@ -300,7 +335,7 @@ describe("http-server 事件流", () => {
         const { host, calls } = createStubHost({ history: [event(1), event(2), event(3)] });
         const handle = serve(host);
         try {
-            const res = await call(handle, "/sessions/s1/events?since=2&format=json");
+            const res = await call(handle, "/api/sessions/s1/events?since=2&format=json");
             const events = await res.json() as AgentEvent[];
 
             expect(calls.sinceCalls).toEqual([2]);
@@ -314,8 +349,8 @@ describe("http-server 事件流", () => {
         const { host } = createStubHost();
         const handle = serve(host);
         try {
-            expect((await call(handle, "/sessions/s1/events?since=5abc&format=json")).status).toBe(400);
-            expect((await call(handle, "/sessions/s1/events?since=-1&format=json")).status).toBe(400);
+            expect((await call(handle, "/api/sessions/s1/events?since=5abc&format=json")).status).toBe(400);
+            expect((await call(handle, "/api/sessions/s1/events?since=-1&format=json")).status).toBe(400);
         } finally {
             await handle.stop();
         }
@@ -325,7 +360,7 @@ describe("http-server 事件流", () => {
         const { host, calls } = createStubHost({ history: [event(1), event(2)] });
         const handle = serve(host);
         try {
-            const res = await call(handle, "/sessions/s1/events?since=0&format=json", {
+            const res = await call(handle, "/api/sessions/s1/events?since=0&format=json", {
                 headers: { "last-event-id": "1" },
             });
             const events = await res.json() as AgentEvent[];
@@ -341,7 +376,7 @@ describe("http-server 事件流", () => {
         const stub = createStubHost({ history: [event(1), event(2)] });
         const handle = serve(stub.host);
         try {
-            const res = await call(handle, "/sessions/s1/events?since=0");
+            const res = await call(handle, "/api/sessions/s1/events?since=0");
             expect(res.headers.get("content-type")).toContain("text/event-stream");
 
             const frames = openFrameReader(res);
@@ -362,7 +397,7 @@ describe("http-server 事件流", () => {
         const stub = createStubHost({ history: [event(5)] });
         const handle = serve(stub.host);
         try {
-            const frames = openFrameReader(await call(handle, "/sessions/s1/events?since=0"));
+            const frames = openFrameReader(await call(handle, "/api/sessions/s1/events?since=0"));
             expect((await frames.read(1))[0]).toContain("id: 5");
 
             stub.emit("s1", null);
@@ -382,7 +417,7 @@ describe("http-server 事件流", () => {
         const { host } = createStubHost();
         const handle = serve(host, 20);
         try {
-            const frames = openFrameReader(await call(handle, "/sessions/s1/events?since=0"));
+            const frames = openFrameReader(await call(handle, "/api/sessions/s1/events?since=0"));
             expect((await frames.read(1))[0]).toContain(": ping");
             await frames.close();
         } finally {
@@ -395,7 +430,7 @@ describe("http-server 事件流", () => {
         const handle = serve(stub.host, 20);
         const abort = new AbortController();
         try {
-            const res = await fetch(`${handle.url}/sessions/s1/events?since=0`, {
+            const res = await fetch(`${handle.url}/api/sessions/s1/events?since=0`, {
                 headers: { authorization: `Bearer ${TOKEN}` },
                 signal: abort.signal,
             });
@@ -437,7 +472,7 @@ describe("http-server 事件流", () => {
         const abort = new AbortController();
         try {
             // 慢回放期间不会发出任何帧，服务端可能迟迟不 flush 响应头，这里不 await 请求本身
-            const pending = fetch(`${handle.url}/sessions/s1/events?since=0`, {
+            const pending = fetch(`${handle.url}/api/sessions/s1/events?since=0`, {
                 headers: { authorization: `Bearer ${TOKEN}` },
                 signal: abort.signal,
             }).catch(() => undefined);

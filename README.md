@@ -55,8 +55,19 @@ Responses API 和 Chat Completions 可使用各自的 `OPENAI_RESPONSES_*` 与 `
 ```sh
 TOKEN=$(cat ~/.zbot/serve/token)
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "content-type: application/json" \
-  -d '{"title":"跑测试"}' http://127.0.0.1:8787/sessions
-curl -sN -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:8787/sessions/<id>/events?since=0"
+  -d '{"title":"跑测试"}' http://127.0.0.1:8787/api/sessions
+curl -sN -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:8787/api/sessions/<id>/events?since=0"
 ```
+
+发布任务并排队执行（服务端负责并发、串行、超时与重试），带一个最小 Web 界面：
+
+```sh
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "content-type: application/json" \
+  -d '{"prompt":"修一下 lint 报错","workspace":"'"$HOME"'/src/zbot"}' http://127.0.0.1:8787/api/jobs
+open http://127.0.0.1:8787/
+```
+
+界面首次打开会要求输入令牌（读自 `~/.zbot/serve/token`），之后记在浏览器 localStorage；
+也可以用 `http://127.0.0.1:8787/?token=<令牌>` 打开一次自动记住。
 
 文档：[会话命令行](docs/session-cli.md)、[serve 接口](docs/serve-api.md)、[MCP 多服务配置](docs/mcp.md)、[TUI 链接与终端交互](docs/tui-links.md)。

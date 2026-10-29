@@ -5,6 +5,8 @@ import { skillRegistry } from "../skills/skill-registry.js";
 import { loadIdentityContext } from "../skills/base-skill.js";
 import { executeWithChat, createChatClient, isAbortError } from "../tools/chat-orchestrator.js";
 import { executeMcpTool, getOpenAIToolDefinitions } from "../tools/tool-registry.js";
+import { getJobContext } from "../tools/job-context.js";
+import { getSessionMcpScope } from "../tools/session-mcp-scope.js";
 import { createTodoReminderProvider } from "../tools/todo-tool.js";
 import { runWithToolCwd } from "../utils/tool-cwd-context.js";
 import {
@@ -392,11 +394,16 @@ export async function runChatQuery(options: ChatRunOptions) {
                 };
             },
             getSystemPrompt: () => options.systemPrompt,
-            // 会话级工具按会话注入：会话间通信要控制通道、提问要有人能回答（见各自 getXxxToolNames）
-            getToolDefinitions: () => getOpenAIToolDefinitions([
-                ...getSessionToolNames(options.sessionId),
-                ...getAskUserToolNames(options.sessionId),
-            ]),
+            // 会话级工具按会话注入：会话间通信要控制通道、提问要有人能回答（见各自 getXxxToolNames）。
+            // job_comment 只在任务执行上下文里下发；MCP 工具按任务勾选的白名单过滤。
+            getToolDefinitions: () => getOpenAIToolDefinitions(
+                [
+                    ...getSessionToolNames(options.sessionId),
+                    ...getAskUserToolNames(options.sessionId),
+                    ...(getJobContext() ? ["job_comment"] : []),
+                ],
+                { mcpServers: getSessionMcpScope(options.sessionId) },
+            ),
             ...(options.disableToolCalls ? { toolChoice: "none" as const } : {}),
             history: options.history ?? [],
             sessionId: options.sessionId,

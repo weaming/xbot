@@ -1,19 +1,29 @@
 /**
- * HTTP 前端：把 SessionHost 暴露成可编程接口（REST + SSE）。
+ * HTTP 前端：把 SessionHost（与可选的 Job 调度）暴露成可编程接口（REST + SSE）。
  *
  * 与 TUI 并列：不 import tui/，只依赖 host 契约与持久化事件的 seq 游标。
  * 事件流推的是持久化事实源（带唯一 seq），瞬态的逐 token 片段不在本接口范围内。
  */
 
 import { timingSafeEqual } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describeClaimFailure } from "../control/channel.js";
-import type { AgentEvent } from "../events/agent-events.js";
 import {
     SessionArchivedError,
     SessionBusyError,
     SessionNotFoundError,
     type SessionHost,
 } from "../host/session-host-types.js";
+import { handleJobsRoute, type JobsApiContext } from "./jobs-api.js";
+import { enqueueInput, pendingStats, takeInputs } from "./pending-inputs.js";
+import { fail, json, readJson } from "./respond.js";
+import { openSseStream, parseSseCursor, type SseSource } from "./sse.js";
+import { renderUiPage } from "./ui.js";
+import { createImageAsset } from "../utils/image-assets.js";
+import { getStateDir } from "../utils/runtime-paths.js";
+import type { ImageAssetRef } from "../types/image.js";
 
 /** 默认心跳间隔：远小于任何中间层空闲超时，避免长连接被静默掐断。 */
 const DEFAULT_HEARTBEAT_MS = 15_000;
@@ -35,23 +45,14 @@ export interface HttpServerOptions {
     /** 访问令牌：请求需带 `Authorization: Bearer <token>` 或 `?token=`。 */
     token: string;
     heartbeatMs?: number;
+    /** 传入后启用 /jobs 路由（Job 调度由调用方装配）。 */
+    jobs?: JobsApiContext;
 }
 
 export interface HttpServerHandle {
     readonly url: string;
     readonly port: number;
     stop(): Promise<void>;
-}
-
-function json(data: unknown, status = 200): Response {
-    return new Response(JSON.stringify(data, null, 2), {
-        status,
-        headers: { "content-type": "application/json; charset=utf-8" },
-    });
-}
-
-function fail(message: string, status: number): Response {
-    return json({ error: message }, status);
 }
 
 /** 定长比较：避免用 `===` 逐字节短路泄露令牌前缀。 */
@@ -68,16 +69,6 @@ function isAuthorized(req: Request, url: URL, token: string): boolean {
     return safeEqual(url.searchParams.get("token") ?? "", token);
 }
 
-/** 读 JSON body；非法 JSON 返回 undefined，由调用方给 400。 */
-async function readJson(req: Request): Promise<Record<string, unknown> | undefined> {
-    try {
-        const parsed = await req.json();
-        return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : undefined;
-    } catch {
-        return undefined;
-    }
-}
-
 /**
  * 宿主可判别错误 → HTTP 状态码。
  * 按类型分流而不是匹配文案：文案属于展示层，改词不该影响协议行为。
@@ -89,113 +80,91 @@ function mapHostError(error: unknown): Response | undefined {
     return undefined;
 }
 
+/** 图片资源目录：createImageAsset 落盘的位置。 */
+function imageAssetDir(): string {
+    return getStateDir("assets", "images");
+}
+
+const IMAGE_ID_PATTERN = /^img_[a-f0-9]{20}$/;
+const IMAGE_MIME_BY_EXT: Record<string, string> = {
+    ".jpg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+};
+
+/** 按 id 找落盘的图片文件（id 里不含扩展名，需要扫目录匹配）。 */
+function findImageAsset(id: string): { path: string; mimeType: string } | undefined {
+    const dir = imageAssetDir();
+    let names: string[];
+    try {
+        names = fs.readdirSync(dir);
+    } catch {
+        return undefined;
+    }
+    const name = names.find(item => item.startsWith(`${id}.`));
+    if (!name) return undefined;
+    const mimeType = IMAGE_MIME_BY_EXT[path.extname(name).toLowerCase()];
+    if (!mimeType) return undefined;
+    return { path: path.join(dir, name), mimeType };
+}
+
+const DIR_SUGGEST_LIMIT = 20;
+
+/** 展开 `~`，其余按当前工作目录解析。 */
+function expandPathInput(input: string): string {
+    const trimmed = input.trim();
+    if (trimmed === "~") return os.homedir();
+    if (trimmed.startsWith("~/")) return path.join(os.homedir(), trimmed.slice(2));
+    return path.resolve(trimmed || ".");
+}
+
 /**
- * 打开一条事件流：先回放 `since` 之后的持久化事件，再推新增的。
- *
- * 顺序必须是「先订阅、后回放」：回放期间到达的事件先入缓冲（含重置信号），
- * 回放结束后按 seq 去重补推，这样既不漏（订阅早于读盘）也不重（seq 单调过滤）。
+ * 目录补全：把输入拆成「父目录 + 前缀」，返回匹配的子目录。
+ * 只读目录名，不碰文件内容；返回时把 home 前缀缩成 `~`，与用户输入保持一致。
  */
-function eventStream(
-    host: SessionHost,
-    sessionId: string,
-    since: number,
-    heartbeatMs: number,
-    signal: AbortSignal,
-): Response {
-    const encoder = new TextEncoder();
-    let dispose = (): void => {};
+function suggestDirs(rawInput: string): string[] {
+    const trimmed = rawInput.trim();
+    const endsWithSep = /[\\/]$/.test(trimmed);
+    const absolute = expandPathInput(trimmed);
+    const base = endsWithSep || trimmed === "~" ? absolute : path.dirname(absolute);
+    const prefix = endsWithSep || trimmed === "~" ? "" : path.basename(absolute);
 
-    const body = new ReadableStream<Uint8Array>({
-        async start(controller) {
-            let lastSeq = since;
-            let replaying = true;
-            let closed = false;
-            let heartbeat: ReturnType<typeof setInterval> | undefined;
-            const buffered: Array<AgentEvent | null> = [];
+    let entries: fs.Dirent[];
+    try {
+        entries = fs.readdirSync(base, { withFileTypes: true });
+    } catch {
+        return [];
+    }
 
-            const write = (text: string): boolean => {
-                if (closed) return false;
-                try {
-                    controller.enqueue(encoder.encode(text));
-                    return true;
-                } catch {
-                    // 客户端已断开：中途层静默断连不会触发 cancel，这里兜住资源清理
-                    return false;
-                }
-            };
-            const send = (event: AgentEvent | null): void => {
-                if (event === null) {
-                    // 时间轴重置：id 必须归零，否则客户端会带着失效的 Last-Event-ID 重连且永久静默
-                    lastSeq = 0;
-                    if (!write("id: 0\nevent: reset\ndata: {}\n\n")) dispose();
-                    return;
-                }
-                if (event.seq <= lastSeq) return;
-                lastSeq = event.seq;
-                if (!write(`id: ${event.seq}\ndata: ${JSON.stringify(event)}\n\n`)) dispose();
-            };
+    const home = os.homedir();
+    return entries
+        .filter(entry => entry.isDirectory() && entry.name.startsWith(prefix))
+        .map(entry => entry.name)
+        .sort()
+        .slice(0, DIR_SUGGEST_LIMIT)
+        .map(name => {
+            const full = path.join(base, name);
+            return full === home ? "~" : full.startsWith(`${home}/`) ? `~${full.slice(home.length)}` : full;
+        });
+}
 
-            const unsubscribe = host.subscribeEvents((changedSessionId, event) => {
+/** 会话执行事件流：转发某个会话的持久化事件（重置信号原样透传）。 */
+function sessionEventSource(host: SessionHost, sessionId: string): SseSource {
+    return {
+        label: `会话 ${sessionId}`,
+        readSince: async since =>
+            (await host.readSessionEventsSince(sessionId, since)).map(event => ({ seq: event.seq, payload: event })),
+        subscribe: listener =>
+            host.subscribeEvents((changedSessionId, event) => {
                 if (changedSessionId !== sessionId) return;
-                if (replaying) buffered.push(event);
-                else send(event);
-            });
-
-            const finish = (): void => {
-                if (closed) return;
-                closed = true;
-                unsubscribe();
-                if (heartbeat) clearInterval(heartbeat);
-                heartbeat = undefined;
-                try {
-                    controller.close();
-                } catch {
-                    // 已关闭
-                }
-            };
-            dispose = finish;
-            signal.addEventListener("abort", finish, { once: true });
-
-            try {
-                for (const event of await host.readSessionEventsSince(sessionId, since)) {
-                    if (closed) break;
-                    send(event);
-                }
-            } catch (error) {
-                // 注释帧只放固定文案：错误文本可能含换行，会破坏帧结构
-                console.error(`[serve] 会话 ${sessionId} 事件回放失败:`, error);
-                write(": 回放失败\n\n");
-            }
-            replaying = false;
-            for (const event of buffered) {
-                if (closed) break;
-                send(event);
-            }
-            buffered.length = 0;
-
-            // 回放期间已断开就别再建定时器：否则 interval 无人清理，会永久空转
-            if (closed) return;
-            heartbeat = setInterval(() => {
-                if (!write(": ping\n\n")) dispose();
-            }, heartbeatMs);
-        },
-        cancel() {
-            dispose();
-        },
-    });
-
-    return new Response(body, {
-        headers: {
-            "content-type": "text/event-stream; charset=utf-8",
-            "cache-control": "no-cache, no-transform",
-            connection: "keep-alive",
-            "x-accel-buffering": "no",
-        },
-    });
+                listener(event === null ? null : { seq: event.seq, payload: event });
+            }),
+    };
 }
 
 export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
-    const { host, port, bind = "127.0.0.1", token, heartbeatMs = DEFAULT_HEARTBEAT_MS } = options;
+    const { host, port, bind = "127.0.0.1", token, heartbeatMs = DEFAULT_HEARTBEAT_MS, jobs } = options;
 
     const server = Bun.serve({
         port,
@@ -204,33 +173,113 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
         maxRequestBodySize: MAX_BODY_BYTES,
         async fetch(req) {
             const url = new URL(req.url);
-            if (!isAuthorized(req, url, token)) return fail("未授权：缺少或错误的访问令牌", 401);
-
             const segments = url.pathname.split("/").filter(Boolean);
-            if (segments.length === 0) {
-                return json({
-                    name: "zbot serve",
-                    endpoints: [
-                        "GET  /healthz",
-                        "GET  /sessions",
-                        "POST /sessions {cwd?, title?}",
-                        "GET  /sessions/:id",
-                        "GET  /sessions/:id/events?since=<seq>（SSE，format=json 一次性拉取）",
-                        "POST /sessions/:id/messages {text, wait?}",
-                        "POST /sessions/:id/cancel",
-                    ],
+
+            // 界面壳不校验令牌：否则没有令牌的人打不开「输入令牌」的页面。
+            // 页面本身不含任何数据，数据请求仍要令牌。
+            if (segments.length === 0 || segments[0] === "ui") {
+                if (req.method !== "GET") return fail("不支持的方法", 405);
+                if (!jobs) return fail("Job 接口未启用", 404);
+                // 单页内联：没有静态资源、没有构建产物，随 serve 一起分发
+                return new Response(renderUiPage(), {
+                    headers: {
+                        "content-type": "text/html; charset=utf-8",
+                        "x-content-type-options": "nosniff",
+                    },
                 });
             }
 
-            if (segments[0] === "healthz") {
-                if (req.method !== "GET") return fail("不支持的方法", 405);
-                return json({ ok: true, pid: process.pid, sessions: host.listActiveSessionIds().length });
+            // 接口统一在 /api 下：界面壳与数据接口在路径上就能分开，代理/反代配置也更简单
+            if (segments[0] !== "api") return fail("接口统一在 /api 下", 404);
+            const apiPath = segments.slice(1);
+
+            if (!isAuthorized(req, url, token)) return fail("未授权：缺少或错误的访问令牌", 401);
+
+            const endpoints = [
+                "GET  /（Web 界面）",
+                "GET  /api（端点清单）",
+                "GET  /api/healthz",
+                "GET  /api/sessions",
+                "POST /api/sessions {cwd?, title?}",
+                "GET  /api/sessions/:id",
+                "GET  /api/sessions/:id/events?since=<seq>（SSE，format=json 一次性拉取）",
+                "POST /api/sessions/:id/messages {text, wait?}",
+                "POST /api/sessions/:id/cancel",
+                ...(jobs
+                    ? [
+                          "GET  /api/jobs?state=&limit=",
+                          "POST /api/jobs {prompt, workspace?, idempotencyKey?, priority?, timeoutSec?}",
+                          "GET  /api/jobs/:id",
+                          "GET  /api/jobs/events?since=<seq>（列表状态流）",
+                          "GET  /api/jobs/:id/events?since=<seq>（执行流）",
+                          "POST /api/jobs/:id/cancel",
+                      ]
+                    : []),
+            ];
+
+            if (apiPath.length === 0 || apiPath[0] === "endpoints") {
+                return json({ name: "zbot serve", prefix: "/api", endpoints });
             }
 
-            if (segments[0] !== "sessions") return fail("未知路径", 404);
+            if (apiPath[0] === "healthz") {
+                if (req.method !== "GET") return fail("不支持的方法", 405);
+                return json({
+                    ok: true,
+                    pid: process.pid,
+                    // 新建任务的默认工作目录：TUI_CWD 就是 serve 启动时定的任务基准
+                    // （用原始入参而不是 chdir 后的值，macOS 上 /tmp 会被解析成 /private/tmp）
+                    cwd: process.env.TUI_CWD ?? process.cwd(),
+                    // 界面用它把 home 前缀缩成 ~（只影响展示，数据仍是绝对路径）
+                    home: process.env.HOME ?? "",
+                    sessions: host.listActiveSessionIds().length,
+                    ...(jobs ? { jobs: jobs.runner.stats() } : {}),
+                });
+            }
+
+            // 图片：上传走 base64，读取给 <img> 用（不能带 header，所以用 ?token=）
+            if (apiPath[0] === "assets") {
+                if (req.method === "POST" && !apiPath[1]) {
+                    const body = await readJson(req);
+                    // 兼容前端直接给 data URL
+                    const data = typeof body?.data === "string" ? body.data.replace(/^data:[^;]+;base64,/, "") : "";
+                    if (!data) return fail("data 必填（base64）", 400);
+                    try {
+                        const buffer = Buffer.from(data, "base64");
+                        if (buffer.length === 0) return fail("图片内容为空", 400);
+                        const filename = typeof body?.filename === "string" && body.filename.trim()
+                            ? body.filename.trim()
+                            : "paste.png";
+                        return json(await createImageAsset(buffer, filename), 201);
+                    } catch (error) {
+                        return fail((error as Error)?.message ?? "图片保存失败", 400);
+                    }
+                }
+                if (req.method === "GET" && apiPath[1]) {
+                    if (!IMAGE_ID_PATTERN.test(apiPath[1])) return fail("非法图片 id", 400);
+                    const found = findImageAsset(apiPath[1]);
+                    if (!found) return fail("图片不存在", 404);
+                    return new Response(fs.readFileSync(found.path), {
+                        headers: { "content-type": found.mimeType, "cache-control": "private, max-age=86400" },
+                    });
+                }
+                return fail("不支持的方法", 405);
+            }
+
+            // 目录补全：新建任务的工作目录输入框用
+            if (apiPath[0] === "fs" && apiPath[1] === "dirs") {
+                if (req.method !== "GET") return fail("不支持的方法", 405);
+                return json(suggestDirs(url.searchParams.get("path") ?? ""));
+            }
+
+            if (apiPath[0] === "jobs") {
+                if (!jobs) return fail("Job 接口未启用", 404);
+                return handleJobsRoute(jobs, req, url, apiPath);
+            }
+
+            if (apiPath[0] !== "sessions") return fail("未知路径", 404);
 
             try {
-                if (segments.length === 1) {
+                if (apiPath.length === 1) {
                     if (req.method === "GET") return json(await host.listSessions());
                     if (req.method === "POST") {
                         const body = (await readJson(req)) ?? {};
@@ -249,8 +298,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
                 }
 
                 // Bun 会在进入 handler 前拒绝非法百分号编码，这里不再重复校验
-                const sessionId = decodeURIComponent(segments[1]!);
-                const action = segments[2];
+                const sessionId = decodeURIComponent(apiPath[1]!);
+                const action = apiPath[2];
 
                 if (!action && req.method === "GET") {
                     const summary = (await host.listSessions()).find(item => item.sessionId === sessionId);
@@ -259,18 +308,17 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
 
                 if (action === "events" && req.method === "GET") {
                     // 断线重连时 EventSource 会自动带 Last-Event-ID，优先于显式 since
-                    const headerId = req.headers.get("last-event-id")?.trim();
-                    const querySince = url.searchParams.get("since")?.trim();
-                    const raw = headerId || querySince || null;
-                    let since = 0;
-                    if (raw !== null) {
-                        if (!/^\d+$/.test(raw)) return fail("since 必须是非负整数", 400);
-                        since = Number.parseInt(raw, 10);
-                    }
+                    const cursor = parseSseCursor(req, url);
+                    if ("error" in cursor) return fail(cursor.error, 400);
                     if (url.searchParams.get("format") === "json") {
-                        return json(await host.readSessionEventsSince(sessionId, since));
+                        return json(await host.readSessionEventsSince(sessionId, cursor.since));
                     }
-                    return eventStream(host, sessionId, since, heartbeatMs, req.signal);
+                    return openSseStream(
+                        sessionEventSource(host, sessionId),
+                        cursor.since,
+                        heartbeatMs,
+                        req.signal,
+                    );
                 }
 
                 if (action === "messages" && req.method === "POST") {
@@ -313,6 +361,38 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
                 if (action === "cancel" && req.method === "POST") {
                     const cancelled = await host.abortSession(sessionId);
                     return json({ cancelled, sessionId });
+                }
+
+                // 随时输入：空闲就直接开跑，忙就按模式排队
+                if (action === "inputs") {
+                    if (req.method === "GET") return json(pendingStats(sessionId));
+                    if (req.method === "POST") {
+                        const body = await readJson(req);
+                        const text = typeof body?.text === "string" ? body.text.trim() : "";
+                        if (!text) return fail("text 必填", 400);
+                        // request：下一次请求前带上（默认）；turn：等当前回合结束后再开始新一轮
+                        const mode = body?.mode === "turn" ? "turn" : "request";
+                        const images = Array.isArray(body?.images) ? (body.images as ImageAssetRef[]) : undefined;
+
+                        if (!host.isSessionBusy(sessionId)) {
+                            const turn = host.sendMessage(sessionId, text, {
+                                ...(images && images.length > 0 ? { images } : {}),
+                                consumePendingMessages: () => takeInputs(sessionId, "request"),
+                            });
+                            turn.catch(error =>
+                                console.error(`[serve] 会话 ${sessionId} 回合失败:`, error),
+                            );
+                            return json({ started: true, queued: false, mode, pending: pendingStats(sessionId) }, 202);
+                        }
+
+                        // 排队只存文本：图片引用要跟着具体请求走，混进队列会跨回合串味
+                        if (images && images.length > 0) {
+                            return fail("当前回合进行中，带图片的消息请等它结束后再发", 409);
+                        }
+                        enqueueInput(sessionId, text, mode);
+                        return json({ started: false, queued: true, mode, pending: pendingStats(sessionId) }, 202);
+                    }
+                    return fail("不支持的方法", 405);
                 }
 
                 return fail("未知路径", 404);
