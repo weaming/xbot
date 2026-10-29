@@ -106,10 +106,8 @@ function Thinking() {
     return <div className="text-xs text-muted">🧠 思考中</div>;
 }
 
-function ToolCall({ name, args }: { name: string; args: string }) {
+function ToolCall({ name, summary, args }: { name: string; summary: string; args?: string }) {
     const [open, setOpen] = useState(false);
-    const pretty = formatArgs(args);
-    const summary = summarizeToolCall(args);
     return (
         <div className="rounded-md border border-border bg-col/60">
             <button
@@ -120,11 +118,14 @@ function ToolCall({ name, args }: { name: string; args: string }) {
                 <span className="text-accent">▸</span>
                 <span className="shrink-0 font-mono">{name}</span>
                 <span className="flex-1 truncate text-left font-mono text-muted">{summary}</span>
-                <span className="ml-auto shrink-0 text-muted">{open ? "收起" : "参数"}</span>
+                {/* 大参数只发摘要，参数面板自然也就没有 */}
+                {args !== undefined && (
+                    <span className="ml-auto shrink-0 text-muted">{open ? "收起" : "参数"}</span>
+                )}
             </button>
-            {open && (
+            {open && args !== undefined && (
                 <pre className="max-h-60 overflow-auto px-2.5 pb-2 font-mono text-xs break-all whitespace-pre-wrap">
-                    {pretty}
+                    {formatArgs(args)}
                 </pre>
             )}
         </div>
@@ -168,7 +169,7 @@ export function Timeline({ events }: { events: AgentEvent[] }) {
     const callNames = new Map<string, string>();
     for (const event of events) {
         for (const call of event.payload.message?.tool_calls ?? []) {
-            if (call.id) callNames.set(call.id, call.function.name);
+            if (call.id) callNames.set(call.id, call.name ?? call.function?.name ?? "工具");
         }
     }
     const firstUserSeq = events.find(event => event.type === "user_message")?.seq;
@@ -201,26 +202,27 @@ export function Timeline({ events }: { events: AgentEvent[] }) {
                 if (!message) break;
                 if (message.role === "assistant") {
                     const hasContent = typeof message.content === "string" && message.content.trim().length > 0;
-                    const hasReasoning = typeof message.reasoning_content === "string" && message.reasoning_content.length > 0;
+                    const hasReasoning = message.hasReasoning === true
+                        || (typeof message.reasoning_content === "string" && message.reasoning_content.length > 0);
                     nodes.push(
                         <Fragment key={event.seq}>
                             {hasReasoning && <Thinking />}
                             {hasContent && <AssistantMessage content={message.content as string} />}
-                            {(message.tool_calls ?? []).map((call, index) => (
-                                <ToolCall
-                                    key={`${event.seq}-${index}`}
-                                    name={call.function.name}
-                                    args={call.function.arguments}
-                                />
-                            ))}
+                            {(message.tool_calls ?? []).map((call, index) => {
+                                const name = call.name ?? call.function?.name ?? "工具";
+                                const args = call.arguments ?? call.function?.arguments;
+                                const summary = call.summary ?? (args ? summarizeToolCall(args) : "");
+                                return (
+                                    <ToolCall key={`${event.seq}-${index}`} name={name} summary={summary} args={args} />
+                                );
+                            })}
                         </Fragment>,
                     );
                 } else if (message.role === "tool") {
-                    const text =
-                        typeof message.content === "string" ? message.content : JSON.stringify(message.content ?? "");
-                    const name = message.tool_call_id ? (callNames.get(message.tool_call_id) ?? "工具") : "工具";
+                    const name = message.name
+                        ?? (message.tool_call_id ? (callNames.get(message.tool_call_id) ?? "工具") : "工具");
                     nodes.push(
-                        <ToolStatus key={event.seq} name={name} durationMs={message.durationMs} size={text.length} />,
+                        <ToolStatus key={event.seq} name={name} durationMs={message.durationMs} size={message.contentLength} />,
                     );
                 }
                 break;

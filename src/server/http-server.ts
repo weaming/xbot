@@ -19,6 +19,7 @@ import {
 import { handleJobsRoute, type JobsApiContext } from "./jobs-api.js";
 import { enqueueInput, pendingStats, takeInputs } from "./pending-inputs.js";
 import { fail, json, readJson } from "./respond.js";
+import { toSessionEventView, toSessionEventViews } from "./event-view.js";
 import { openSseStream, parseSseCursor, type SseSource } from "./sse.js";
 import { renderUiPage } from "./ui.js";
 import { createImageAsset } from "../utils/image-assets.js";
@@ -154,11 +155,17 @@ function sessionEventSource(host: SessionHost, sessionId: string): SseSource {
     return {
         label: `会话 ${sessionId}`,
         readSince: async since =>
-            (await host.readSessionEventsSince(sessionId, since)).map(event => ({ seq: event.seq, payload: event })),
+            toSessionEventViews(await host.readSessionEventsSince(sessionId, since))
+                .map(view => ({ seq: view.seq, payload: view })),
         subscribe: listener =>
             host.subscribeEvents((changedSessionId, event) => {
                 if (changedSessionId !== sessionId) return;
-                listener(event === null ? null : { seq: event.seq, payload: event });
+                if (event === null) {
+                    listener(null);
+                    return;
+                }
+                const view = toSessionEventView(event);
+                if (view) listener({ seq: view.seq, payload: view });
             }),
     };
 }
@@ -311,7 +318,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
                     const cursor = parseSseCursor(req, url);
                     if ("error" in cursor) return fail(cursor.error, 400);
                     if (url.searchParams.get("format") === "json") {
-                        return json(await host.readSessionEventsSince(sessionId, cursor.since));
+                        return json(toSessionEventViews(await host.readSessionEventsSince(sessionId, cursor.since)));
                     }
                     return openSseStream(
                         sessionEventSource(host, sessionId),

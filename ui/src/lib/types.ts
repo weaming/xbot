@@ -94,8 +94,20 @@ export interface AgentEvent {
             content?: string | null;
             /** 思考内容：界面只显示「思考中」，不把推理过程铺开 */
             reasoning_content?: string | null;
-            tool_calls?: Array<{ id?: string; function: { name: string; arguments: string } }>;
+            /** 服务端已经算好摘要；arguments 只在小参数时才带（大参数只留 summary） */
+            tool_calls?: Array<{
+                id?: string;
+                name?: string;
+                summary?: string;
+                arguments?: string;
+                /** 老数据兼容：原始 OpenAI 形状 */
+                function?: { name: string; arguments: string };
+            }>;
             tool_call_id?: string;
+            /** 有推理内容（正文不下发） */
+            hasReasoning?: boolean;
+            /** 工具输出长度（正文不下发） */
+            contentLength?: number;
             /** 工具耗时（毫秒）：历史回放只显示这个与状态，不铺开输出 */
             durationMs?: number;
         };

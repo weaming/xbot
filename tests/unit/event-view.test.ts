@@ -1,0 +1,83 @@
+/**
+ * 会话事件的 HTTP 视图：只发界面用得上的字段，大块正文（工具输出、推理）不进响应。
+ */
+
+import { describe, expect, test } from "bun:test";
+import type { AgentEvent } from "../../src/events/agent-events.js";
+import { toSessionEventView, toSessionEventViews } from "../../src/server/event-view.js";
+
+function event(type: string, payload: Record<string, unknown>, seq = 1): AgentEvent {
+    return { seq, ts: "2026-10-30T00:00:00.000Z", sessionId: "s1", type, payload } as unknown as AgentEvent;
+}
+
+describe("toSessionEventView", () => {
+    test("界面不渲染的事件不下发", () => {
+        for (const type of ["turn_segment_start", "turn_commit", "turn_stream_delta", "usage_recorded", "lazy_mcp_changed"]) {
+            expect(toSessionEventView(event(type, {}))).toBeNull();
+        }
+    });
+
+    test("工具输出只保留长度与用时，正文不下发", () => {
+        const view = toSessionEventView(event("turn_message", {
+            message: { role: "tool", tool_call_id: "c1", name: "bash", durationMs: 27, content: "x".repeat(5000) },
+        }));
+
+        const message = view?.payload.message as Record<string, unknown>;
+        expect(message.content).toBeUndefined();
+        expect(message.contentLength).toBe(5000);
+        expect(message.durationMs).toBe(27);
+        expect(message.name).toBe("bash");
+    });
+
+    test("推理正文不下发，只留 hasReasoning", () => {
+        const view = toSessionEventView(event("turn_message", {
+            message: { role: "assistant", content: "答案", reasoning_content: "想了很久".repeat(100) },
+        }));
+
+        const message = view?.payload.message as Record<string, unknown>;
+        expect(message.content).toBe("答案");
+        expect(message.hasReasoning).toBe(true);
+        expect(message.reasoning_content).toBeUndefined();
+    });
+
+    test("工具参数：小的带上原文，大的只留摘要", () => {
+        const small = toSessionEventView(event("turn_message", {
+            message: {
+                role: "assistant",
+                tool_calls: [{ id: "c1", function: { name: "bash", arguments: '{"command":"pwd && ls"}' } }],
+            },
+        }));
+        const smallCall = (small?.payload.message as any).tool_calls[0];
+        expect(smallCall.name).toBe("bash");
+        expect(smallCall.summary).toBe("pwd && ls");
+        expect(smallCall.arguments).toBe('{"command":"pwd && ls"}');
+
+        const bigArg = JSON.stringify({ patch: "x".repeat(5000) });
+        const big = toSessionEventView(event("turn_message", {
+            message: { role: "assistant", tool_calls: [{ id: "c2", function: { name: "apply_patch", arguments: bigArg } }] },
+        }));
+        const bigCall = (big?.payload.message as any).tool_calls[0];
+        expect(bigCall.arguments).toBeUndefined();
+        expect(bigCall.summary.length).toBeLessThanOrEqual(121);
+    });
+
+    test("用户消息只带图片 id 与文件名", () => {
+        const view = toSessionEventView(event("user_message", {
+            text: "看图",
+            trigger: "user",
+            images: [{ id: "img1", filename: "a.png", path: "/tmp/a.png", mimeType: "image/png", size: 123 }],
+        }));
+
+        expect(view?.payload.images).toEqual([{ id: "img1", filename: "a.png" }]);
+    });
+
+    test("批量投影会过滤掉不下发的条目", () => {
+        const views = toSessionEventViews([
+            event("user_message", { text: "hi" }, 1),
+            event("turn_segment_start", { turnId: "t1", kind: "text" }, 2),
+            event("context_compacted", { compactedContext: "摘要" }, 3),
+        ]);
+
+        expect(views.map(view => view.type)).toEqual(["user_message", "context_compacted"]);
+    });
+});

@@ -26,6 +26,7 @@ import { defaultMcpSelection, getMcpServersStatus } from "../mcp/client-manager.
 import { readMcpSelection } from "../tools/session-mcp-selection.js";
 import { toolCatalog } from "../tools/tool-catalog.js";
 import { fail, json, readJson } from "./respond.js";
+import { toSessionEventView, toSessionEventViews } from "./event-view.js";
 import { openSseStream, parseSseCursor, type SseSource } from "./sse.js";
 
 export interface JobsApiContext {
@@ -60,11 +61,17 @@ function sessionEventSource(host: SessionHost, sessionId: string, jobId: string)
     return {
         label: `任务 ${jobId} 执行流`,
         readSince: async since =>
-            (await host.readSessionEventsSince(sessionId, since)).map(event => ({ seq: event.seq, payload: event })),
+            toSessionEventViews(await host.readSessionEventsSince(sessionId, since))
+                .map(view => ({ seq: view.seq, payload: view })),
         subscribe: listener =>
             host.subscribeEvents((changedSessionId, event) => {
                 if (changedSessionId !== sessionId) return;
-                listener(event === null ? null : { seq: event.seq, payload: event });
+                if (event === null) {
+                    listener(null);
+                    return;
+                }
+                const view = toSessionEventView(event);
+                if (view) listener({ seq: view.seq, payload: view });
             }),
     };
 }
@@ -471,7 +478,7 @@ export async function handleJobsRoute(
             const cursor = parseSseCursor(req, url);
             if ("error" in cursor) return fail(cursor.error, 400);
             if (url.searchParams.get("format") === "json") {
-                return json(await ctx.host.readSessionEventsSince(sessionId, cursor.since));
+                return json(toSessionEventViews(await ctx.host.readSessionEventsSince(sessionId, cursor.since)));
             }
             return openSseStream(
                 sessionEventSource(ctx.host, sessionId, jobId),

@@ -82,8 +82,9 @@ function event(seq: number, sessionId = "s1"): AgentEvent {
         seq,
         ts: new Date(0).toISOString(),
         sessionId,
-        type: "session_created",
-        payload: { cwd: "/tmp" },
+        // 用界面会渲染的类型：HTTP 层会过滤掉 turn_segment_start 这类内部事件
+        type: "context_compacted",
+        payload: {},
     } as AgentEvent;
 }
 
