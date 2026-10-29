@@ -2,17 +2,15 @@
  * 会话时间线：把持久化事件渲染成可读的对话流。
  *
  * 分类原则：谁说的比说了什么更重要 —— 用户输入（右、蓝）、AI 输出（左、markdown）、
- * 工具调用与输出（灰卡片，可折叠）、系统通知（居中细条）。
- * 工具输出默认截断，避免一段日志把整屏占满。
+ * 工具（调用参数可折叠、输出只留一行状态）、系统通知（居中细条）。
+ * 和 TUI 一致：工具输出不铺开，只显示「工具名 + 用时」，要看细节去会话日志。
  */
 
 import { Fragment, useState, type ReactNode } from "react";
 import type { AgentEvent } from "../lib/types";
 import { getToken } from "../lib/api";
+import { formatDuration } from "../lib/format";
 import { MarkdownBlock } from "./Markdown";
-
-/** 工具输出默认展示长度：超出折叠 */
-const OUTPUT_PREVIEW = 600;
 
 function oneLine(text: string, max = 120): string {
     const flat = text.replace(/\s+/g, " ").trim();
@@ -137,28 +135,20 @@ function ToolCall({ name, args }: { name: string; args: string }) {
     );
 }
 
-function ToolOutput({ name, text }: { name: string; text: string }) {
-    const [open, setOpen] = useState(false);
-    const isLong = text.length > OUTPUT_PREVIEW;
-    const shown = open || !isLong ? text : `${text.slice(0, OUTPUT_PREVIEW)}\n…`;
+/**
+ * 工具输出：与 TUI 一致，只留一行「← 工具名 + 用时」，不铺开内容 ——
+ * 一段日志能把整屏占满，而真正要排查时该去看 sessions/log 里的原始记录。
+ * 输出长度放 title 里，鼠标悬停即可看到大小，不额外占视觉。
+ */
+function ToolStatus({ name, durationMs, size }: { name: string; durationMs?: number; size?: number }) {
     return (
-        <div className="rounded-md border border-border/60 bg-col/40">
-            <div className="flex items-center gap-2 px-2.5 pt-1.5 text-xs text-muted">
-                <span>← {name}</span>
-                <span>{text.length} 字</span>
-                {isLong && (
-                    <button
-                        type="button"
-                        onClick={() => setOpen(!open)}
-                        className="ml-auto underline-offset-2 hover:underline"
-                    >
-                        {open ? "收起" : "展开全部"}
-                    </button>
-                )}
-            </div>
-            <pre className="max-h-60 overflow-auto px-2.5 pt-1 pb-2 font-mono text-xs break-all whitespace-pre-wrap">
-                {shown}
-            </pre>
+        <div
+            className="flex items-center gap-2 pl-1 text-xs text-muted"
+            title={size === undefined ? undefined : `${name} 输出 ${size} 字`}
+        >
+            <span aria-hidden>←</span>
+            <span className="font-mono">{name}</span>
+            {typeof durationMs === "number" && <span className="text-ok">{formatDuration(durationMs)}</span>}
         </div>
     );
 }
@@ -233,7 +223,9 @@ export function Timeline({ events }: { events: AgentEvent[] }) {
                     const text =
                         typeof message.content === "string" ? message.content : JSON.stringify(message.content ?? "");
                     const name = message.tool_call_id ? (callNames.get(message.tool_call_id) ?? "工具") : "工具";
-                    nodes.push(<ToolOutput key={event.seq} name={name} text={text} />);
+                    nodes.push(
+                        <ToolStatus key={event.seq} name={name} durationMs={message.durationMs} size={text.length} />,
+                    );
                 }
                 break;
             }

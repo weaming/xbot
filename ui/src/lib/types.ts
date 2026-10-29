@@ -94,6 +94,8 @@ export interface AgentEvent {
             reasoning_content?: string | null;
             tool_calls?: Array<{ id?: string; function: { name: string; arguments: string } }>;
             tool_call_id?: string;
+            /** 工具耗时（毫秒）：历史回放只显示这个与状态，不铺开输出 */
+            durationMs?: number;
         };
         direction?: "in" | "out";
         peerId?: string;
