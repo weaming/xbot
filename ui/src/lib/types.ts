@@ -74,6 +74,8 @@ export interface JobSession {
 export interface McpServer {
     name: string;
     toolCount: number;
+    /** 配置里 lazy：只影响默认是否选中（默认不选），选中与否才是下发判据 */
+    lazy?: boolean;
 }
 
 /** 会话事件：只用到消息类，其余按类型丢弃。 */

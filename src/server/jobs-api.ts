@@ -22,7 +22,7 @@ import {
     type JobRecord,
     type JobState,
 } from "../jobs/types.js";
-import { defaultMcpSelection } from "../mcp/client-manager.js";
+import { defaultMcpSelection, getMcpServersStatus } from "../mcp/client-manager.js";
 import { readMcpSelection } from "../tools/session-mcp-selection.js";
 import { toolCatalog } from "../tools/tool-catalog.js";
 import { fail, json, readJson } from "./respond.js";
@@ -239,7 +239,19 @@ export async function handleJobsRoute(
                 const name = tool.fromServer ?? "unknown";
                 counts.set(name, (counts.get(name) ?? 0) + 1);
             }
-            return json([...counts].map(([name, toolCount]) => ({ name, toolCount })));
+            // 带上 lazy：前端据此决定"默认选中哪些"（lazy 默认不选）
+            const statuses = getMcpServersStatus();
+            const known = new Set(statuses.map(item => item.name));
+            const list = statuses.map(item => ({
+                name: item.name,
+                toolCount: counts.get(item.name) ?? 0,
+                ...(item.lazy === true ? { lazy: true } : {}),
+            }));
+            // 目录里存在但状态快照没覆盖的服务兜底列出来，避免"工具有、界面上没有"
+            for (const [name, toolCount] of counts) {
+                if (!known.has(name)) list.push({ name, toolCount });
+            }
+            return json(list);
         }
 
         // 列表状态流：/jobs/events（必须排在 /jobs/:id 之前，否则 "events" 会被当成 id）

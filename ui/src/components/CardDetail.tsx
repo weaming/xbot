@@ -396,9 +396,11 @@ export function CardDetail({
                                 {servers.length === 0 && <span className="text-xs text-muted">（没有可选的 MCP）</span>}
                                 {servers.map(server => {
                                     // 有执行会话时以会话选中集为准；未初始化（老会话）或还没跑过都等于全选
+                                    // 未初始化时与后端同口径：默认只选非 lazy 的服务
+                                    const fallback = servers.filter(item => !item.lazy).map(item => item.name);
                                     const current = mcpSelection !== null && selectionInitialized
                                         ? mcpSelection
-                                        : (job.input.mcpServers ?? servers.map(item => item.name));
+                                        : (job.input.mcpServers ?? fallback);
                                     const checked = current.includes(server.name);
                                     return (
                                         <button

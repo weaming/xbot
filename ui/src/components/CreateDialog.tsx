@@ -29,8 +29,14 @@ export function CreateDialog({
     const [workspace, setWorkspace] = useState("");
     const [labels, setLabels] = useState<string[]>([]);
     const [timeoutSec, setTimeoutSec] = useState("");
-    // 记「排除项」而不是「选中项」：默认全选，用户点掉哪个就排除哪个
-    const [excluded, setExcluded] = useState<string[]>([]);
+    /**
+     * 记「排除项」而不是「选中项」。默认排除 lazy 服务 —— 与后端 defaultMcpSelection()
+     * 同一口径（lazy 只影响默认不选，选中与否才是下发判据）。
+     * null = 用户还没动过，直接用默认值；动过之后以用户的选择为准。
+     */
+    const [excluded, setExcluded] = useState<string[] | null>(null);
+    const defaultExcluded = servers.filter(server => server.lazy).map(server => server.name);
+    const effectiveExcluded = excluded ?? defaultExcluded;
     const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
 
@@ -40,7 +46,7 @@ export function CreateDialog({
         setWorkspace("");
         setLabels([]);
         setTimeoutSec("");
-        setExcluded([]);
+        setExcluded(null);
         setError(null);
     };
 
@@ -65,9 +71,14 @@ export function CreateDialog({
                 ...(workspace.trim() ? { workspace: workspace.trim() } : {}),
                 ...(labels.length > 0 ? { labels } : {}),
                 ...(Number(timeoutSec) > 0 ? { timeoutSec: Number(timeoutSec) } : {}),
-                // 全选时不传该字段（等价于「不限制」）；有排除项才落成具体列表
-                ...(excluded.length > 0
-                    ? { mcpServers: servers.map(server => server.name).filter(name => !excluded.includes(name)) }
+                // 明确传选中集：默认就是「非 lazy 的服务」，用户勾掉谁就少谁。
+                // 不传会被后端当成「不限制」，反而把 lazy 全带上。
+                ...(servers.length > 0
+                    ? {
+                          mcpServers: servers
+                              .map(server => server.name)
+                              .filter(name => !effectiveExcluded.includes(name)),
+                      }
                     : {}),
                 autoStart,
             });
@@ -126,20 +137,20 @@ export function CreateDialog({
                         />
                     </Field>
                 </div>
-                <Field label="允许的 MCP">
+                <Field label="选中的 MCP（lazy 默认不选）">
                     <div className="flex flex-wrap items-center gap-1.5">
                         {servers.length === 0 && <span className="text-xs text-muted">（没有可选的 MCP）</span>}
                         {servers.map(server => {
-                            const checked = !excluded.includes(server.name);
+                            const checked = !effectiveExcluded.includes(server.name);
                             return (
                                 <button
                                     key={server.name}
                                     type="button"
                                     onClick={() =>
-                                        setExcluded(current =>
+                                        setExcluded(
                                             checked
-                                                ? [...current, server.name]
-                                                : current.filter(item => item !== server.name),
+                                                ? [...effectiveExcluded, server.name]
+                                                : effectiveExcluded.filter(item => item !== server.name),
                                         )
                                     }
                                     className={cn(
