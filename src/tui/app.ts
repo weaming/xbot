@@ -79,6 +79,7 @@ import {
 } from "../utils/user-question.js";
 
 import { getTuiWheelLogFile } from "../utils/tui-state-paths.js";
+import { installTerminalExitGuard } from "../utils/terminal-state.js";
 import { ChatStore } from "./store.js";
 import { editorTheme, theme } from "./theme.js";
 import { setLogSession } from "../host/runtime-context.js";
@@ -446,6 +447,8 @@ export class ChatApp {
             onStatusChanged: () => this.renderStatusBar(),
         });
         this.terminalStarted = true;
+        // 钩子必须在 start() 之前挂：start() 中途抛错时终端同样已被改过模式
+        installTerminalExitGuard();
         this.tui.start();
 
         // MCP 授权/连接通知：启动阶段积压的通知在注册时补发
@@ -3017,6 +3020,14 @@ export class ChatApp {
             await this.agent.close();
         } catch (error) {
             console.error("⚠️ [TUI] 退出前落盘失败:", error);
+        }
+        // 先排空终端应答（kitty 协议 / DA1 / 背景色等查询的回包）：它们留在输入队列里
+        // 的话，会被下一个前台程序的 shell 回显成一串 ^[ 垃圾。排空期间的真实按键会被
+        // 丢弃，但退出只需几十毫秒，且退出键走信号不受影响。失败也要继续复位。
+        try {
+            await this.tui.terminal.drainInput(400, 40);
+        } catch (error) {
+            console.error("⚠️ [TUI] 退出前排空终端输入失败:", error);
         }
         // preserveScreen：退出 alternate buffer（\x1b[?1049l）而不把 TUI 最后一帧
         // 重绘回主 buffer，避免终端残留 TUI 画面与滚动历史。

@@ -27,7 +27,9 @@ export const tuiStub: any = {
     TUI_KEYBINDINGS: realPiTui.TUI_KEYBINDINGS,
     TuiAltScreen: class { columns = 80; rows = 24; inputListeners: any[] = [];
         scrollByCalls: number[] = [];
-        terminal = { columns: 80, rows: 24 };
+        /** drainInput 被 exit() 依赖：缺了它会把退出流程打断，因此 stub 也要如实实现 */
+        drainInputCalls = 0;
+        terminal = { columns: 80, rows: 24, drainInput: async () => { this.drainInputCalls += 1; } };
         constructor(_t: any, _s?: any, _l?: any, _o?: any) {}
         setLayoutRoot(_l: any) {} addInputListener(cb: any) { this.inputListeners.push(cb); } setFocus(_c: any) {} start() {} stop(_options?: any) {} requestRender() {}
         scrollBy(lines: number) { this.scrollByCalls.push(lines); }
