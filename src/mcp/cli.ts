@@ -131,11 +131,12 @@ function printList(servers: McpServerConfig[], asJson: boolean): void {
         server.disabled ? "disabled" : "enabled",
         server.type,
         String(server.defer === true),
+        String(server.lazy === true),
         server.type === "stdio" ? [server.command, ...(server.args ?? [])].filter(Boolean).join(" ") : server.url || server.serverUrl || "-",
     ]);
     const displayWidth = (value: string): number =>
         Array.from(value).reduce((width, character) => width + eastAsianWidth(character.codePointAt(0) ?? 0), 0);
-    const headers = ["名称", "状态", "类型", "defer", "命令 / URL"];
+    const headers = ["名称", "状态", "类型", "defer", "lazy", "命令 / URL"];
     const widths = headers.map((header, index) =>
         Math.max(displayWidth(header), ...rows.map((row) => displayWidth(row[index]))),
     );

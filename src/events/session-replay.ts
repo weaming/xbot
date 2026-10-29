@@ -38,6 +38,8 @@ const SNAPSHOT_SAFE_EVENT_TYPES = new Set<AgentEvent["type"]>([
     "session_cwd_changed",
     "session_archived",
     "session_unarchived",
+    // lazy MCP 启用集只是下发口径，落在快照边界上也不会丢上下文。
+    "lazy_mcp_changed",
 ]);
 
 interface EventSnapshot {
@@ -353,6 +355,9 @@ function applyEvent(session: Session, event: AgentEvent): void {
         case "model_selected":
             session.modelSelection = event.payload;
             break;
+        case "lazy_mcp_changed":
+            session.lazyMcpServers = [...event.payload.servers];
+            break;
         default:
             break;
     }
@@ -411,6 +416,7 @@ const SNAPSHOT_SESSION_FIELDS = [
     "updatedAt",
     "archivedAt",
     "modelSelection",
+    "lazyMcpServers",
 ] as const;
 
 /** 读写快照共用的字段投影：未列入白名单的键一律不落盘、也不恢复。 */

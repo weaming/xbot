@@ -98,7 +98,9 @@ import { getReasoningEffortChoices, getReasoningProvider } from "../utils/reason
 import { readSessionTodos, type TodoItem } from "../tools/todo-tool.js";
 import { deepSeekPhaseInfo, endpointHost, normalizeDeepSeekModel, resolvePricingMode } from "../pricing/deepseek.js";
 import { getContextWindowForModel } from "../utils/token-budget.js";
-import { buildMcpStatusHelpText, setMcpNoticeHandler, type McpNotice } from "../mcp/client-manager.js";
+import { buildMcpStatusHelpText, getMcpServersStatus, setMcpNoticeHandler, type McpNotice } from "../mcp/client-manager.js";
+import { isToolSearchEnabled } from "../tools/orchestrator/turn-request.js";
+import { McpPanel } from "./mcp-panel.js";
 import { formatDisplayPath, resolveExistingDir, setSessionCwdHandler } from "../tools/cwd-tool.js";
 import {
     createMessageComponent,
@@ -262,6 +264,10 @@ export class ChatApp {
     private runtimeReloading = false;
     private switching = false;
     private showReasoning = true;
+    /** 当前打开的 MCP 面板：落盘失败时回读真实状态重置勾选。 */
+    private mcpPanel: McpPanel | null = null;
+    /** 每个会话的 lazy 启用集保存队列：连按空格时合并成最新一份，串行落盘。 */
+    private readonly lazySaveQueues = new Map<string, { running: boolean; queued?: string[] }>();
     private detailed = false;
     private exiting = false;
     /** 高危操作的待确认状态：同一标签在 2 秒内再按一次才执行。 */
@@ -677,7 +683,8 @@ export class ChatApp {
                 this.store.pushSystemMessage(buildSkillsHelpText(), sessionId ?? undefined);
                 break;
             case "/mcp":
-                this.store.pushSystemMessage(buildMcpStatusHelpText(), sessionId ?? undefined);
+                if (sessionId) this.openMcpPanel(sessionId);
+                else this.store.pushSystemMessage(buildMcpStatusHelpText());
                 break;
             case "/effort":
             case "/thinking":
@@ -800,6 +807,123 @@ export class ChatApp {
         });
         this.writeWheelLog("打开面板 model");
         this.tui.requestRender();
+    }
+
+    /**
+     * MCP 浮层：查看服务状态，并为本会话临时启用 / 停用 lazy server。
+     * 启用状态落盘在会话事件里，重启后跟着会话回来。
+     */
+    private openMcpPanel(sessionId: string): void {
+        if (!this.panels.isEmpty || this.exiting) return;
+        if (this.agent.isSessionBusy(sessionId)) {
+            this.store.pushSystemMessage("当前会话正在执行，暂不能调整 lazy MCP 工具的下发。", sessionId);
+            return;
+        }
+
+        const servers = getMcpServersStatus();
+        if (servers.length === 0) {
+            this.store.pushSystemMessage(buildMcpStatusHelpText(), sessionId);
+            return;
+        }
+
+        const settings = getChatApiSettings(this.currentModelSelection);
+        const toolSearch = isToolSearchEnabled({
+            protocol: settings.protocol ?? "chat_completions",
+            model: settings.model,
+            baseURL: settings.apiBase,
+            hostedTools: settings.hostedTools,
+        });
+
+        void this.agent.getSessionLazyMcpServers(sessionId).then((enabled) => {
+            // 读状态是异步的：期间可能又开了别的面板，或用户已切走会话
+            if (!this.panels.isEmpty || this.exiting) return;
+            if (this.store.currentSessionId !== sessionId) return;
+            const panel = new McpPanel({
+                servers,
+                enabled,
+                toolSearch,
+                visibleRows: panelContentRows(this.tui),
+                close: () => this.closeMcpPanel(),
+                toggle: nextEnabled => void this.saveLazyMcpServers(sessionId, nextEnabled),
+            });
+            const handle = openPanelOverlay(this.tui, panel, "mcp");
+            this.mcpPanel = panel;
+            this.panels.push({
+                kind: "mcp",
+                panel,
+                meta: handle,
+                onClose: () => this.afterPanelClosed(handle),
+            });
+            this.writeWheelLog("打开面板 mcp");
+            this.tui.requestRender();
+        }).catch((error: any) => {
+            this.store.pushSystemMessage(
+                `MCP 状态读取失败：${error?.message ?? String(error)}`,
+                sessionId,
+            );
+        });
+    }
+
+    private closeMcpPanel(): void {
+        this.mcpPanel = null;
+        this.panels.remove("mcp");
+    }
+
+    /**
+     * 面板给出的是整份启用集：按会话串行落盘，连按空格时只保留最新一份。
+     * 并发调用会撞会话锁（beginSessionOperation），所以这里必须自己排队。
+     */
+    private saveLazyMcpServers(sessionId: string, servers: string[]): void {
+        const queue = this.lazySaveQueues.get(sessionId) ?? { running: false };
+        this.lazySaveQueues.set(sessionId, queue);
+        if (queue.running) {
+            queue.queued = servers;
+            return;
+        }
+        queue.running = true;
+        void this.flushLazyMcpServers(sessionId, servers, queue);
+    }
+
+    private async flushLazyMcpServers(
+        sessionId: string,
+        servers: string[],
+        queue: { running: boolean; queued?: string[] },
+    ): Promise<void> {
+        try {
+            await this.agent.setSessionLazyMcpServers(sessionId, servers);
+        } catch (error: any) {
+            // 存储失败就丢掉排队项并回读真实状态：宁可少一次切换，也不要面板与事件分叉
+            queue.queued = undefined;
+            this.lazySaveQueues.delete(sessionId);
+            this.store.pushSystemMessage(
+                `lazy MCP 启用状态保存失败：${error?.message ?? String(error)}`,
+                sessionId,
+            );
+            await this.resyncMcpPanel(sessionId);
+            return;
+        }
+
+        const next = queue.queued;
+        queue.queued = undefined;
+        if (next) {
+            await this.flushLazyMcpServers(sessionId, next, queue);
+            return;
+        }
+        queue.running = false;
+        this.lazySaveQueues.delete(sessionId);
+    }
+
+    /** 回读落盘状态并重置面板勾选。 */
+    private async resyncMcpPanel(sessionId: string): Promise<void> {
+        if (!this.mcpPanel) return;
+        try {
+            this.mcpPanel.setEnabled(await this.agent.getSessionLazyMcpServers(sessionId));
+        } catch (error: any) {
+            this.store.pushSystemMessage(
+                `lazy MCP 状态回读失败：${error?.message ?? String(error)}`,
+                sessionId,
+            );
+        }
     }
 
     private async applyModelSelection(

@@ -15,6 +15,9 @@ mcpServers:
     # Tool names default to "<serverName>__<toolName>"; set prefix: "" to opt out.
     # With OPENAI_RESPONSES_HOSTED_TOOLS=tool_search, expose these MCP tools as deferred.
     defer: true
+    # lazy: models without tool_search support get none of these tools unless the
+    # server is enabled for the current session in /mcp (independent of defer).
+    lazy: true
     headers:
       Authorization: 'Bearer ${MCP_REMOTE_TOKEN}'
     requiredEnv:

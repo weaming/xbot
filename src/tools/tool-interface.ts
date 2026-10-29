@@ -44,6 +44,11 @@ export interface ExecutableTool {
     fromServer?: string;
     /** 内部标记：MCP 配置 defer=true；仅 Responses tool_search 请求会投影为 defer_loading。 */
     deferLoading?: boolean;
+    /**
+     * 内部标记：MCP 配置 lazy=true。模型不支持 tool_search 时默认不下发，
+     * 只有该工具所属 server 在本会话被临时启用（/mcp）才进入工具定义。
+     */
+    lazy?: boolean;
     /** 工具级默认策略：结果要求完整保留时声明（如读文件、补丁、代码探索），执行结果可覆盖。 */
     contextPolicy?: ToolResultPolicy;
     /**

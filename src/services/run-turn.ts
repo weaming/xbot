@@ -158,6 +158,7 @@ export async function runTurnCore(spec: TurnSpec, hooks: TurnHooks): Promise<Tur
                 getToolDefinitionsTokens({
                     ...(session.sessionId ? { sessionId: session.sessionId } : {}),
                     model: spec.model,
+                    ...(session.modelSelection ? { modelSelection: session.modelSelection } : {}),
                 }),
             ]);
             return await countSessionContextTokens(session, {

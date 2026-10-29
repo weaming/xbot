@@ -30,7 +30,8 @@ export type AgentEventType =
     | "session_unarchived"
     | "session_renamed"
     | "session_cwd_changed"
-    | "model_selected";
+    | "model_selected"
+    | "lazy_mcp_changed";
 
 /** 用户消息附带的图片引用。 */
 type UserImageRef = ImageInputRef;
@@ -149,6 +150,8 @@ export interface AgentEventPayloads {
     session_cwd_changed: { cwd: string };
     /** 会话固定使用的协议与模型。 */
     model_selected: ChatModelSelection;
+    /** 本会话临时启用的 lazy MCP server（整份覆盖，空数组表示全部回到默认不下发）。 */
+    lazy_mcp_changed: { servers: string[] };
 }
 
 export type AgentEvent = {

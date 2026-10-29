@@ -216,6 +216,7 @@ async function syncServerToolsInternal(ctx: McpClientContext): Promise<void> {
             toolDef,
             serverName,
             deferLoading: serverConfig.defer === true,
+            lazy: serverConfig.lazy === true,
             executeRemote: async (args: any, signal?: AbortSignal) => {
                 if (!ctx.client) {
                     return {
@@ -565,6 +566,8 @@ export interface McpServerStatus {
     toolNames: string[];
     lastSyncTime?: number;
     error?: string;
+    /** MCP 配置 lazy=true：不支持 tool_search 的模型默认不下发。 */
+    lazy?: boolean;
     /** OAuth 状态：仅在 server 启用 oauth 时存在 */
     oauth?: {
         /** 等待用户完成的授权链接 */
@@ -611,6 +614,7 @@ export function getMcpServersStatus(): McpServerStatus[] {
             protocol,
             status,
             toolNames: tools,
+            ...(config.lazy === true ? { lazy: true } : {}),
             lastSyncTime: ctx.lastSyncTime > 0 ? ctx.lastSyncTime : undefined,
             error: ctx.lastError,
             ...(oauthConfig

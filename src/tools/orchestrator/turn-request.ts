@@ -94,6 +94,23 @@ function resolveHostedToolTypes(model: string, baseURL: string): ReadonlySet<str
     return isDeepSeekFlashModel(model) ? NO_HOSTED_TOOL_TYPES : DEEPSEEK_HOSTED_TOOL_TYPES;
 }
 
+/**
+ * 接入端本次请求能否声明 tool_search：托管工具只在 Responses 协议下发，
+ * 且该类型要出现在接入端的能力集合里（DeepSeek 兼容端一个都没有）。
+ * lazy MCP 工具的下发判定与 defer_loading 投影共用这一口径。
+ */
+export function isToolSearchEnabled(options: {
+    protocol: string;
+    model: string;
+    baseURL: string;
+    hostedTools?: string[];
+}): boolean {
+    if (options.protocol !== "responses") return false;
+    const supportedTypes = resolveHostedToolTypes(options.model, options.baseURL);
+    return toHostedToolDefinitions(options.hostedTools ?? [], { supportedTypes })
+        .some(tool => tool.type === "tool_search");
+}
+
 export interface PrepareRequestOptions {
     client: ChatClient;
     model: string;
@@ -165,7 +182,8 @@ export async function prepareRequest(options: PrepareRequestOptions): Promise<Pr
         ? toHostedToolDefinitions(options.hostedTools ?? [], { supportedTypes: hostedToolTypes })
         : [];
     // tool_search 依赖至少一个延迟加载的 Responses function 工具；按实际声明的托管工具判断。
-    const enableDeferredLoading = supportedHostedTools.some(tool => tool.type === "tool_search")
+    const toolSearchSupported = supportedHostedTools.some(tool => tool.type === "tool_search");
+    const enableDeferredLoading = toolSearchSupported
         && adaptedTools.some(tool => tool.deferLoading === true);
     const hostedTools = supportedHostedTools
         .filter(tool => tool.type !== "tool_search" || enableDeferredLoading);

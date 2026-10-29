@@ -912,4 +912,16 @@ describe("EventLog 事件订阅与对外读口径", () => {
         expect(persisted.map(event => event.seq)).toEqual([1]);
         expect(persisted.some(event => event.type === "turn_stream_delta")).toBe(false);
     });
+
+    it("lazy MCP 事件投影到 Session.lazyMcpServers，末条决定当前启用集", async () => {
+        const log = new EventLog();
+        const sessionId = "sess-lazy-mcp";
+        await log.append(sessionId, "session_created", { cwd: tmpDir });
+        await log.append(sessionId, "lazy_mcp_changed", { servers: ["mcp-hub", "rea"] });
+        await log.append(sessionId, "lazy_mcp_changed", { servers: ["rea"] });
+
+        const replayed = await new SessionReplay(log).replayTo(sessionId);
+
+        expect(replayed.session.lazyMcpServers).toEqual(["rea"]);
+    });
 });

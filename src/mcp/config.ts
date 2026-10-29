@@ -51,6 +51,11 @@ export interface McpServerConfig extends ToolFilterConfig {
     source?: string;
     /** 启用 Responses tool_search 时，将该 MCP server 的工具声明为延迟加载。 */
     defer?: boolean;
+    /**
+     * 懒加载：模型不支持 tool_search 时该 server 的工具默认不下发，
+     * 只在 /mcp 里按会话临时启用后才出现（与 defer 独立，可同时使用）。
+     */
+    lazy?: boolean;
     requiredEnv?: string[];
     disabled?: boolean;
 }

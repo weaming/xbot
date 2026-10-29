@@ -22,6 +22,7 @@ import { appendInputHistory, loadInputHistory } from "./input-history.js";
 import { getSessionLogFile } from "../utils/state-paths.js";
 import { getSessionTodosFile, getStartupToolCwd, getToolCwd } from "../utils/runtime-paths.js";
 import { planResume } from "../services/resume-plan.js";
+import { clearLazyServersCache, updateLazyServersCache } from "../tools/session-lazy-cache.js";
 import {
     describeClaimFailure,
     formatInboundPrompt,
@@ -447,6 +448,7 @@ export class LocalSessionHost implements SessionHost {
         active?.abortController?.abort();
         this.activeSessions.delete(sessionId);
         this.pendingModelSelections.delete(sessionId);
+        clearLazyServersCache(sessionId);
         try {
             this.onSessionReleased?.(sessionId, cause);
         } catch {
@@ -625,6 +627,44 @@ export class LocalSessionHost implements SessionHost {
 
     async getSessionModelSelection(sessionId: string): Promise<ChatModelSelection | undefined> {
         return (await this.requireActiveSession(sessionId)).modelSelection;
+    }
+
+    /** 本会话临时启用的 lazy MCP server（无记录时为空数组）。 */
+    async getSessionLazyMcpServers(sessionId: string): Promise<string[]> {
+        const session = await this.requireActiveSession(sessionId);
+        return [...(session.lazyMcpServers ?? [])];
+    }
+
+    /**
+     * 覆盖本会话的 lazy MCP 启用集：落盘 lazy_mcp_changed，并同步内存缓存。
+     * 换工具集合等于换请求前缀，所以跟改名一样走会话锁：回合进行中不许改，也不会
+     * 和被别的实例删除/归档的会话打架（deleteSession 同样要求空闲）。
+     */
+    async setSessionLazyMcpServers(sessionId: string, servers: string[]): Promise<void> {
+        this.beginSessionOperation(sessionId);
+        let lock: SessionLockHandle | undefined;
+        try {
+            lock = await acquireSessionLock(sessionId);
+            const session = await this.requireActiveSession(sessionId);
+            const next = [...new Set(servers.map(name => name.trim()).filter(Boolean))].sort();
+            const current = session.lazyMcpServers ?? [];
+            if (current.length === next.length && current.every((name, index) => name === next[index])) return;
+
+            if ((await this.eventLog.lastSeq(sessionId, { forceRefresh: true })) === 0) {
+                const created = await this.eventLog.append(sessionId, "session_created", { cwd: session.cwd });
+                this.updateActiveSeq(sessionId, created.seq);
+            }
+            const event = await this.eventLog.append(sessionId, "lazy_mcp_changed", { servers: next });
+            session.lazyMcpServers = next;
+            this.updateActiveSeq(sessionId, event.seq);
+            updateLazyServersCache(sessionId, next);
+        } finally {
+            try {
+                await this.releaseSessionLockSafely(lock);
+            } finally {
+                this.endSessionOperation(sessionId);
+            }
+        }
     }
 
     async setSessionModelSelection(sessionId: string, selection: ChatModelSelection): Promise<void> {
@@ -1001,11 +1041,15 @@ export class LocalSessionHost implements SessionHost {
 
         // 内存缓存未落后磁盘 seq，直接复用
         if (active && active.lastSeq >= diskSeq) {
+            updateLazyServersCache(sessionId, active.session.lazyMcpServers ?? []);
             return active.session;
         }
 
         if (diskSeq === 0) {
-            if (active) return active.session;
+            if (active) {
+                updateLazyServersCache(sessionId, active.session.lazyMcpServers ?? []);
+                return active.session;
+            }
             throw new SessionNotFoundError(sessionId);
         }
 
@@ -1021,6 +1065,7 @@ export class LocalSessionHost implements SessionHost {
             lastSeq: replayed.lastSeq,
             abortController: active?.abortController,
         });
+        updateLazyServersCache(sessionId, replayed.session.lazyMcpServers ?? []);
         return replayed.session;
     }
 

@@ -20,7 +20,8 @@ export function summarizeEvents(sessionId: string, events: AgentEvent[]): Sessio
     for (const event of events) {
         // 更新时间只认用户/模型活动：群聊状态这类自动注入每隔几分钟落一条，
         // 若计入就会把闲置会话顶到 tab 条最前，启动默认选中的会话也跟着跑偏。
-        if (!isInjectedContext(event)) updatedAt = event.ts;
+        // 只改下发口径的事件（lazy MCP 启用集）不算活动：切换一下就把闲置会话顶到最前没有意义。
+        if (!isInjectedContext(event) && event.type !== "lazy_mcp_changed") updatedAt = event.ts;
         // 归档与取消归档成对出现，末态决定会话是否归档。
         if (event.type === "session_archived") archived = true;
         else if (event.type === "session_unarchived") archived = false;

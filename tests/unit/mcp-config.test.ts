@@ -112,6 +112,7 @@ describe("mcp config", () => {
   url: http://127.0.0.1:8080/mcp
   protocolVersion: "2025-11-25"
   defer: true
+  lazy: true
 
 - name: local-stdio
   type: stdio
@@ -133,6 +134,7 @@ describe("mcp config", () => {
             expect(configs[1].name).toBe("legacy-server");
             expect(configs[1].protocolVersion).toBe("2025-11-25");
             expect(configs[1].defer).toBe(true);
+            expect(configs[1].lazy).toBe(true);
 
             expect(configs[2].name).toBe("local-stdio");
             expect(configs[2].type).toBe("stdio");

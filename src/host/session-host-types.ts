@@ -142,6 +142,10 @@ export interface SessionHost {
     renameSession(sessionId: string, title: string): Promise<void>;
     getSessionModelSelection(sessionId: string): Promise<ChatModelSelection | undefined>;
     setSessionModelSelection(sessionId: string, selection: ChatModelSelection): Promise<void>;
+    /** 本会话临时启用的 lazy MCP server（模型不支持 tool_search 时的显式放行名单）。 */
+    getSessionLazyMcpServers(sessionId: string): Promise<string[]>;
+    /** 覆盖本会话的 lazy MCP 启用集：落盘 lazy_mcp_changed 事件，重启后仍生效。 */
+    setSessionLazyMcpServers(sessionId: string, servers: string[]): Promise<void>;
     /** 落盘一条会话间消息（时间线事实源；出入站各一条）。 */
     appendPeerMessage(sessionId: string, payload: AgentEventPayloads["peer_message"]): Promise<void>;
     /**

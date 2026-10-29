@@ -4,7 +4,7 @@ import { isIP } from "node:net";
 import { skillRegistry } from "../skills/skill-registry.js";
 import { loadIdentityContext } from "../skills/base-skill.js";
 import { executeWithChat, createChatClient, isAbortError } from "../tools/chat-orchestrator.js";
-import { executeMcpTool, getOpenAIToolDefinitions } from "../tools/tool-registry.js";
+import { executeMcpTool, getOpenAIToolDefinitions, type ToolDefinitionOptions } from "../tools/tool-registry.js";
 import { getJobContext } from "../tools/job-context.js";
 import { getSessionMcpScope } from "../tools/session-mcp-scope.js";
 import { createTodoReminderProvider } from "../tools/todo-tool.js";
@@ -15,7 +15,7 @@ import {
     toolContentToImageContent,
     toolResultToText,
 } from "../tools/tool-interface.js";
-import { supportsAudioInput } from "../tools/orchestrator/turn-request.js";
+import { isToolSearchEnabled, supportsAudioInput } from "../tools/orchestrator/turn-request.js";
 import { resolveProtocol } from "../tools/orchestrator/request-builder.js";
 import type { ChatMessage, Session } from "../types/session.js";
 import type { StreamDelta } from "../types/chat.js";
@@ -49,16 +49,20 @@ const toolDefinitionsTokenCache = new Map<string, number>();
  * 压缩请求与阈值判定都要把它从窗口预算里扣掉：它不进历史，但确实挤占窗口。
  */
 export async function getToolDefinitionsTokens(
-    options: { sessionId?: string; model?: string } = {},
+    options: { sessionId?: string; model?: string; modelSelection?: ChatModelSelection } = {},
 ): Promise<number> {
-    const defs = getOpenAIToolDefinitions(activeToolNames(options.sessionId), {
-        mcpServers: getSessionMcpScope(options.sessionId),
-    });
+    const settings = getChatApiSettings(options.modelSelection);
+    const model = options.model ?? settings.model;
+    const defs = getOpenAIToolDefinitions(activeToolNames(options.sessionId), toolDefinitionOptions({
+        sessionId: options.sessionId,
+        settings,
+        model,
+    }));
     const json = JSON.stringify(defs);
-    const key = `${options.model ?? ""}:${createHash("sha1").update(json).digest("hex")}`;
+    const key = `${model}:${createHash("sha1").update(json).digest("hex")}`;
     const cached = toolDefinitionsTokenCache.get(key);
     if (cached !== undefined) return cached;
-    const tokens = await countTextTokens(json, options.model);
+    const tokens = await countTextTokens(json, model);
     toolDefinitionsTokenCache.set(key, tokens);
     return tokens;
 }
@@ -77,6 +81,28 @@ export interface ChatApiSettings {
 }
 
 export type ChatModelOption = ChatModelSelection;
+
+/**
+ * 工具下发口径：任务级 MCP 白名单 + 接入端 tool_search 能力 + 本会话临时启用的 lazy server。
+ * 下发（getToolDefinitions）与窗口预算（getToolDefinitionsTokens）共用同一份，避免两处漂移。
+ */
+function toolDefinitionOptions(options: {
+    sessionId?: string;
+    settings: ChatApiSettings;
+    model: string;
+}): ToolDefinitionOptions {
+    const scope = getSessionMcpScope(options.sessionId);
+    return {
+        ...(scope ? { mcpServers: scope } : {}),
+        toolSearch: isToolSearchEnabled({
+            protocol: options.settings.protocol ?? "chat_completions",
+            model: options.model,
+            baseURL: options.settings.apiBase,
+            hostedTools: options.settings.hostedTools,
+        }),
+        ...(options.sessionId ? { sessionId: options.sessionId } : {}),
+    };
+}
 
 let defaultModelOption: ChatModelOption | null | undefined;
 
@@ -434,7 +460,7 @@ export async function runChatQuery(options: ChatRunOptions) {
             // 历史丢掉缓存（命中价与 miss 价差一个量级）；窗口预算改由「裁历史」来让出。
             getToolDefinitions: () => getOpenAIToolDefinitions(
                 activeToolNames(options.sessionId),
-                { mcpServers: getSessionMcpScope(options.sessionId) },
+                toolDefinitionOptions({ sessionId: options.sessionId, settings, model: settings.model }),
             ),
             ...(options.disableToolCalls ? { toolChoice: "none" as const } : {}),
             history: options.history ?? [],
@@ -453,6 +479,7 @@ export async function runChatQuery(options: ChatRunOptions) {
                     const toolsTokens = await getToolDefinitionsTokens({
                         ...(options.sessionId ? { sessionId: options.sessionId } : {}),
                         model: settings.model,
+                        ...(options.modelSelection ? { modelSelection: options.modelSelection } : {}),
                     });
                     return compactActiveTurnMessagesIfNeeded(messages, {
                         model: settings.model,

@@ -29,7 +29,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     { name: "reasoning", description: "展开 / 收起思考过程显示" },
     { name: "system", description: "显示当前 system prompt" },
     { name: "skills", description: "显示可用技能" },
-    { name: "mcp", description: "显示 MCP 服务状态与工具清单" },
+    { name: "mcp", description: "MCP 服务状态与 lazy 工具的会话级启用" },
     { name: "help", description: "显示帮助" },
 ];
 

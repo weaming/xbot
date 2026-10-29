@@ -94,4 +94,9 @@ export interface Session {
     archivedAt?: string; // 会话归档时间（上海时区 ISO 字符串）
     /** 会话固定使用的模型与协议；缺省时采用全局默认配置。 */
     modelSelection?: ChatModelSelection;
+    /**
+     * 本会话临时启用的 lazy MCP server（/mcp 面板）。
+     * 生效范围只有该会话：模型不支持 tool_search 时，只有这些 server 的工具会下发。
+     */
+    lazyMcpServers?: string[];
 }

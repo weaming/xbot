@@ -83,6 +83,17 @@ describe("mcp tooling", () => {
         expect(tool.deferLoading).toBe(true);
     });
 
+    test("lazy is retained on MCP proxy tools", () => {
+        const tool = buildProxyToolFromRemoteDefinition({
+            toolDef: { name: "remote_heavy", inputSchema: { type: "object" } },
+            serverName: "remote",
+            lazy: true,
+            executeRemote: async () => ({ content: [] }),
+        });
+
+        expect(tool.lazy).toBe(true);
+    });
+
     test("codegraph 系列工具声明 contextPolicy full（代码探索需完整输出）", () => {
         const tool = createProxyTool({
             toolDef: {

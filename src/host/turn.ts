@@ -174,6 +174,7 @@ export async function runSessionTurn(
                     toolsTokens: await getToolDefinitionsTokens({
                         sessionId,
                         model: getChatApiSettings(activeSession.modelSelection).model,
+                        ...(activeSession.modelSelection ? { modelSelection: activeSession.modelSelection } : {}),
                     }),
                     userId: DEFAULT_MEMORY_USER_ID,
                     sessionId,
@@ -249,7 +250,11 @@ export async function compactSessionContext(
         const model = getChatApiSettings(session.modelSelection).model;
         const systemPrompt = buildSystemPrompt(session.cwd);
         const systemPromptTokens = await countTextTokens(systemPrompt, model);
-        const toolsTokens = await getToolDefinitionsTokens({ sessionId, model });
+        const toolsTokens = await getToolDefinitionsTokens({
+            sessionId,
+            model,
+            ...(session.modelSelection ? { modelSelection: session.modelSelection } : {}),
+        });
         // 默认整段折叠；历史超窗时把装不下的尾部原样留下，不在压缩请求里丢最老的内容
         const { turnsToCompact, keepFromMessageId } = await planManualCompaction(session, {
             model,

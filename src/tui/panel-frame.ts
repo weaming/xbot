@@ -15,6 +15,7 @@ export const PANEL_ACCENT = {
     shortcut: theme.statusWarn,
     question: theme.question,
     model: theme.statusOk,
+    mcp: theme.tool,
 } as const;
 
 export type PanelKind = keyof typeof PANEL_ACCENT;

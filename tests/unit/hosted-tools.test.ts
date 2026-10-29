@@ -6,7 +6,7 @@ import {
     toHostedToolDefinitions,
     toResponsesToolDefinitions,
 } from "../../src/tools/orchestrator/request-builder.js";
-import { prepareRequest } from "../../src/tools/orchestrator/turn-request.js";
+import { isToolSearchEnabled, prepareRequest } from "../../src/tools/orchestrator/turn-request.js";
 
 /** OPENAI_RESPONSES_HOSTED_TOOLS 的托管工具声明：只声明，不执行，且不挤动 function 前缀。 */
 
@@ -16,6 +16,15 @@ const functionTools = [
 ];
 
 describe("toHostedToolDefinitions", () => {
+    test("isToolSearchEnabled 只认 Responses + 接入端支持的 tool_search", () => {
+        const base = { model: "gpt-5.6-luna", baseURL: "http://127.0.0.1:3060/v1", hostedTools: ["tool_search"] };
+
+        expect(isToolSearchEnabled({ ...base, protocol: "responses" })).toBe(true);
+        expect(isToolSearchEnabled({ ...base, protocol: "chat_completions" })).toBe(false);
+        expect(isToolSearchEnabled({ ...base, protocol: "responses", hostedTools: ["web_search"] })).toBe(false);
+        expect(isToolSearchEnabled({ ...base, protocol: "responses", model: "deepseek-v4-pro" })).toBe(false);
+    });
+
     test("逗号分隔值去空白、去空项、去重后变成扁平工具定义", () => {
         expect(toHostedToolDefinitions([" web_search ", "", "web_search_preview", "web_search"]))
             .toEqual([{ type: "web_search" }, { type: "web_search_preview" }]);
