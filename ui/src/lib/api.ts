@@ -112,6 +112,11 @@ export const api = {
         request<{ ok: boolean; pid: number; cwd: string; home: string; sessions: number }>("/api/healthz"),
 
     /** 随时输入：空闲直接开跑，忙则按模式排队。 */
+    /** 归档会话：等效 TUI 的 /archive（落 session_archived 事件、放弃持有） */
+    archiveSession: (sessionId: string) =>
+        request<{ sessionId: string; archived: boolean }>(`/api/sessions/${sessionId}/archive`, {
+            method: "POST",
+        }),
     sendInput: (sessionId: string, text: string, mode: "request" | "turn", images?: ImageAsset[]) =>
         request<{ started: boolean; queued: boolean; pending: { request: number; turn: number } }>(
             `/api/sessions/${sessionId}/inputs`,

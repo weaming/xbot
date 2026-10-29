@@ -458,9 +458,28 @@ export function CardDetail({
                                 </select>
                             )}
                             <Button onClick={() => void openBranch()}>+ 新会话</Button>
+                            {activeSessionId && (
+                                <Button
+                                    variant="danger"
+                                    onClick={async () => {
+                                        if (!window.confirm("归档这个执行会话？会话会从列表隐藏，历史仍保留。")) return;
+                                        try {
+                                            await api.archiveSession(activeSessionId);
+                                            const rest = sessions.filter(item => item.sessionId !== activeSessionId);
+                                            setSessions(rest);
+                                            setActiveSessionId(rest[0]?.sessionId ?? null);
+                                            await onChanged();
+                                        } catch (cause) {
+                                            setError(cause instanceof ApiError ? cause.message : String(cause));
+                                        }
+                                    }}
+                                >
+                                    归档
+                                </Button>
+                            )}
                         </div>
                         <div ref={timelineRef} className="stable-scroll flex min-h-0 flex-1 flex-col overflow-y-auto pr-1">
-                            <Timeline events={events} />
+                            <Timeline events={events} live={live} />
                         </div>
                         {activeSessionId && (
                             <div className="flex shrink-0 flex-col gap-2 border-t border-border pt-2">

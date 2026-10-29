@@ -370,6 +370,18 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
                     return json({ cancelled, sessionId });
                 }
 
+                // 归档 / 取消归档：与 TUI 的 /archive 同义（落 session_archived 事件、放弃持有）
+                if (action === "archive" && req.method === "POST") {
+                    if (host.isSessionBusy(sessionId)) return fail("会话执行中，暂不能归档", 409);
+                    await host.closeSession(sessionId);
+                    return json({ sessionId, archived: true });
+                }
+
+                if (action === "unarchive" && req.method === "POST") {
+                    await host.unarchiveSession(sessionId);
+                    return json({ sessionId, archived: false });
+                }
+
                 // 随时输入：空闲就直接开跑，忙就按模式排队
                 if (action === "inputs") {
                     if (req.method === "GET") return json(pendingStats(sessionId));
