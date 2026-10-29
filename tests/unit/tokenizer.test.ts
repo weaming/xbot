@@ -11,6 +11,7 @@ const previousTokenizerMode = process.env.ZBOT_TOKENIZER;
 
 const {
     countTextTokens,
+    countMessagesTokens,
     countTurnsTokens,
     loadTokenizer,
     supportsRealTokenizer,
@@ -72,5 +73,39 @@ describe("真实分词器计数", () => {
         process.env.ZBOT_TOKENIZER = "off";
         const text = "上下文压缩的触发判定";
         expect(await countTextTokens(text)).toBe(estimateTextTokens(text));
+    });
+
+    test("assistant 的 reasoning_content 与工具结果里的图片都计入消息总量", async () => {
+        const plain = await countMessagesTokens([{ role: "assistant", content: "回答" }]);
+        const withReasoning = await countMessagesTokens([{
+            role: "assistant",
+            content: "回答",
+            // 思维链随 assistant 消息上行，上游按输入计费；漏算会让压缩判定严重低估
+            reasoning_content: "先把问题拆成三步，再逐步核对每个条件是否成立。",
+        } as any]);
+        expect(withReasoning).toBeGreaterThan(plain);
+
+        const textOnly = await countMessagesTokens([{ role: "tool", tool_call_id: "call-1", content: "截图已保存" }]);
+        const withImage = await countMessagesTokens([{
+            role: "tool",
+            tool_call_id: "call-1",
+            content: "截图已保存",
+            imageContent: [{ type: "image_url", image_url: { url: "shot.png" } }],
+        } as any]);
+        // 图片无法本地分词，按固定档位估值
+        expect(withImage - textOnly).toBe(1_100);
+    });
+
+    test("user 消息里的图片（内容数组）同样计入，不因不是字符串而漏算", async () => {
+        const textOnly = await countMessagesTokens([{ role: "user", content: "看这张图" }]);
+        const withImage = await countMessagesTokens([{
+            role: "user",
+            content: [
+                { type: "text", text: "看这张图" },
+                { type: "image_url", image_url: { url: "shot.png" } },
+            ],
+        } as any]);
+
+        expect(withImage - textOnly).toBe(1_100);
     });
 });

@@ -2,11 +2,15 @@ import type { ChatMessage, ConversationTurn, Session } from "../types/session.js
 import { getSessionContextHistory, replaceWithCompactedContext } from "../utils/conversation-history.js";
 import {
     countSessionContextTokens,
+    fitMessagesToBudget,
     getAutoCompactThreshold,
+    getContextWindowForModel,
+    getEffectiveContextWindowSize,
     shouldAutoCompact,
     splitTurnsForCompaction,
 } from "../utils/token-budget.js";
-import { countMessagesTokens, countTextTokens } from "../utils/tokenizer.js";
+import { RESERVED_OUTPUT_TOKENS, RETAINED_TAIL_TOKENS } from "../config.js";
+import { countMessagesTokens, countTextTokens, countTurnsTokens } from "../utils/tokenizer.js";
 import { buildCompactPrompt } from "../utils/compaction-prompt.js";
 import { projectChatMessagesForPrompt } from "../utils/tool-result-context.js";
 import { isAbortError } from "../tools/chat-orchestrator.js";
@@ -18,6 +22,8 @@ import { DEFAULT_MEMORY_USER_ID, normalizeMemoryUserId } from "../utils/runtime-
 
 export interface AutoCompactOptions {
     model?: string;
+    /** 工具定义占用的 token：压缩请求仍带工具声明（保缓存前缀），预算里必须先扣掉。 */
+    toolsTokens?: number;
     userId: number;
     sessionId?: string;
     modelSelection?: ChatModelSelection;
@@ -43,9 +49,13 @@ export interface AutoCompactResult {
 interface ActiveTurnCompactOptions {
     model?: string;
     systemPrompt: string;
+    /** 工具定义占用的 token（随请求上行，不在历史里）：从窗口预算里扣掉。 */
+    toolsTokens?: number;
     userId: number;
     signal?: AbortSignal;
     onProgress?: (message: string) => void;
+    /** 压缩成功后回调：把摘要落成事件，避免重启后回滚到压缩前的历史。 */
+    onCompacted?: (compactedContext: string) => Promise<void>;
     sessionId?: string;
     modelSelection?: ChatModelSelection;
     contextEpochId?: string;
@@ -70,7 +80,17 @@ export async function compactActiveTurnMessagesIfNeeded(
 
     options.onProgress?.("🗜️ 当前任务上下文达到上限，正在压缩本轮进展...");
 
-    const history = messages.filter(message => message.role !== "system");
+    // 压缩请求自己也是上游请求：历史已超窗时原样发送只会再吃一个 400，先裁到预算内
+    const promptBudget = Math.max(
+        1_000,
+        (options.providerMaxTokens ?? getContextWindowForModel(options.model))
+            - RESERVED_OUTPUT_TOKENS
+            - (options.toolsTokens ?? 0),
+    );
+    const history = await fitMessagesToBudget(
+        messages.filter(message => message.role !== "system"),
+        { budgetTokens: promptBudget, model: options.model },
+    );
     try {
         const response = await runChatQuery({
             query: buildCompactPrompt("重点保留当前任务目标、已完成步骤、工具结果中的关键事实，以及下一步行动。"),
@@ -92,6 +112,7 @@ export async function compactActiveTurnMessagesIfNeeded(
         if (options.signal?.aborted) throw new DOMException("User terminated the request", "AbortError");
         const compactedContext = response.content.trim();
         if (!compactedContext) throw new Error("本轮自动压缩结果为空");
+        await options.onCompacted?.(compactedContext);
 
         return [
             ...messages.filter(message => message.role === "system"),
@@ -136,12 +157,27 @@ function turnBeforeKeepFrom(session: Session, keepFromMessageId: string): string
     return index > 0 ? session.turns[index - 1]!.id : undefined;
 }
 
-/** 压缩规划：待压缩回合 + 保留段起点（自动压缩与手动 /compact 共用同一套切分口径）。 */
-export function planCompaction(
+/**
+ * 手动 /compact 的切分：默认整段折叠；候选历史超过窗口预算时，
+ * 把「装不下的尾部」原样保留，而不是在压缩请求里丢掉最老的内容。
+ * 下次请求 = 摘要 + 保留段 + 新输入，内容一点不丢。
+ */
+export async function planManualCompaction(
     session: Session,
-    options: { retainedTailTokens?: number; model?: string } = {},
+    options: { model?: string; systemPromptTokens?: number; toolsTokens?: number } = {},
 ): Promise<{ turnsToCompact: ConversationTurn[]; keepFromMessageId?: string }> {
-    return splitTurnsForCompaction(compactionCandidates(session), options);
+    const candidates = compactionCandidates(session);
+    const budget = Math.max(
+        1_000,
+        getEffectiveContextWindowSize(options.model)
+            - (options.systemPromptTokens ?? 0)
+            - (options.toolsTokens ?? 0),
+    );
+    const candidateTokens = await countTurnsTokens(candidates, options.model);
+    return splitTurnsForCompaction(candidates, {
+        model: options.model,
+        retainedTailTokens: Math.max(0, candidateTokens - budget),
+    });
 }
 
 /** 压缩请求的输入历史：已有摘要前缀 + 指定回合（保留原 turn 分组与工具结果投影规则）。 */
@@ -154,6 +190,23 @@ export function buildCompactionHistory(session: Session, turns: ConversationTurn
         compactedKeepFromMessageId: undefined,
     };
     return getSessionContextHistory(tempSession);
+}
+
+/**
+ * 压缩请求最终发送的历史：裁到窗口预算内（手动 /compact、自动压缩共用同一口径）。
+ *
+ * 压缩请求自身也是上游请求。历史已经撞穿窗口时，原样发送只会再吃一个 400，
+ * 这次「自救压缩」也会失败；被裁掉的头部本来就属于摘要要吸收的范围。
+ */
+export function prepareCompactionHistory(
+    history: ChatMessage[],
+    options: { model?: string; systemPromptTokens?: number; toolsTokens?: number; budgetTokens?: number } = {},
+): Promise<ChatMessage[]> {
+    const budget = options.budgetTokens
+        ?? getEffectiveContextWindowSize(options.model)
+            - (options.systemPromptTokens ?? 0)
+            - (options.toolsTokens ?? 0);
+    return fitMessagesToBudget(history, { budgetTokens: budget, model: options.model });
 }
 
 /** 写回压缩结果：摘要 + 保留段边界（turn 级字段供旧数据与重放兜底）。 */
@@ -201,7 +254,8 @@ export async function autoCompactIfNeeded(
     const systemPromptTokens = await countTextTokens(systemPrompt, options.model);
     if (!(await shouldAutoCompact(session, {
         model: options.model,
-        systemPromptTokens,
+        // 工具定义随请求上行，和系统提示一样属于固定开销
+        systemPromptTokens: systemPromptTokens + (options.toolsTokens ?? 0),
         lastPromptTokens: session.lastPromptTokens,
     }))) {
         return { wasCompacted: false };
@@ -210,9 +264,22 @@ export async function autoCompactIfNeeded(
     const preTokens = session.lastPromptTokens ?? (await countSessionContextTokens(session, { model: options.model }));
     const threshold = getAutoCompactThreshold(options.model);
 
+    // 候选历史本身超过窗口预算时，先把压缩范围往前收：多出来的部分作为保留段原样留下，
+    // 这样压缩请求一次装得下，也没有任何内容被丢弃（下次请求 = 摘要 + 保留段 + 新输入）
+    const candidates = compactionCandidates(session);
+    const candidateBudget = Math.max(
+        1_000,
+        getEffectiveContextWindowSize(options.model) - systemPromptTokens - (options.toolsTokens ?? 0),
+    );
+    const candidateTokens = await countTurnsTokens(candidates, options.model);
+    const retainedTailTokens = candidateTokens > candidateBudget
+        ? Math.max(RETAINED_TAIL_TOKENS, candidateTokens - candidateBudget)
+        : RETAINED_TAIL_TOKENS;
+
     // 待压缩回合 + 保留段（优先保留完整 turn，尾部单轮超预算才消息级细切）
-    const { turnsToCompact, keepFromMessageId } = await splitTurnsForCompaction(compactionCandidates(session), {
+    const { turnsToCompact, keepFromMessageId } = await splitTurnsForCompaction(candidates, {
         model: options.model,
+        retainedTailTokens,
     });
 
     if (turnsToCompact.length === 0) {
@@ -223,10 +290,16 @@ export async function autoCompactIfNeeded(
 
     let usage = emptyUsage();
     try {
+        // 同理：待压缩历史可能自己就超过窗口，压缩请求必须先裁到可用预算内
+        const history = await prepareCompactionHistory(buildCompactionHistory(session, turnsToCompact), {
+            model: options.model,
+            systemPromptTokens,
+            toolsTokens: options.toolsTokens ?? 0,
+        });
         const response = await runChatQuery({
             query: buildCompactPrompt(),
             systemPrompt,
-            history: buildCompactionHistory(session, turnsToCompact),
+            history,
             userId,
             sessionId: session.sessionId,
             modelSelection: session.modelSelection,

@@ -3,6 +3,7 @@ import {
     estimateMessageTokens,
     estimateTextTokens,
     estimateTurnsTokens,
+    fitMessagesToBudget,
     formatCompactTokens,
     getContextWindowForModel,
     getEffectiveContextWindowSize,
@@ -276,5 +277,47 @@ describe("splitTurnsForCompaction 保留段切分 (Retained Tail Splitting)", ()
         const results = context.filter((message: any) => message.role === "tool").map((message: any) => message.tool_call_id);
         expect(results.length).toBeGreaterThan(0);
         expect(results.every((id: string) => declared.has(id))).toBe(true);
+    });
+});
+
+describe("fitMessagesToBudget 压缩请求的历史裁剪 (Compaction Input Fitting)", () => {
+    const longText = (tokens: number) => "a".repeat(Math.round(tokens * 3.5));
+
+    test("预算内原样返回同一份消息", async () => {
+        const messages = [
+            { role: "user" as const, content: "问题" },
+            { role: "assistant" as const, content: "回答" },
+        ];
+        expect(await fitMessagesToBudget(messages, { budgetTokens: 1_000 })).toBe(messages);
+    });
+
+    test("超预算时丢头部、保留最新尾部并插入省略提示", async () => {
+        const messages = [
+            { role: "user" as const, content: "老问题" },
+            { role: "assistant" as const, content: longText(2_000) },
+            { role: "user" as const, content: "新问题" },
+        ];
+        const fitted = await fitMessagesToBudget(messages, { budgetTokens: 500 });
+        expect(fitted[0]!.content).toContain("因超出模型窗口未随本次请求发送");
+        expect(JSON.stringify(fitted)).not.toContain("老问题");
+        expect(JSON.stringify(fitted)).toContain("新问题");
+    });
+
+    test("切点回退到 tool 结果之前，保住 tool_calls 与结果的配对", async () => {
+        const messages = [
+            { role: "user" as const, content: "跑一下" },
+            {
+                role: "assistant" as const,
+                content: null,
+                tool_calls: [{ id: "call-1", type: "function", function: { name: "bash", arguments: "{}" } }],
+            },
+            { role: "tool" as const, tool_call_id: "call-1", content: longText(400) },
+        ];
+        // 尾部以工具结果开始：它自己超出预算，但它的 tool_calls 前缀必须一起留下
+        const fitted = await fitMessagesToBudget(messages, { budgetTokens: 300 });
+        const firstKept = fitted[1]!;
+        expect(firstKept.role).not.toBe("tool");
+        expect(firstKept.role).toBe("assistant");
+        expect(JSON.stringify(fitted)).toContain("call-1");
     });
 });

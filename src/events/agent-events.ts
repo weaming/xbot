@@ -107,12 +107,25 @@ export interface AgentEventPayloads {
         stopReason: string;
         usage: UsageInfo;
         interrupted: boolean;
+        /**
+         * 回合结束时按当前历史算出的上下文规模（本地估算，含思维链与工具媒体）。
+         * provider 只在请求成功时给 usage，失败回合靠它把真实占用暴露给状态栏；
+         * 也覆盖「回合内压缩后 provider 值偏小」的口径差。
+         */
+        contextTokens?: number;
         /** provider/orchestrator 抛错时填入，便于事后排查 429/502/length/error。 */
         error?: string;
     };
     context_compacted: {
         compactedContext: string;
         instruction?: string;
+        /**
+         * 回合内压缩：摘要已经替换了本回合此前全部消息（含旧历史），
+         * 重放时这些 turn_message 属于被摘要吸收的范围，不能再物化。
+         */
+        scope?: "turn";
+        /** scope=turn 时对应的回合 id。 */
+        turnId?: string;
         /** 保留段起始消息 id，供当前进程定位。 */
         keepFromMessageId?: string;
         /** 持久化位置，避免重放时重新生成的消息 id 使边界失效。 */

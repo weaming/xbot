@@ -122,6 +122,46 @@ describe("EventLog", () => {
         }
     });
 
+    it("回合内压缩：摘要折叠旧回合，并丢弃本回合压缩前的消息", async () => {
+        const log = new EventLog();
+        const sessionId = "sess-turn-compact";
+        await log.append(sessionId, "session_created", { cwd: tmpDir });
+        await appendTurn(log, sessionId, { userMessages: ["旧问题"], messages: [{ role: "assistant", content: "旧回答" }] });
+
+        // 本回合：先产生一条将被摘要吸收的消息，压缩，再产生新消息
+        const turnId = "T-turn-compact";
+        await log.append(sessionId, "user_message", { text: "新问题", turnId });
+        const absorbed = await log.append(sessionId, "turn_message", {
+            turnId,
+            message: { role: "assistant", content: "压缩前的中间输出" },
+        });
+        await log.append(sessionId, "context_compacted", {
+            compactedContext: "本轮摘要",
+            scope: "turn",
+            turnId,
+        });
+        const kept = await log.append(sessionId, "turn_message", {
+            turnId,
+            message: { role: "assistant", content: "压缩后的最终输出" },
+        });
+        await log.append(sessionId, "turn_commit", {
+            turnId,
+            events: [absorbed.seq, kept.seq],
+            userMessages: ["新问题"],
+            stopReason: "stop",
+            usage: usage(),
+            interrupted: false,
+        });
+
+        const { session } = await new SessionReplay(log).replayTo(sessionId);
+        const contents = getSessionContextHistory(session).map(message => String(message.content));
+        expect(contents.join("\n")).toContain("本轮摘要");
+        expect(contents.join("\n")).toContain("压缩后的最终输出");
+        // 压缩前的消息属于被摘要吸收的范围，重放后不能回涨
+        expect(contents.join("\n")).not.toContain("压缩前的中间输出");
+        expect(contents.join("\n")).not.toContain("旧回答");
+    });
+
     it("旧压缩事件的消息 ID 失效时保留压缩后的回合", async () => {
         const log = new EventLog();
         const sessionId = "sess-compact-legacy";

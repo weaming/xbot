@@ -302,3 +302,25 @@ export function stripResponsesMetadata(messages: ChatMessage[]): ChatMessage[] {
     return chatMessage as ChatMessage;
   });
 }
+
+/**
+ * 丢弃「纯文本轮」的历史思维链。
+ *
+ * 实测（DeepSeek Flash，官方端点）的硬约束只有一条：**带 tool_calls 的轮次**
+ * 必须原样回传 reasoning_content，缺了就 400，与当前请求是否声明 tools 无关；
+ * 纯文本轮带不带都行（官方文档写「带 tools 时全轮都要回传」，实测只强制工具轮）。
+ * 因此只给「不下发工具」的纯生成请求（上下文压缩等）用这个剥离。
+ */
+export function stripReasoningContent(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map(message => {
+    if (message.role !== "assistant" || !("reasoning_content" in message)) return message;
+    // 工具轮不能碰：reasoning_content 是这类轮次上行的必需字段
+    const hasToolTurn = (Array.isArray(message.tool_calls) && message.tool_calls.length > 0)
+      || (Array.isArray(message.response_output) && message.response_output.some(
+        (item: any) => item?.type === "function_call" || item?.type === "custom_tool_call",
+      ));
+    if (hasToolTurn) return message;
+    const { reasoning_content: _reasoning, ...chatMessage } = message as ChatMessage & { reasoning_content?: string };
+    return chatMessage as ChatMessage;
+  });
+}

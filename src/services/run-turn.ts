@@ -10,7 +10,7 @@
 
 import { emptyUsage, mergeUsage, type UIEvent } from "../events/ui-events.js";
 import type { AgentEventPayloads } from "../events/agent-events.js";
-import { runChatQuery } from "./chat-runtime.js";
+import { getToolDefinitionsTokens, runChatQuery } from "./chat-runtime.js";
 import { isAbortError, type ChatExecutionResult } from "../tools/chat-orchestrator.js";
 import { appendCompletedTurn, appendInterruptedTurn } from "../utils/conversation-history.js";
 import type { LLMRequestKind } from "../utils/logger.js";
@@ -19,6 +19,8 @@ import type { ChatMessage, Session } from "../types/session.js";
 import type { ToolCall } from "../types/tool-call.js";
 import { toUserContent, type UserContent, type UserMessageInput } from "../types/image.js";
 import { StreamRecovery } from "../utils/stream-recovery.js";
+import { countSessionContextTokens } from "../utils/token-budget.js";
+import { countTextTokens } from "../utils/tokenizer.js";
 
 export interface TurnSpec {
     session: Session;
@@ -28,6 +30,8 @@ export interface TurnSpec {
     query: string;
     queryContent?: UserContent;
     systemPrompt: string;
+    /** 当前模型名：只用于上下文规模估算的分词口径，不参与请求本身。 */
+    model?: string;
     /**
      * 构造本回合请求历史。必须在请求前自动压缩之后才调用：
      * 自动压缩会改写 session.turns / compactedThroughTurnId，提前算好的历史会让压缩结果白做，
@@ -56,6 +60,8 @@ export interface TurnHooks {
     /** 回合内每条完整消息即时落盘，返回分配到的 seq。 */
     persistTurnMessage(message: ChatMessage, turnId: string): Promise<number>;
     persistStreamDelta?(delta: StreamDelta, turnId: string, requestIndex: number): Promise<void>;
+    /** 回合内压缩成功的落盘回调：摘要吸收掉的消息在重放时不能再物化。 */
+    onTurnCompact?(compactedContext: string, turnId: string): Promise<void>;
     /** 段边界落盘，返回分配到的 seq。 */
     persistSegmentStart(payload: AgentEventPayloads["turn_segment_start"]): Promise<number>;
     /** 终态落盘（turn_commit 事件 + 会话索引）。 */
@@ -140,6 +146,29 @@ export async function runTurnCore(spec: TurnSpec, hooks: TurnHooks): Promise<Tur
     let stopReason = "stop";
     let hasInvalidAssistantHistory = false;
 
+    /**
+     * 回合收尾时的历史规模（本地估算）。
+     * 失败回合拿不到 provider usage，状态栏需要它揭示真实上下文占用。
+     */
+    const estimateContextTokens = async (): Promise<number | undefined> => {
+        try {
+            // 与压缩判定同口径：系统提示与工具定义都不进历史，但确实占窗口
+            const [systemPromptTokens, toolsTokens] = await Promise.all([
+                countTextTokens(spec.systemPrompt, spec.model),
+                getToolDefinitionsTokens({
+                    ...(session.sessionId ? { sessionId: session.sessionId } : {}),
+                    model: spec.model,
+                }),
+            ]);
+            return await countSessionContextTokens(session, {
+                model: spec.model,
+                systemPromptTokens: systemPromptTokens + toolsTokens,
+            });
+        } catch {
+            return undefined;
+        }
+    };
+
     // 本回合底层事件 seq（turn_message / turn_segment_start），按落盘顺序；收尾写进 turn_commit.events
     const eventSeqs: Promise<number>[] = [];
     // 已定稿并落盘的完整消息，用于中断/失败时补落尚未定稿的 partial 消息（按引用去重）
@@ -207,6 +236,9 @@ export async function runTurnCore(spec: TurnSpec, hooks: TurnHooks): Promise<Tur
                     streamRecovery.push(requestIndex, delta);
                 } }
                 : {}),
+            ...(hooks.onTurnCompact
+                ? { onTurnCompact: (compactedContext: string) => hooks.onTurnCompact!(compactedContext, turnId) }
+                : {}),
             onToolCall: hooks.onToolCall,
             onToolResult: hooks.onToolResult,
             onAssistantToolCallContent: hooks.onAssistantToolCallContent,
@@ -227,6 +259,7 @@ export async function runTurnCore(spec: TurnSpec, hooks: TurnHooks): Promise<Tur
             userMessages: serializeUserMessages(userMessages),
             stopReason,
             usage,
+            contextTokens: await estimateContextTokens(),
             interrupted: false,
         });
         return { response, usage, stopReason, aborted: false, hasInvalidAssistantHistory };
@@ -255,6 +288,7 @@ export async function runTurnCore(spec: TurnSpec, hooks: TurnHooks): Promise<Tur
                 userMessages: serializeUserMessages(userMessages),
                 stopReason: "aborted",
                 usage,
+                contextTokens: await estimateContextTokens(),
                 interrupted: true,
             });
             return { usage, stopReason: "aborted", aborted: true, hasInvalidAssistantHistory };
@@ -267,6 +301,7 @@ export async function runTurnCore(spec: TurnSpec, hooks: TurnHooks): Promise<Tur
             stopReason: "error",
             error: error?.message ?? String(error),
             usage,
+            contextTokens: await estimateContextTokens(),
             interrupted: false,
         });
         return { usage, stopReason: "error", aborted: false, error, hasInvalidAssistantHistory };

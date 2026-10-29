@@ -15,7 +15,13 @@ import path from "node:path";
 import tokenizerFile from "../../assets/deepseek-v4-tokenizer.tokjson" with { type: "file" };
 import { DeepSeekTokenizer, type TokenizerJSON } from "./deepseek-tokenizer.js";
 import type { ChatMessage, ConversationTurn, StoredChatMessage } from "../types/session.js";
-import { estimateTextTokens } from "./token-estimator.js";
+import {
+    estimateContentMediaTokens,
+    estimateMediaTokens,
+    estimateTextTokens,
+    getReasoningContent,
+    splitContentParts,
+} from "./token-estimator.js";
 
 /** 单条消息的结构开销（role / 分隔符），真实分词只数内容，这部分按常数补。 */
 const MESSAGE_OVERHEAD_TOKENS = 4;
@@ -83,7 +89,7 @@ export async function countTextTokens(text: string, model?: string): Promise<num
     return ids.length > 0 ? ids.length : estimateTextTokens(text);
 }
 
-/** 单条消息的精确 token 数（内容 + tool_calls 参数 + 结构开销）。 */
+/** 单条消息的精确 token 数（内容 + 思维链 + tool_calls 参数 + 媒体估值 + 结构开销）。 */
 async function countMessageTokens(
     message: ChatMessage | StoredChatMessage,
     model?: string,
@@ -93,7 +99,14 @@ async function countMessageTokens(
     if (cached !== undefined) return cached;
 
     let tokens = MESSAGE_OVERHEAD_TOKENS;
-    if (typeof message.content === "string") tokens += await countTextTokens(message.content, model);
+    // user 消息带图时 content 是内容数组：文本照常分词，图片/音频按固定档位估值
+    const parts = splitContentParts(message.content);
+    for (const text of parts.texts) tokens += await countTextTokens(text, model);
+    tokens += estimateContentMediaTokens(parts);
+    // reasoning_content 随 assistant 消息上行并计入上游输入，漏算会让判定低估整段思维链
+    const reasoning = getReasoningContent(message);
+    if (reasoning) tokens += await countTextTokens(reasoning, model);
+    tokens += estimateMediaTokens(message);
     if ("tool_calls" in message && Array.isArray(message.tool_calls)) {
         for (const call of message.tool_calls) {
             tokens += TOOL_CALL_OVERHEAD_TOKENS;

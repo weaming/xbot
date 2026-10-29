@@ -22,7 +22,7 @@ mock.module("../../src/services/chat-runtime.js", () => {
     };
 });
 
-const { autoCompactIfNeeded, compactActiveTurnMessagesIfNeeded } = await import("../../src/services/auto-compact.js");
+const { autoCompactIfNeeded, compactActiveTurnMessagesIfNeeded, planManualCompaction } = await import("../../src/services/auto-compact.js");
 const { runTurnCore } = await import("../../src/services/run-turn.js");
 const { createEmptySession } = await import("../../src/events/session-replay.js");
 const { appendCompletedTurn, getSessionContextHistory, replaceWithCompactedContext } = await import(
@@ -259,7 +259,7 @@ describe("autoCompactIfNeeded 单次原子压缩", () => {
         expect(session.compactedKeepFromMessageId).toBe(session.turns[3]!.messages[0]!.id);
     });
 
-    test("历史超窗时仍只发一次完整摘要请求", async () => {
+    test("历史超窗时压缩范围往前收、保留段原样接上，且只发一次压缩请求", async () => {
         const session = createEmptySession("sess-single-compact");
         for (let index = 1; index <= 3; index++) {
             appendCompletedTurn(
@@ -285,16 +285,63 @@ describe("autoCompactIfNeeded 单次原子压缩", () => {
         expect(result.wasCompacted).toBe(true);
         expect(histories).toHaveLength(1);
         expect(JSON.stringify(histories[0])).not.toContain("conversation_summary");
+        // 超窗时不再「丢掉头部、只压尾部」，而是把压缩范围往前收：
+        // 压缩请求只含被压的那部分（装得下），剩下的原样作为保留段接在摘要后面
         expect(JSON.stringify(histories[0])).toContain("问题 1");
+        expect(JSON.stringify(histories[0])).not.toContain("问题 3");
+        expect(estimate({ turns: [{ messages: histories[0] }] })).toBeLessThanOrEqual(40_000);
         expect(session.compactedContext).toBe("SUMMARY");
-        expect(session.compactedKeepFromMessageId).toBe(session.turns[2]!.messages[1]!.id);
-        expect(session.compactedThroughTurnId).toBe(session.turns[1]!.id);
+        // 保留段前移到第二个回合：内容一点没丢，下次请求就是「摘要 + 保留段 + 新输入」
+        expect(session.compactedKeepFromMessageId).toBe(session.turns[1]!.messages[0]!.id);
+        expect(session.compactedThroughTurnId).toBe(session.turns[0]!.id);
         const contextAfter = getSessionContextHistory(session);
         expect(JSON.stringify(contextAfter)).toContain("SUMMARY");
-        expect(contextAfter).toHaveLength(3);
+        // 摘要 + 确认 + 两个保留回合（各 user/assistant）
+        expect(contextAfter).toHaveLength(6);
+        expect(JSON.stringify(contextAfter)).toContain("问题 2");
+        expect(JSON.stringify(contextAfter)).toContain("问题 3");
         expect(session.compactCount).toBe(1);
         expect(result.usage?.requestCount).toBe(1);
         expect(result.postTokens).toBeLessThan(result.preTokens ?? 0);
+    });
+
+    test("回合内压缩成功后回调落盘摘要（重启不回滚）", async () => {
+        const persisted: string[] = [];
+        runChatQueryImpl = async () => ({ content: "本轮进展摘要", toolCalls: 0, messages: [] });
+
+        const messages = await compactActiveTurnMessagesIfNeeded(
+            [
+                { role: "system", content: "sys" },
+                { role: "user", content: "做点事" },
+                { role: "assistant", content: "好的" },
+            ],
+            {
+                systemPrompt: "sys",
+                userId: 0,
+                providerMaxTokens: 40_000,
+                onCompacted: async (text: string) => { persisted.push(text); },
+            },
+        );
+
+        expect(persisted).toEqual(["本轮进展摘要"]);
+        expect(JSON.stringify(messages)).toContain("<active_turn_summary>");
+    });
+
+    test("手动 /compact：不超窗时整段折叠，超窗时把装不下的尾部原样保留", async () => {
+        const small = createEmptySession("sess-manual-small");
+        appendCompletedTurn(small, ["问题"], [{ role: "assistant", content: "回答" }], true);
+        const whole = await planManualCompaction(small, { model: "deepseek-chat" });
+        expect(whole.keepFromMessageId).toBeUndefined();
+        expect(whole.turnsToCompact).toHaveLength(1);
+
+        // 三个 20k token 的回合：窗口 40k，装不下的部分必须留成保留段，而不是被裁掉
+        const big = createEmptySession("sess-manual-big");
+        for (let index = 1; index <= 3; index++) {
+            appendCompletedTurn(big, [`问题 ${index}`], [{ role: "assistant", content: longText(20_000) }], true);
+        }
+        const split = await planManualCompaction(big, { model: "deepseek-chat" });
+        expect(split.keepFromMessageId).toBe(big.turns[1]!.messages[0]!.id);
+        expect(split.turnsToCompact).toHaveLength(1);
     });
 
     test("取消后不落压缩事件，不修改会话", async () => {

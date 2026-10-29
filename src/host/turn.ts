@@ -8,10 +8,18 @@ import {
     buildConversationHistory,
     getChatApiSettings,
     buildSystemPrompt,
+    getToolDefinitionsTokens,
     runChatQuery,
 } from "../services/chat-runtime.js";
 import { buildCompactPrompt } from "../utils/compaction-prompt.js";
-import { applyCompaction, autoCompactIfNeeded, buildCompactionHistory, findCompactionKeepFromPosition, planCompaction } from "../services/auto-compact.js";
+import {
+    applyCompaction,
+    autoCompactIfNeeded,
+    buildCompactionHistory,
+    findCompactionKeepFromPosition,
+    planManualCompaction,
+    prepareCompactionHistory,
+} from "../services/auto-compact.js";
 import { acquireSessionLock, type SessionLockHandle } from "../utils/session-lock.js";
 import { DEFAULT_MEMORY_USER_ID } from "../utils/runtime-paths.js";
 import { emptyUsage, mergeUsage, type UIEvent } from "../events/ui-events.js";
@@ -22,6 +30,7 @@ import type { Session } from "../types/session.js";
 import type { ActiveSession, TurnSpec } from "./session-host-types.js";
 import { toUserContent, type UserMessageInput } from "../types/image.js";
 import { repairEmptyAssistantHistory } from "../utils/conversation-history-repair.js";
+import { countTextTokens } from "../utils/tokenizer.js";
 
 /** turn 执行所需的宿主能力。 */
 export interface TurnHost {
@@ -81,6 +90,7 @@ export async function runSessionTurn(
             query: spec.query,
             queryContent: userMessages.at(-1) ? toUserContent(userMessages.at(-1)!) : undefined,
             systemPrompt: buildSystemPrompt(activeSession.cwd),
+            model: getChatApiSettings(activeSession.modelSelection).model,
             buildHistory: () =>
                 buildConversationHistory(activeSession, userMessages, { skipToolCallIds: spec.skipToolCallIds }),
             signal: abortController.signal,
@@ -134,6 +144,18 @@ export async function runSessionTurn(
                 // 片段不推进 seq：seq 是会话状态时间轴，不能被逐 token 数据抬高
                 await host.eventLog.appendStreamDelta(sessionId, tid, requestIndex, delta);
             },
+            onTurnCompact: async (compactedContext, tid) => {
+                // 摘要已经取代本回合此前的全部消息（含更早的回合）：
+                // 落事件让重放同样丢弃这些 turn_message，否则重启后上下文又回涨到压缩前。
+                const appended = await host.eventLog.append(sessionId, "context_compacted", {
+                    compactedContext,
+                    scope: "turn",
+                    turnId: tid,
+                });
+                host.updateActiveSeq(sessionId, appended.seq);
+                // 内存侧与重放同口径：摘要取代本回合此前的全部消息，边界之外只剩后续新消息
+                applyCompaction(activeSession, compactedContext);
+            },
             persistSegmentStart: async payload => {
                 const appended = await host.eventLog.append(sessionId, "turn_segment_start", payload);
                 host.updateActiveSeq(sessionId, appended.seq);
@@ -149,6 +171,10 @@ export async function runSessionTurn(
             autoCompact: spec.skipUserQuery ? undefined : async () => {
                 const result = await autoCompactIfNeeded(activeSession, {
                     model: getChatApiSettings(activeSession.modelSelection).model,
+                    toolsTokens: await getToolDefinitionsTokens({
+                        sessionId,
+                        model: getChatApiSettings(activeSession.modelSelection).model,
+                    }),
                     userId: DEFAULT_MEMORY_USER_ID,
                     sessionId,
                     signal: abortController.signal,
@@ -220,13 +246,24 @@ export async function compactSessionContext(
     try {
         lock = await acquireSessionLock(sessionId);
         session = await host.requireActiveSession(sessionId);
-        // 手动压缩不保留尾部：把当前全部候选历史折叠进摘要
-        const { turnsToCompact, keepFromMessageId } = await planCompaction(session, {
-            model: getChatApiSettings(session.modelSelection).model,
-            retainedTailTokens: 0,
+        const model = getChatApiSettings(session.modelSelection).model;
+        const systemPrompt = buildSystemPrompt(session.cwd);
+        const systemPromptTokens = await countTextTokens(systemPrompt, model);
+        const toolsTokens = await getToolDefinitionsTokens({ sessionId, model });
+        // 默认整段折叠；历史超窗时把装不下的尾部原样留下，不在压缩请求里丢最老的内容
+        const { turnsToCompact, keepFromMessageId } = await planManualCompaction(session, {
+            model,
+            systemPromptTokens,
+            toolsTokens,
         });
         if (turnsToCompact.length === 0) throw new Error("当前没有可压缩的对话历史");
-        const history = buildCompactionHistory(session, turnsToCompact);
+        // 压缩请求自己也是上游请求：历史已超窗时原样发送只会再吃一个 400，
+        // 先裁到「窗口 - 系统提示 - 工具定义」的预算内（工具保留，缓存前缀不能换）
+        const history = await prepareCompactionHistory(buildCompactionHistory(session, turnsToCompact), {
+            model,
+            systemPromptTokens,
+            toolsTokens,
+        });
 
         host.activeSessions.set(sessionId, {
             session,
@@ -236,7 +273,7 @@ export async function compactSessionContext(
         host.notify(requestId, sessionId, { type: "progress", message: "🗜️ 正在压缩会话上下文..." });
         const response = await runChatQuery({
             query: buildCompactPrompt(instruction),
-            systemPrompt: buildSystemPrompt(session.cwd),
+            systemPrompt,
             history,
             sessionId,
             modelSelection: session.modelSelection,
@@ -245,6 +282,8 @@ export async function compactSessionContext(
             contextEpochId: session.contextEpochId,
             userId: DEFAULT_MEMORY_USER_ID,
             initialRequestKind: "context_compaction",
+            // 纯生成请求：不下发工具定义（十几万 token 的 schema 会白占窗口）
+            disableToolCalls: true,
             stream: true,
             signal: abortController.signal,
             onProgress: message => host.notify(requestId, sessionId, { type: "progress", message }),

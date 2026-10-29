@@ -121,6 +121,17 @@ export class SessionReplay {
                 applyCommit(session, event, messages, pendingUserMessages);
                 continue;
             }
+            if (event.type === "context_compacted" && event.payload.scope === "turn") {
+                // 回合内压缩：摘要已取代本回合此前产生的全部消息，
+                // 这些 turn_message 不能再物化，否则重启后上下文回到压缩前
+                applyEvent(session, event);
+                const pending = pendingTurns.get(event.payload.turnId ?? "");
+                if (pending) {
+                    pending.messages.length = 0;
+                    pending.stream.clear();
+                }
+                continue;
+            }
             applyEvent(session, event);
         }
         materializePendingTurns(session, pendingTurns);

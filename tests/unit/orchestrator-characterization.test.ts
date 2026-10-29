@@ -79,6 +79,42 @@ describe("特征：请求装配", () => {
         await executeWithChat({ query: "q", client: withTools.client, model: "m", tools: [toolDef("a")] });
         expect(withTools.requests[0].tool_choice).toBe("auto");
     });
+
+    test("DeepSeek 纯文本轮可剥思维链，工具轮必须原样回传", async () => {
+        const plainAssistant = {
+            role: "assistant" as const,
+            content: "上一轮回答",
+            reasoning_content: "上一轮的思考过程",
+        };
+        const toolTurn = {
+            role: "assistant" as const,
+            content: null,
+            reasoning_content: "工具轮的思考过程",
+            tool_calls: [{ id: "call_1", type: "function", function: { name: "echo", arguments: "{}" } }],
+        };
+        const toolResult = { role: "tool" as const, tool_call_id: "call_1", content: "结果" };
+        const deepseek = () => recordingClient(() => ({ choices: [{ message: { content: "ok" } }] }));
+
+        // 不带 tools：纯文本轮思维链无需回传，剥掉省请求体
+        const noTools = deepseek();
+        await executeWithChat({
+            query: "q",
+            client: { ...noTools.client, baseURL: "https://api.deepseek.com/v1" },
+            model: "deepseek-flash",
+            history: structuredClone([plainAssistant]),
+        });
+        expect(JSON.stringify(noTools.requests[0].messages)).not.toContain("reasoning_content");
+
+        // 工具轮的 reasoning_content 缺了就 400（实测），无论当前请求带不带 tools 都不能剥
+        const toolHistory = deepseek();
+        await executeWithChat({
+            query: "q",
+            client: { ...toolHistory.client, baseURL: "https://api.deepseek.com/v1" },
+            model: "deepseek-flash",
+            history: structuredClone([toolTurn, toolResult]),
+        });
+        expect(JSON.stringify(toolHistory.requests[0].messages)).toContain("工具轮的思考过程");
+    });
 });
 
 describe("特征：工具循环", () => {

@@ -36,6 +36,7 @@ import {
   expandToolMediaMessages,
   materializeResponsesInput,
   normalizeToolCallShapes,
+  stripReasoningContent,
   stripResponsesMetadata,
 } from "./messages.js";
 import { adaptToolsForUpstream, resolveApplyPatchToolMode } from "./apply-patch-tool.js";
@@ -130,7 +131,11 @@ export async function prepareRequest(options: PrepareRequestOptions): Promise<Pr
     const currentTools = sortToolsByName(options.getToolDefinitions ? options.getToolDefinitions() : options.tools);
 
     // 提醒消息只追加在请求尾部：不进历史、不落盘，前缀不变仍可命中缓存
-    const promptMessages = projectChatMessagesForPrompt(options.messages);
+    const projected = projectChatMessagesForPrompt(options.messages);
+    // 不下发工具时（纯生成请求）DeepSeek 不需要、也不会拼接历史思维链，剥掉省请求体
+    const promptMessages = currentTools.length === 0 && isDeepSeekEndpoint(model, client.baseURL)
+      ? stripReasoningContent(projected)
+      : projected;
     const reminders = options.isFirstIteration ? [] : options.getContextReminders?.() ?? [];
     const sourceMessages: ChatMessage[] = reminders.length > 0
         ? [...promptMessages, ...reminders.map((content) => ({ role: "user" as const, content }))]

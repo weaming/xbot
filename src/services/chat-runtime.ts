@@ -30,6 +30,38 @@ import { isDeepSeekCostStatEnabled } from "../pricing/deepseek.js";
 import type { ChatApiProtocol, ChatModelSelection } from "../types/chat-model.js";
 import { getModelPreferencesFile } from "../utils/state-paths.js";
 import { withFileLock } from "../utils/file-lock.js";
+import { countTextTokens } from "../utils/tokenizer.js";
+import { createHash } from "node:crypto";
+
+/** 当前会话注入的工具名集合：工具下发与 token 预算共用，避免两处漂移。 */
+function activeToolNames(sessionId?: string): string[] {
+    return [
+        ...getSessionToolNames(sessionId),
+        ...getAskUserToolNames(sessionId),
+        ...(getJobContext() ? ["job_comment"] : []),
+    ];
+}
+
+const toolDefinitionsTokenCache = new Map<string, number>();
+
+/**
+ * 工具定义占用的 token 数（按内容摘要缓存）。
+ * 压缩请求与阈值判定都要把它从窗口预算里扣掉：它不进历史，但确实挤占窗口。
+ */
+export async function getToolDefinitionsTokens(
+    options: { sessionId?: string; model?: string } = {},
+): Promise<number> {
+    const defs = getOpenAIToolDefinitions(activeToolNames(options.sessionId), {
+        mcpServers: getSessionMcpScope(options.sessionId),
+    });
+    const json = JSON.stringify(defs);
+    const key = `${options.model ?? ""}:${createHash("sha1").update(json).digest("hex")}`;
+    const cached = toolDefinitionsTokenCache.get(key);
+    if (cached !== undefined) return cached;
+    const tokens = await countTextTokens(json, options.model);
+    toolDefinitionsTokenCache.set(key, tokens);
+    return tokens;
+}
 
 export interface ChatApiSettings {
     apiKey: string;
@@ -219,6 +251,8 @@ export interface ChatRunOptions {
     /** 回合内每条完整消息定稿时的落盘回调（turn_message 事件源）。 */
     onTurnMessage?: (message: ChatMessage) => void | Promise<void>;
     onStreamDelta?: (delta: StreamDelta, requestIndex: number) => Promise<void>;
+    /** 回合内压缩成功后的落盘回调：摘要在重启后不可回滚（否则上下文又回涨到压缩前）。 */
+    onTurnCompact?: (compactedContext: string) => Promise<void>;
     /** 续跑：不把 query 插入为 user 消息，保持上游请求与中断前一致。 */
     skipUserQuery?: boolean;
     /** 续跑：进入循环前先补跑这些工具调用（中断时缺结果的调用）。 */
@@ -396,12 +430,10 @@ export async function runChatQuery(options: ChatRunOptions) {
             getSystemPrompt: () => options.systemPrompt,
             // 会话级工具按会话注入：会话间通信要控制通道、提问要有人能回答（见各自 getXxxToolNames）。
             // job_comment 只在任务执行上下文里下发；MCP 工具按任务勾选的白名单过滤。
+            // 压缩这类纯生成请求照旧带上工具声明：工具定义参与前缀，换一份就等于让整段
+            // 历史丢掉缓存（命中价与 miss 价差一个量级）；窗口预算改由「裁历史」来让出。
             getToolDefinitions: () => getOpenAIToolDefinitions(
-                [
-                    ...getSessionToolNames(options.sessionId),
-                    ...getAskUserToolNames(options.sessionId),
-                    ...(getJobContext() ? ["job_comment"] : []),
-                ],
+                activeToolNames(options.sessionId),
                 { mcpServers: getSessionMcpScope(options.sessionId) },
             ),
             ...(options.disableToolCalls ? { toolChoice: "none" as const } : {}),
@@ -417,9 +449,15 @@ export async function runChatQuery(options: ChatRunOptions) {
                     if (!options.autoCompactActiveTurn && providerMaxTokens === undefined) return undefined;
                     if (activeTurnCompactionFailed) return undefined;
                     const { compactActiveTurnMessagesIfNeeded } = await import("./auto-compact.js");
+                    // 预算要扣掉工具定义：它随请求上行占窗口，但不在历史里
+                    const toolsTokens = await getToolDefinitionsTokens({
+                        ...(options.sessionId ? { sessionId: options.sessionId } : {}),
+                        model: settings.model,
+                    });
                     return compactActiveTurnMessagesIfNeeded(messages, {
                         model: settings.model,
                         systemPrompt: options.systemPrompt,
+                        toolsTokens,
                         userId: options.userId,
                         signal: options.signal,
                         sessionId: options.sessionId,
@@ -427,6 +465,7 @@ export async function runChatQuery(options: ChatRunOptions) {
                         contextEpochId: options.contextEpochId,
                         lastPromptTokens,
                         providerMaxTokens,
+                        ...(options.onTurnCompact ? { onCompacted: options.onTurnCompact } : {}),
                         onUsage: usage => options.onEvent?.({ type: "usage", usage }),
                         onProgress: message => {
                             options.onProgress?.(message);

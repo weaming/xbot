@@ -5,7 +5,7 @@ import {
     RESERVED_OUTPUT_TOKENS,
     RETAINED_TAIL_TOKENS,
 } from "../config.js";
-import type { ConversationTurn, Session, StoredChatMessage } from "../types/session.js";
+import type { ChatMessage, ConversationTurn, Session, StoredChatMessage } from "../types/session.js";
 import { getSessionContextHistory } from "./conversation-history.js";
 import { estimateMessageTokens } from "./token-estimator.js";
 import { countMessagesTokens, countTurnsTokens } from "./tokenizer.js";
@@ -284,4 +284,40 @@ function cleanBoundary(messages: StoredChatMessage[], cut: number): number {
     let index = cut;
     while (index > 0 && messages[index]!.role === "tool") index -= 1;
     return index;
+}
+
+/**
+ * 把一组消息裁到预算内：保留最新尾部，被丢弃的头部用一条省略提示代替。
+ *
+ * 压缩请求本身也是上游请求：历史已经捅穿窗口时，若原样发送只会再吃一个 400，
+ * 于是那次「自救压缩」也会失败。裁剪只用于压缩请求的输入，不改变会话历史。
+ */
+export async function fitMessagesToBudget(
+    messages: ChatMessage[],
+    options: { budgetTokens: number; model?: string },
+): Promise<ChatMessage[]> {
+    const total = await countMessagesTokens(messages, options.model);
+    if (total <= options.budgetTokens) return messages;
+
+    let cut = messages.length;
+    let tailTokens = 0;
+    for (let index = messages.length - 1; index >= 0; index--) {
+        const tokens = await countMessagesTokens([messages[index]!], options.model);
+        // 预算内塞不下的消息不再纳入；最新一条无论多大都保留，否则裁剪没有意义
+        if (tailTokens + tokens > options.budgetTokens && cut < messages.length) break;
+        tailTokens += tokens;
+        cut = index;
+    }
+    // 切点不能落在 tool 结果上：它的 assistant(tool_calls) 必须一起留下
+    while (cut > 0 && messages[cut]!.role === "tool") cut -= 1;
+    if (cut === 0) return messages;
+
+    const omitted = cut;
+    return [
+        {
+            role: "user",
+            content: `[上文有 ${omitted} 条消息因超出模型窗口未随本次请求发送，请基于后续内容总结]`,
+        },
+        ...messages.slice(cut),
+    ];
 }
