@@ -11,6 +11,7 @@ import { toolResultToText } from "./tool-interface.js";
 import { toolCatalog } from "./tool-catalog.js";
 import { formatToolDef } from "./tool-schema.js";
 import { readLazyServersCache } from "./session-lazy-cache.js";
+import { appendSessionToolLog } from "./session-log.js";
 
 import type { ExecutableTool, ToolExecutionResult } from "./tool-interface.js";
 export type { ToolExecutionResult };
@@ -89,6 +90,7 @@ export const executeMcpTool = async (name: string, args: any, signal?: AbortSign
 
     if (!tool) {
         console.warn(`❌ [Tool] Unknown: ${name}`);
+        appendSessionToolLog(`❌ [Tool] Unknown: ${name}`);
         return {
             content: [{ type: "text", text: `Unknown tool: ${name}` }],
             isError: true,
@@ -99,9 +101,12 @@ export const executeMcpTool = async (name: string, args: any, signal?: AbortSign
         const result = await tool.execute(args, signal);
         if (result.isError) {
             console.warn(`⚠️ [Tool] ${name} returned error`);
+            appendSessionToolLog(`⚠️ [Tool] ${name} returned error`);
         } else {
             const preview = (toolResultToText(result) || "empty").slice(0, 100);
-            console.log(`✅ [Tool] ${name} success: ${preview}${preview.length >= 100 ? "..." : ""}`);
+            const line = `✅ [Tool] ${name} success: ${preview}${preview.length >= 100 ? "..." : ""}`;
+            console.log(line);
+            appendSessionToolLog(line);
         }
         if (!result.contextPolicy && tool.contextPolicy) {
             result.contextPolicy = tool.contextPolicy;
@@ -109,6 +114,7 @@ export const executeMcpTool = async (name: string, args: any, signal?: AbortSign
         return result;
     } catch (error: any) {
         console.error(`❌ [Tool] ${name} failed:`, error.message);
+        appendSessionToolLog(`❌ [Tool] ${name} failed: ${error.message}`);
         return {
             content: [{ type: "text", text: `Tool execution failed: ${error.message}` }],
             isError: true,
