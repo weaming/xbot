@@ -1,8 +1,8 @@
 /**
  * 工作目录输入：边输边给候选目录。
  *
- * 键盘约定与 shell 一致：↑/↓ 选、Enter 采用并继续深入、Tab 补全第一个、
- * Esc 收起。选中后补一个 `/`，方便继续逐级往下钻。
+ * 键盘约定：↑/↓ 选、Enter 确认（原样填入，与看到的一致，不补尾斜杠）、
+ * Tab 补全第一个并补 `/` 方便逐级往下钻、Esc 收起。
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -13,10 +13,16 @@ export function DirInput({
     value,
     onChange,
     placeholder,
+    autoFocus,
+    onSubmit,
 }: {
     value: string;
     onChange: (next: string) => void;
     placeholder?: string;
+    /** 挂载即聚焦：从"只读展示"切到编辑态时用，省得用户再点一次 */
+    autoFocus?: boolean;
+    /** 回车确认：交出最终值（不含补全用的尾斜杠），由调用方决定提交还是继续编辑 */
+    onSubmit?: (value: string) => void;
 }) {
     const [open, setOpen] = useState(false);
     const [options, setOptions] = useState<string[]>([]);
@@ -48,8 +54,9 @@ export function DirInput({
         return () => document.removeEventListener("mousedown", onPointerDown);
     }, [open]);
 
-    const pick = (target: string, keepOpen: boolean) => {
-        onChange(target.endsWith("/") ? target : `${target}/`);
+    /** appendSlash 只给 Tab 补全用：那是"往下一级走"，回车是"就选这个目录"。 */
+    const pick = (target: string, keepOpen: boolean, appendSlash = true) => {
+        onChange(appendSlash && !target.endsWith("/") ? `${target}/` : target);
         setOpen(keepOpen);
     };
 
@@ -58,6 +65,7 @@ export function DirInput({
             <input
                 value={value}
                 placeholder={placeholder}
+                autoFocus={autoFocus}
                 onChange={event => {
                     onChange(event.target.value);
                     setOpen(true);
@@ -83,9 +91,16 @@ export function DirInput({
                         return;
                     }
                     if (event.key === "Enter") {
-                        if (!open || options.length === 0) return;
                         event.preventDefault();
-                        pick(options[active] ?? options[0]!, true);
+                        event.stopPropagation();
+                        if (open && options.length > 0) {
+                            // 补全态：采用当前候选（与看到的一致，不补尾斜杠），留在编辑态；
+                            // 列表收起后已经是编辑态，再按一次 Enter 才确认退出
+                            onChange(options[active] ?? options[0]!);
+                            setOpen(false);
+                            return;
+                        }
+                        onSubmit?.(value);
                         return;
                     }
                     if (event.key === "Escape") {

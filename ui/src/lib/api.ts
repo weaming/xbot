@@ -40,6 +40,12 @@ export function saveToken(next: string): void {
     localStorage.setItem(STORAGE_KEY, next);
 }
 
+/** 退出登录：内存与 localStorage 一起清掉，下一次请求会拿到 401 并回登录页。 */
+export function clearToken(): void {
+    token = "";
+    localStorage.removeItem(STORAGE_KEY);
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const res = await fetch(path, {
         ...init,
@@ -190,9 +196,10 @@ export const api = {
         request<Job>(`/api/jobs/${id}`, jsonInit("PATCH", patch)),
     moveJob: (id: string, column: string) =>
         request<Job>(`/api/jobs/${id}/move`, jsonInit("POST", { column })),
+    /** 开始执行：授权调度器领走这个排队中的任务。 */
     startJob: (id: string) => request<Job>(`/api/jobs/${id}/start`, { method: "POST" }),
-    cancelJob: (id: string) => request<{ cancelled: boolean }>(`/api/jobs/${id}/cancel`, { method: "POST" }),
     archiveJob: (id: string) => request<Job>(`/api/jobs/${id}/archive`, { method: "POST" }),
+    unarchiveJob: (id: string) => request<Job>(`/api/jobs/${id}/unarchive`, { method: "POST" }),
     deleteJob: (id: string) => request<{ deleted: boolean }>(`/api/jobs/${id}`, { method: "DELETE" }),
     /** 会话的 MCP 选中集：只影响下一个回合 */
     getMcpSelection: (id: string) =>
@@ -240,8 +247,19 @@ export const api = {
         request<{ sessionId: string; archived: boolean }>(`/api/sessions/${sessionId}/archive`, {
             method: "POST",
         }),
+    /** 取消归档：追加 session_unarchived 事件，会话重新可写。 */
+    unarchiveSession: (sessionId: string) =>
+        request<{ sessionId: string; archived: boolean }>(`/api/sessions/${sessionId}/unarchive`, {
+            method: "POST",
+        }),
     sendInput: (sessionId: string, text: string, mode: "request" | "turn", images?: ImageAsset[]) =>
-        request<{ started: boolean; queued: boolean; pending: { request: number; turn: number } }>(
+        request<{
+            started: boolean;
+            queued: boolean;
+            /** 发送前会话是归档态：服务端已自动取消归档（界面据此刷新会话列表） */
+            unarchived?: boolean;
+            pending: { request: number; turn: number };
+        }>(
             `/api/sessions/${sessionId}/inputs`,
             jsonInit("POST", { text, mode, ...(images?.length ? { images } : {}) }),
         ),

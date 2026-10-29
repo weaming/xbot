@@ -3,7 +3,7 @@ import { Board, COLUMNS } from "./components/Board";
 import { CardDetail } from "./components/CardDetail";
 import { CreateDialog } from "./components/CreateDialog";
 import { Button, Field, Input } from "./components/ui";
-import { api, ApiError, getToken, openEventStream, saveToken } from "./lib/api";
+import { api, ApiError, clearToken, getToken, openEventStream, saveToken } from "./lib/api";
 import type { BoardColumnKey, Job, McpServer } from "./lib/types";
 
 export default function App() {
@@ -14,8 +14,6 @@ export default function App() {
     /** 键盘焦点：箭头/hjkl 移动，Enter 打开详情；与 selectedId（详情已打开）分开 */
     const [focusId, setFocusId] = useState<string | null>(null);
     const [creating, setCreating] = useState(false);
-    // 主动换令牌时不清空既有 token：登录页可以取消返回，不至于把当前会话踢掉
-    const [changingToken, setChangingToken] = useState(false);
     const [showArchived, setShowArchived] = useState(false);
     const [defaultCwd, setDefaultCwd] = useState("");
     const [home, setHome] = useState("");
@@ -26,7 +24,8 @@ export default function App() {
     const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     const authorized = token.length > 0 && authError === null;
-    const showAuth = !authorized || changingToken;
+    // 退出后 token 为空，直接回到登录页（没有"取消返回"：已经登出了）
+    const showAuth = !authorized;
 
     const refresh = useCallback(async () => {
         try {
@@ -83,23 +82,11 @@ export default function App() {
         };
     }, [token, refresh]);
 
-    /** 拖完先把本地状态改掉，真实结果由随后的 refresh 覆盖 */
-    const OPTIMISTIC_STATE: Record<BoardColumnKey, Job["state"] | undefined> = {
-        todo: "queued",
-        manual: "queued",
-        // doing 不改本地状态：后端对 queued 只写 autoStart，state 仍是 queued，
-        // 乐观改成 running 会被随后的 refresh 弹回去（队列满/同目录忙时尤其明显）
-        doing: undefined,
-        review: undefined,
-        done: "succeeded",
-        cancelled: "cancelled",
-    };
-
     const move = async (id: string, column: BoardColumnKey) => {
-        const nextState = OPTIMISTIC_STATE[column];
-        if (nextState) {
-            setJobs(current => current.map(job => (job.id === id ? { ...job, state: nextState } : job)));
-        }
+        // 乐观更新列归属：拖拽只改卡片放哪儿，状态由任务自己决定（取消是唯一例外，服务端也会落列）
+        setJobs(current =>
+            current.map(job => (job.id === id ? { ...job, input: { ...job.input, column } } : job)),
+        );
         try {
             await api.moveJob(id, column);
         } catch (cause) {
@@ -203,7 +190,6 @@ export default function App() {
                         setAuthError(null);
                         setToken(next);
                         setTokenDraft("");
-                        setChangingToken(false);
                     }}
                 >
                     <Field label="令牌">
@@ -218,18 +204,6 @@ export default function App() {
                     <Button variant="primary" type="submit">
                         进入
                     </Button>
-                    {authorized && (
-                        <Button
-                            type="button"
-                            variant="ghost"
-                            onClick={() => {
-                                setChangingToken(false);
-                                setTokenDraft("");
-                            }}
-                        >
-                            取消
-                        </Button>
-                    )}
                 </form>
                 {authError && <p className="mt-2 text-xs text-bad">{authError}</p>}
             </div>
@@ -249,21 +223,32 @@ export default function App() {
                 </span>
                 {error && <span className="text-xs text-bad">{error}</span>}
                 <span className="flex-1" />
-                {/* 选中靠颜色区分，不用勾选框：与标签、MCP 那类胶囊保持同一套视觉语言 */}
-                <button
-                    type="button"
+                {/* 与相邻按钮同尺寸；选中靠描边高亮，不用勾选框 */}
+                <Button
+                    className={showArchived ? "border-accent text-accent" : undefined}
                     onClick={() => setShowArchived(current => !current)}
-                    className={`rounded-full border px-2.5 py-0.5 text-xs transition ${
-                        showArchived ? "border-accent text-accent" : "border-border text-muted hover:text-fg"
-                    }`}
                 >
                     含归档
-                </button>
+                </Button>
                 <Button variant="primary" onClick={() => setCreating(true)}>
                     + 新任务
                 </Button>
-                <Button variant="ghost" onClick={() => setChangingToken(true)}>
-                    换令牌
+                <Button
+                    variant="ghost"
+                    onClick={() => {
+                        // 退出即清干净：令牌、列表、打开的卡片都不留在页面上
+                        clearToken();
+                        setToken("");
+                        setJobs([]);
+                        setSelectedId(null);
+                        setFocusId(null);
+                        setTokenDraft("");
+                        setAuthError(null);
+                        setError(null);
+                        setConnected(false);
+                    }}
+                >
+                    退出
                 </Button>
             </header>
 

@@ -28,7 +28,6 @@ export function CreateDialog({
     const [title, setTitle] = useState("");
     const [workspace, setWorkspace] = useState("");
     const [labels, setLabels] = useState<string[]>([]);
-    const [timeoutSec, setTimeoutSec] = useState("");
     /**
      * 记「排除项」而不是「选中项」。默认排除 lazy 服务 —— 与后端 defaultMcpSelection()
      * 同一口径（lazy 只影响默认不选，选中与否才是下发判据）。
@@ -45,13 +44,12 @@ export function CreateDialog({
         setTitle("");
         setWorkspace("");
         setLabels([]);
-        setTimeoutSec("");
         setExcluded(null);
         setError(null);
     };
 
-    /** autoStart=false 停在待办；true 入队即跑。两个按钮共用一个提交路径。 */
-    const submit = async (autoStart: boolean) => {
+    /** 创建只入队不执行：卡片落到「待办」，等用户在卡片里点「开始」。 */
+    const submit = async () => {
         // 标题必填；任务描述同样必填（它才是发给模型的内容）
         if (!title.trim()) {
             setError("标题必填");
@@ -70,7 +68,6 @@ export function CreateDialog({
                 idempotencyKey: crypto.randomUUID(),
                 ...(workspace.trim() ? { workspace: workspace.trim() } : {}),
                 ...(labels.length > 0 ? { labels } : {}),
-                ...(Number(timeoutSec) > 0 ? { timeoutSec: Number(timeoutSec) } : {}),
                 // 明确传选中集：默认就是「非 lazy 的服务」，用户勾掉谁就少谁。
                 // 不传会被后端当成「不限制」，反而把 lazy 全带上。
                 ...(servers.length > 0
@@ -80,7 +77,6 @@ export function CreateDialog({
                               .filter(name => !effectiveExcluded.includes(name)),
                       }
                     : {}),
-                autoStart,
             });
             reset();
             onClose();
@@ -111,7 +107,7 @@ export function CreateDialog({
                         placeholder="要 zbot 做什么？"
                     />
                 </Field>
-                <Field label="工作目录（留空用 serve 的 cwd）">
+                <Field label="工作目录">
                     <DirInput
                         value={workspace}
                         placeholder={
@@ -120,23 +116,13 @@ export function CreateDialog({
                         onChange={setWorkspace}
                     />
                 </Field>
-                <div className="grid grid-cols-2 gap-2">
-                    <Field label="标签，逗号分隔">
-                        <TagInput
-                            value={labels}
-                            onChange={setLabels}
-                            placeholder="输入后按逗号或回车"
-                        />
-                    </Field>
-                    <Field label="超时（秒）">
-                        <Input
-                            type="number"
-                            min={1}
-                            value={timeoutSec}
-                            onChange={event => setTimeoutSec(event.target.value)}
-                        />
-                    </Field>
-                </div>
+                <Field label="标签，逗号分隔">
+                    <TagInput
+                        value={labels}
+                        onChange={setLabels}
+                        placeholder="空格或回车添加"
+                    />
+                </Field>
                 <Field label="选中的 MCP（lazy 默认不选）">
                     <div className="flex flex-wrap items-center gap-1.5">
                         {servers.length === 0 && <span className="text-xs text-muted">（没有可选的 MCP）</span>}
@@ -176,11 +162,8 @@ export function CreateDialog({
                 {error && <p className="text-xs text-bad">{error}</p>}
                 <div className="flex justify-end gap-2">
                     <Button onClick={() => { reset(); onClose(); }}>取消</Button>
-                    <Button disabled={busy} onClick={() => void submit(false)}>
+                    <Button variant="primary" disabled={busy} onClick={() => void submit()}>
                         创建
-                    </Button>
-                    <Button variant="primary" disabled={busy} onClick={() => void submit(true)}>
-                        创建并开始
                     </Button>
                 </div>
             </div>

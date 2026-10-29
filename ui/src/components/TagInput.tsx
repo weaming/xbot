@@ -1,7 +1,7 @@
 /**
- * 标签输入：逗号即提交，退格删整个胶囊。
+ * 标签输入：空格或回车即提交，退格删整个胶囊。
  *
- * 不用逗号分隔的纯文本输入：用户看不出「这是一组标签」，
+ * 不用分隔符的纯文本输入：用户看不出「这是一组标签」，
  * 也不方便单独删掉某个。
  */
 
@@ -19,11 +19,12 @@ export function TagInput({
 }) {
     const [draft, setDraft] = useState("");
 
-    const commit = (raw: string, rest: string[] = []) => {
-        const tag = raw.trim();
-        const next = tag && !value.includes(tag) && !rest.includes(tag) ? [...rest, tag] : rest;
-        if (next.length !== rest.length || next.length > 0) onChange(next);
+    /** 把输入框里的内容变成一个胶囊：已有标签必须保留，否则回车会把前面的一起抹掉。 */
+    const commit = (raw: string) => {
         setDraft("");
+        const tag = raw.trim();
+        if (!tag || value.includes(tag)) return;
+        onChange([...value, tag]);
     };
 
     return (
@@ -49,12 +50,12 @@ export function TagInput({
                 placeholder={value.length === 0 ? placeholder : ""}
                 onChange={event => {
                     const text = event.target.value;
-                    // 输入中/英文逗号：把逗号前的都变成胶囊，最后一段留在输入框
-                    if (!/[,，]/.test(text)) {
+                    // 空格触发：空格前的都变成胶囊，空格后剩下的留在输入框继续敲
+                    if (!/\s/.test(text)) {
                         setDraft(text);
                         return;
                     }
-                    const parts = text.split(/[,，]/);
+                    const parts = text.split(/\s+/);
                     const tail = parts.pop() ?? "";
                     let next = [...value];
                     for (const part of parts) {

@@ -23,7 +23,10 @@ export interface JobInput {
     timeoutSec?: number;
     freshSession?: boolean;
     maxAttempts?: number;
+    /** 是否已授权执行：新建默认 false，点「开始」后才跑。 */
     autoStart?: boolean;
+    /** 卡片所在的看板列：只由用户拖拽决定，与任务状态无关。 */
+    column?: BoardColumnKey;
     archivedAt?: string;
 }
 
@@ -69,6 +72,8 @@ export interface JobSession {
     purpose: "run" | "branch";
     attempt: number;
     createdAt: string;
+    /** 该会话是否已归档：归档的会话不能在卡片里继续发消息。 */
+    archived?: boolean;
 }
 
 export interface McpServer {
@@ -122,7 +127,7 @@ export interface AgentEvent {
     };
 }
 
-export type BoardColumnKey = "todo" | "manual" | "doing" | "review" | "done" | "cancelled";
+export type BoardColumnKey = "todo" | "doing" | "review" | "done" | "cancelled";
 
 /** 落盘后的图片引用（发送消息时带上）。 */
 export interface ImageAsset {

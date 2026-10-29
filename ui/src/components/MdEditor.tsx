@@ -12,6 +12,11 @@ import { cn } from "../lib/utils";
 /** 输入区高度上下限：内容再少也要有像样的输入面积，再多则内部滚动。 */
 const MIN_HEIGHT = 96;
 const MAX_HEIGHT = 480;
+/**
+ * 工具栏「保护期」：从"点正文进入编辑"切过来时，工具栏正好长在鼠标下方，
+ * 紧接着那次 click 会落到 B / 🔗 上（于是凭空多出 `****`）。这段时间内不响应工具栏点击。
+ */
+const TOOL_ARM_DELAY_MS = 300;
 
 export function MdEditor({
     value,
@@ -20,6 +25,7 @@ export function MdEditor({
     placeholder,
     rows = 4,
     onSubmit,
+    autoFocus,
     className,
 }: {
     value: string;
@@ -30,10 +36,14 @@ export function MdEditor({
     rows?: number;
     /** Ctrl/⌘ + Enter 提交（评论用） */
     onSubmit?: () => void;
+    /** 从「只读展示」切进来时自动聚焦并把光标放到末尾，省得再点一次 */
+    autoFocus?: boolean;
     className?: string;
 }) {
     const ref = useRef<HTMLTextAreaElement>(null);
     const [preview, setPreview] = useState(false);
+    /** 挂载时刻：配合 TOOL_ARM_DELAY_MS 决定工具栏何时开始响应点击。 */
+    const mountedAt = useRef(performance.now());
 
     /**
      * 高度跟随内容：从渲染态切到编辑态时，不能让长文突然缩成三行。
@@ -48,13 +58,26 @@ export function MdEditor({
         el.style.height = `${Math.min(Math.max(el.scrollHeight, MIN_HEIGHT), MAX_HEIGHT)}px`;
     }, [value, preview]);
 
-    /** 用语法包裹选区（粗体、斜体、行内代码、链接）。 */
-    const wrap = (before: string, after = before, fallback = "文本") => {
+    // 自动聚焦：光标落在末尾（继续往下写最常见），否则用户还得再点一次输入框
+    useEffect(() => {
+        if (!autoFocus || preview) return;
+        const el = ref.current;
+        if (!el) return;
+        el.focus();
+        el.setSelectionRange(el.value.length, el.value.length);
+    }, [autoFocus, preview]);
+
+    /**
+     * 用语法包裹选区（粗体、斜体、行内代码、链接）。
+     * 没有选区时插入空的标记并把光标放在中间——老实现会塞一个占位的「文本」，
+     * 误触工具栏时就会平白多出一段内容，看起来像编辑器自己乱填。
+     */
+    const wrap = (before: string, after = before) => {
         const el = ref.current;
         if (!el) return;
         const start = el.selectionStart;
         const end = el.selectionEnd;
-        const selected = value.slice(start, end) || fallback;
+        const selected = value.slice(start, end);
         onChange(`${value.slice(0, start)}${before}${selected}${after}${value.slice(end)}`);
         requestAnimationFrame(() => {
             el.focus();
@@ -81,10 +104,10 @@ export function MdEditor({
     const tools: Array<{ label: string; title: string; run: () => void }> = [
         { label: "B", title: "加粗", run: () => wrap("**") },
         { label: "I", title: "斜体", run: () => wrap("*") },
-        { label: "</>", title: "行内代码", run: () => wrap("`", "`", "code") },
+        { label: "</>", title: "行内代码", run: () => wrap("`", "`") },
         { label: "•", title: "列表", run: () => prefixLines("- ") },
         { label: "❝", title: "引用", run: () => prefixLines("> ") },
-        { label: "🔗", title: "链接", run: () => wrap("[", "](url)", "文本") },
+        { label: "🔗", title: "链接", run: () => wrap("[", "](url)") },
     ];
 
     return (
@@ -102,7 +125,10 @@ export function MdEditor({
                         title={tool.title}
                         // 防止点击工具栏让 textarea 先失焦（会触发 onCommit）
                         onMouseDown={event => event.preventDefault()}
-                        onClick={tool.run}
+                        onClick={() => {
+                            if (performance.now() - mountedAt.current < TOOL_ARM_DELAY_MS) return;
+                            tool.run();
+                        }}
                         className="rounded px-1.5 py-0.5 text-xs text-muted hover:bg-col hover:text-fg"
                     >
                         {tool.label}

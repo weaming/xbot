@@ -1801,7 +1801,13 @@ export class ChatApp {
         }).catch((error) => {
             console.warn("⚠️ [TUI] 归档会话清理失败:", (error as Error)?.message ?? error);
         });
-        this.store.setSessions(await this.agent.listSessions());
+        // 磁盘上没有、但界面里还留着的会话要保留：刚建的空会话尚未落盘，
+        // 被这次刷新吞掉就等于把用户正在用的会话弄丢了。反向误差（别处删掉的会话
+        // 短暂残留）由 release / delete 回调兜住，代价远小于丢会话。
+        const fresh = await this.agent.listSessions();
+        const diskIds = new Set(fresh.map(session => session.sessionId));
+        const localOnly = this.store.sessions.filter(session => !diskIds.has(session.sessionId));
+        this.store.setSessions([...fresh, ...localOnly]);
     }
 
     /**
@@ -2226,9 +2232,14 @@ export class ChatApp {
         }
     }
 
-    /** 打开会话面板（⌘P / Ctrl+P / /sessions）：搜索、切换、重命名、删除、归档。 */
+    /**
+     * 打开会话面板（⌘P / Ctrl+P / /sessions）：搜索、切换、重命名、删除、归档。
+     * 面板先挂上、再重读磁盘：读盘（清理 socket、扫描会话事件）不该让快捷键卡顿，
+     * 而显示启动时那份旧列表最容易误导人——新列表到了会原地刷新。
+     */
     private openSessionPanel(): void {
         if (!this.panels.isEmpty || this.exiting) return;
+        void this.refreshSessions().catch(() => undefined);
         const panel = new SessionPanel(this.buildSessionPanelItems(), {
             select: (sessionId) => {
                 void this.openSessionFromPanel(sessionId);

@@ -31,7 +31,9 @@ export function MarkdownBlock({ content, className }: { content: string; classNa
             <button
                 type="button"
                 onClick={() => void copy()}
-                className="absolute top-1.5 right-1.5 rounded px-1.5 py-0.5 text-xs text-muted opacity-60 transition hover:text-fg hover:opacity-100"
+                // 点击区要看得见：透明背景的小按钮，用户会以为"只有文字可点"，
+                // 点偏了就是没反应。给一圈描边 + hover 底色，命中范围与视觉一致
+                className="absolute top-1.5 right-1.5 z-10 rounded-md border border-transparent px-2 py-1 text-xs text-muted opacity-70 transition hover:border-border hover:bg-col hover:text-fg hover:opacity-100"
             >
                 {copied ? "已复制" : "复制"}
             </button>

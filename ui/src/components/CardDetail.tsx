@@ -10,7 +10,10 @@ import { api, ApiError, openEventStream } from "../lib/api";
 import type { AgentEvent, ImageAsset, Job, JobComment, JobSession, McpServer } from "../lib/types";
 import { cn } from "../lib/utils";
 import { abbreviateHome } from "../lib/format";
+import { STATE_TONE, stateLabel } from "../lib/job-state";
+import { useInlineEdit } from "../lib/use-inline-edit";
 import { AssetImage } from "./AssetImage";
+import { DirInput } from "./DirInput";
 import { Timeline } from "./Timeline";
 import { TagInput } from "./TagInput";
 import { MarkdownBlock } from "./Markdown";
@@ -52,8 +55,9 @@ export function CardDetail({
     const [commentDraft, setCommentDraft] = useState("");
     /** 正在内联编辑的评论 id 与草稿；null 表示没有在编辑 */
     const [editingComment, setEditingComment] = useState<{ id: string; body: string } | null>(null);
-    const [promptDraft, setPromptDraft] = useState(job.input.prompt);
-    const [editingPrompt, setEditingPrompt] = useState(false);
+    /** 工作目录显示值：home 前缀缩成 ~，与看板里的目录列同一口径 */
+    const workspaceDisplay = abbreviateHome(job.input.workspace, home);
+    const titleText = job.input.title || job.input.prompt;
     const [inputDraft, setInputDraft] = useState("");
     const [pending, setPending] = useState({ request: 0, turn: 0 });
     /** 正在发生的回合：正文增量与"是否在思考"（回合收尾即清空，交给持久化消息） */
@@ -97,12 +101,10 @@ export function CardDetail({
         void refreshSessions();
     }, [refreshComments, refreshSessions]);
 
-    // 切换卡片时同步任务描述草稿
+    // 切换卡片时收起评论编辑；标题/目录/描述由 useInlineEdit 按 job.id 自行复位
     useEffect(() => {
-        setPromptDraft(job.input.prompt);
-        setEditingPrompt(false);
         setEditingComment(null);
-    }, [job.id, job.input.prompt]);
+    }, [job.id]);
 
     // 时间线：先拉历史，再从最后一条 seq 接 SSE
     useEffect(() => {
@@ -223,6 +225,9 @@ export function CardDetail({
         return () => cancelAnimationFrame(raf);
     }, [tab, activeSessionId]);
 
+    /** 当前查看的会话是否已归档：归档态不能发消息，只能在卡片里取消归档。 */
+    const activeSessionArchived = sessions.find(item => item.sessionId === activeSessionId)?.archived === true;
+
     const patch = async (body: Record<string, unknown>) => {
         setError(null);
         try {
@@ -232,6 +237,16 @@ export function CardDetail({
             setError(cause instanceof ApiError ? cause.message : String(cause));
         }
     };
+
+    // 三处就地编辑共用同一套规则（Esc 放弃 / Cmd·Ctrl+Enter 提交 / 失焦提交），
+    // resetKey 用 job.id：切卡片时即使新旧值恰好相同也要退出编辑
+    const titleEdit = useInlineEdit(titleText, next => patch({ title: next }), {
+        resetKey: job.id,
+        commitOnEnter: true,
+    });
+    // 工作目录的 Enter 由 DirInput 自己处理（要区分补全态与编辑态），这里不开 commitOnEnter
+    const workspaceEdit = useInlineEdit(workspaceDisplay, next => patch({ workspace: next }), { resetKey: job.id });
+    const promptEdit = useInlineEdit(job.input.prompt, next => patch({ prompt: next }), { resetKey: job.id });
 
     /**
      * 改 MCP 选中集：有执行会话时改会话的（落事件、下个回合生效），
@@ -255,11 +270,10 @@ export function CardDetail({
         }
     };
 
-    const act = async (action: "start" | "cancel") => {
+    const start = async () => {
         setError(null);
         try {
-            if (action === "start") await api.startJob(job.id);
-            if (action === "cancel") await api.cancelJob(job.id);
+            await api.startJob(job.id);
             await onChanged();
         } catch (cause) {
             setError(cause instanceof ApiError ? cause.message : String(cause));
@@ -293,6 +307,8 @@ export function CardDetail({
             setInputDraft("");
             setAttachments([]);
             setPending(result.pending);
+            // 归档会话发送时服务端会自动取消归档：把「已归档」标记刷掉
+            if (result.unarchived) await refreshSessions();
             await onChanged();
         } catch (cause) {
             setError(cause instanceof ApiError ? cause.message : String(cause));
@@ -339,58 +355,93 @@ export function CardDetail({
     };
 
     const isActive = job.state === "running" || job.state === "leased";
-    const isTerminal = ["succeeded", "failed", "lost", "cancelled", "interfered"].includes(job.state);
 
     return (
-        <div className="flex h-full flex-col">
+        <div
+            className="flex h-full flex-col"
+            onKeyDown={event => {
+                if (event.key !== "Escape") return;
+                // 编辑态（描述 / 工作目录 / 评论）的 Esc 已在自己的容器里处理并停掉冒泡；
+                // 走到这里说明焦点在普通输入框里——先失焦退出，别让 window 那层 Esc 直接关掉卡片
+                const target = event.target as HTMLElement | null;
+                const isField = target?.tagName === "INPUT"
+                    || target?.tagName === "TEXTAREA"
+                    || target?.isContentEditable === true;
+                if (!isField) return;
+                target!.blur();
+                event.stopPropagation();
+            }}
+        >
             <header className="flex flex-col gap-2 border-b border-border p-3">
                 <div className="flex items-start gap-2">
-                    <Input
-                        defaultValue={job.input.title || job.input.prompt}
-                        onBlur={event => {
-                            const next = event.target.value.trim();
-                            if (next && next !== (job.input.title || job.input.prompt)) void patch({ title: next });
-                        }}
-                        className="font-medium"
-                    />
+                    {titleEdit.editing ? (
+                        <Input
+                            autoFocus
+                            value={titleEdit.draft}
+                            onChange={event => titleEdit.setDraft(event.target.value)}
+                            {...titleEdit.editorProps}
+                            // flex-1 让输入框和只读文字占据同一份宽度，否则会把右侧的关闭按钮挤走
+                            className="min-w-0 flex-1 font-medium"
+                        />
+                    ) : (
+                        <button
+                            type="button"
+                            title={titleText}
+                            onClick={titleEdit.begin}
+                            // 盒模型与编辑态的 <Input> 完全一致（含移动端 16px 字号断点）：
+                            // 切换只换边框颜色，不改变尺寸，下面一行不会跟着上下跳
+                            className="min-w-0 flex-1 cursor-text truncate rounded-md border border-transparent px-2.5 py-1.5 text-left text-base font-medium sm:text-sm hover:border-border hover:bg-col"
+                        >
+                            {titleText}
+                        </button>
+                    )}
                     <Button variant="ghost" onClick={onClose} aria-label="关闭">
                         ×
                     </Button>
                 </div>
                 <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
-                    <Badge tone={isActive ? "accent" : isTerminal ? (job.state === "succeeded" ? "ok" : "warn") : "default"}>
-                        {job.state}
-                    </Badge>
+                    <Badge tone={STATE_TONE[job.state]}>{stateLabel(job)}</Badge>
                     <span className="font-mono">{job.id.slice(-8)}</span>
                     <span>{formatTime(job.createdAt)}</span>
                     {job.error && <span className="text-bad">{job.error}</span>}
                 </div>
                 <div className="flex flex-wrap gap-2">
-                    {job.state === "queued" && job.input.autoStart === false && (
-                        <Button variant="primary" onClick={() => void act("start")}>
-                            开始执行
-                        </Button>
-                    )}
-                    {(job.state === "queued" || isActive) && (
-                        <Button variant="danger" onClick={() => void act("cancel")}>
-                            取消
+                    {job.state === "queued" && job.input.autoStart !== true && (
+                        <Button variant="primary" onClick={() => void start()}>
+                            开始
                         </Button>
                     )}
                     {!isActive && (
-                        <Button
-                            title="卡片从看板隐藏，运行过的会话也一并归档"
-                            onClick={async () => {
-                                try {
-                                    await api.archiveJob(job.id);
-                                    onClose();
-                                    await onChanged();
-                                } catch (cause) {
-                                    setError(cause instanceof ApiError ? cause.message : String(cause));
-                                }
-                            }}
-                        >
-                            归档
-                        </Button>
+                        job.input.archivedAt ? (
+                            <Button
+                                title="卡片回到看板（默认列表仍隐藏归档卡片，需要「含归档」才看得到）"
+                                onClick={async () => {
+                                    try {
+                                        await api.unarchiveJob(job.id);
+                                        await onChanged();
+                                    } catch (cause) {
+                                        setError(cause instanceof ApiError ? cause.message : String(cause));
+                                    }
+                                }}
+                            >
+                                取消归档
+                            </Button>
+                        ) : (
+                            <Button
+                                title="卡片从看板隐藏，运行过的会话也一并归档"
+                                onClick={async () => {
+                                    try {
+                                        await api.archiveJob(job.id);
+                                        onClose();
+                                        await onChanged();
+                                    } catch (cause) {
+                                        setError(cause instanceof ApiError ? cause.message : String(cause));
+                                    }
+                                }}
+                            >
+                                归档
+                            </Button>
+                        )
                     )}
                     {!isActive && (
                         <Button
@@ -430,42 +481,61 @@ export function CardDetail({
                 {tab === "props" && (
                     <div className="stable-scroll flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto text-sm">
                         {/* 上下结构：长内容（描述、MCP、结果）能用满面板宽度 */}
-                        <Field label="工作目录">
-                            <span className="break-all">{abbreviateHome(job.input.workspace, home)}</span>
+                        {/* 平时是普通文字，点一下才变成输入框：目录很少改，摊个输入框在那儿反而抢注意力 */}
+                        <Field label="工作目录（只影响新会话）">
+                            {workspaceEdit.editing ? (
+                                <div {...workspaceEdit.editorProps}>
+                                    <DirInput
+                                        value={workspaceEdit.draft}
+                                        placeholder={workspaceDisplay}
+                                        onChange={workspaceEdit.setDraft}
+                                        onSubmit={value => workspaceEdit.commitWith(value)}
+                                        autoFocus
+                                    />
+                                </div>
+                            ) : (
+                                <button
+                                    type="button"
+                                    title={workspaceDisplay}
+                                    onClick={workspaceEdit.begin}
+                                    // 与 DirInput 里的 <input> 同盒模型：切换时只换边框，不产生位移
+                                    className="w-full cursor-text truncate rounded-md border border-transparent px-2.5 py-1.5 text-left text-base text-fg sm:text-sm hover:border-border hover:bg-col"
+                                >
+                                    {workspaceDisplay}
+                                </button>
+                            )}
                         </Field>
 
                         <Field label="任务描述">
-                            {editingPrompt ? (
-                                <div className="flex flex-col gap-1.5">
-                                    <MdEditor value={promptDraft} onChange={setPromptDraft} rows={3} />
-                                    <div className="flex gap-1.5">
+                            {promptEdit.editing ? (
+                                <div className="flex flex-col gap-1.5" {...promptEdit.editorProps}>
+                                    <MdEditor value={promptEdit.draft} onChange={promptEdit.setDraft} rows={3} autoFocus />
+                                    <div className="flex items-center gap-1.5">
+                                        {/* 按钮抢焦点会让编辑器先失焦提交，mousedown 拦一下 */}
                                         <Button
                                             variant="primary"
-                                            onClick={async () => {
-                                                const next = promptDraft.trim();
-                                                if (!next) return;
-                                                if (next !== job.input.prompt) await patch({ prompt: next });
-                                                setEditingPrompt(false);
-                                            }}
+                                            onMouseDown={event => event.preventDefault()}
+                                            onClick={promptEdit.commit}
                                         >
                                             保存
                                         </Button>
-                                        <Button
-                                            onClick={() => {
-                                                setPromptDraft(job.input.prompt);
-                                                setEditingPrompt(false);
-                                            }}
-                                        >
+                                        <Button onMouseDown={event => event.preventDefault()} onClick={promptEdit.cancel}>
                                             取消
                                         </Button>
+                                        <span className="text-xs text-muted">⌘/Ctrl+Enter 保存 · Esc 取消</span>
                                     </div>
                                 </div>
                             ) : (
-                                <div className="flex flex-col gap-1.5">
-                                    <MarkdownBlock content={job.input.prompt} />
-                                    <div>
-                                        <Button onClick={() => setEditingPrompt(true)}>编辑</Button>
-                                    </div>
+                                /* 点正文即可进入编辑；链接与复制按钮照旧生效 */
+                                <div
+                                    className="cursor-text"
+                                    onClick={event => {
+                                        if ((event.target as HTMLElement).closest("a, button")) return;
+                                        promptEdit.begin();
+                                    }}
+                                >
+                                    {/* min-h 与 MdEditor 的 min-h-[96px] 对齐：进编辑态时高度不变，下面不跳 */}
+                                    <MarkdownBlock content={job.input.prompt} className="min-h-[96px]" />
                                 </div>
                             )}
                         </Field>
@@ -474,19 +544,7 @@ export function CardDetail({
                             <TagInput
                                 value={job.input.labels ?? []}
                                 onChange={next => void patch({ labels: next })}
-                                placeholder="输入后按逗号或回车"
-                            />
-                        </Field>
-
-                        <Field label="超时（秒）">
-                            <Input
-                                type="number"
-                                min={1}
-                                defaultValue={job.input.timeoutSec ?? ""}
-                                onBlur={event => {
-                                    const value = Number(event.target.value);
-                                    if (value > 0) void patch({ timeoutSec: value });
-                                }}
+                                placeholder="空格或回车添加"
                             />
                         </Field>
 
@@ -552,6 +610,7 @@ export function CardDetail({
                                     {sessions.map(item => (
                                         <option key={item.sessionId} value={item.sessionId}>
                                             {item.sessionId.slice(-8)} · {item.purpose} · {formatTime(item.createdAt)}
+                                            {item.archived ? " · 已归档" : ""}
                                         </option>
                                     ))}
                                 </select>
@@ -560,13 +619,13 @@ export function CardDetail({
                             {activeSessionId && (
                                 <Button
                                     variant="danger"
+                                    disabled={activeSessionArchived}
                                     onClick={async () => {
                                         if (!window.confirm("归档这个执行会话？会话会从列表隐藏，历史仍保留。")) return;
                                         try {
                                             await api.archiveSession(activeSessionId);
-                                            const rest = sessions.filter(item => item.sessionId !== activeSessionId);
-                                            setSessions(rest);
-                                            setActiveSessionId(rest[0]?.sessionId ?? null);
+                                            // 归档后仍留在列表里（标「已归档」），否则取消归档的入口就没了
+                                            await refreshSessions();
                                             await onChanged();
                                         } catch (cause) {
                                             setError(cause instanceof ApiError ? cause.message : String(cause));
@@ -584,7 +643,7 @@ export function CardDetail({
                             <div className="flex shrink-0 flex-col gap-2 border-t border-border pt-2">
                                 <Textarea
                                     value={inputDraft}
-                                    placeholder="随时输入：空闲会立刻开始；正在跑就按下面的方式排队（可直接粘贴图片）"
+                                    placeholder="你的创意灵感，真知灼见，命令指导（可直接粘贴图片）"
                                     onChange={event => setInputDraft(event.target.value)}
                                     onPaste={event => {
                                         const file = Array.from(event.clipboardData.files)[0];
@@ -649,8 +708,30 @@ export function CardDetail({
                                             排队中 请求 {pending.request} · 回合 {pending.turn}
                                         </span>
                                     )}
-                                    <Button onClick={() => void sendInput("turn")}>排队</Button>
-                                    <Button variant="primary" onClick={() => void sendInput("request")}>
+                                    {activeSessionArchived && (
+                                        <Button
+                                            onClick={async () => {
+                                                if (!activeSessionId) return;
+                                                try {
+                                                    await api.unarchiveSession(activeSessionId);
+                                                    await refreshSessions();
+                                                    await onChanged();
+                                                } catch (cause) {
+                                                    setError(cause instanceof ApiError ? cause.message : String(cause));
+                                                }
+                                            }}
+                                        >
+                                            取消归档
+                                        </Button>
+                                    )}
+                                    <Button disabled={activeSessionArchived} onClick={() => void sendInput("turn")}>
+                                        排队
+                                    </Button>
+                                    <Button
+                                        variant="primary"
+                                        disabled={activeSessionArchived}
+                                        onClick={() => void sendInput("request")}
+                                    >
                                         尽快处理
                                     </Button>
                                 </div>
@@ -670,11 +751,21 @@ export function CardDetail({
                                     {comment.editedAt && <span>已编辑</span>}
                                 </div>
                                 {editingComment?.id === comment.id ? (
-                                    <>
+                                    /* Esc 先退出编辑（放弃改动），再按一次才轮到关闭卡片 */
+                                    <div
+                                        className="flex flex-col gap-1"
+                                        onKeyDown={event => {
+                                            if (event.key !== "Escape") return;
+                                            event.preventDefault();
+                                            event.stopPropagation();
+                                            setEditingComment(null);
+                                        }}
+                                    >
                                         <MdEditor
                                             value={editingComment.body}
                                             onChange={body => setEditingComment({ id: comment.id, body })}
                                             rows={4}
+                                            autoFocus
                                         />
                                         <div className="flex gap-1">
                                             <Button
@@ -706,7 +797,7 @@ export function CardDetail({
                                                 删除
                                             </Button>
                                         </div>
-                                    </>
+                                    </div>
                                 ) : (
                                     <>
                                         <MarkdownBlock content={comment.body} />

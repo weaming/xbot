@@ -17,43 +17,47 @@ import {
     type DragStartEvent,
 } from "@dnd-kit/core";
 import { useState } from "react";
-import type { BoardColumnKey, Job, JobState } from "../lib/types";
+import { STATE_TONE, stateLabel } from "../lib/job-state";
+import type { BoardColumnKey, Job } from "../lib/types";
 import { cn } from "../lib/utils";
 import { Badge } from "./ui";
 
 interface ColumnDef {
     key: BoardColumnKey;
     title: string;
-    /** 组内判定：有的列不能只靠 state 区分（待办 vs 手动都看 autoStart） */
+    /** 组内判定：多数列与 state 一比一，只有 doing 合并了 leased/running */
     match: (job: Job) => boolean;
     droppable: boolean;
 }
 
-export const COLUMNS: ColumnDef[] = [
-    // 「待办」= 会自动执行的排队任务；「手动」= 关掉 autoStart 的，等人点开始
-    { key: "todo", title: "待办", match: job => job.state === "queued" && job.input.autoStart !== false, droppable: true },
-    { key: "manual", title: "手动", match: job => job.state === "queued" && job.input.autoStart === false, droppable: true },
-    { key: "doing", title: "进行中", match: job => job.state === "leased" || job.state === "running", droppable: true },
-    {
-        key: "review",
-        title: "待处理",
-        match: job => job.state === "failed" || job.state === "lost" || job.state === "interfered",
-        droppable: false,
-    },
-    { key: "done", title: "已完成", match: job => job.state === "succeeded", droppable: true },
-    { key: "cancelled", title: "已取消", match: job => job.state === "cancelled", droppable: true },
-];
+/**
+ * 卡片所在列：以用户拖拽结果（input.column）为准，老卡片没有该字段时按状态兜底。
+ * 兜底只影响首次显示——列一旦被拖动过，任务跑完也不会自己跳列。
+ */
+export function columnOf(job: Job): BoardColumnKey {
+    if (job.input.column) return job.input.column;
+    switch (job.state) {
+        case "queued":
+            return "todo";
+        case "leased":
+        case "running":
+            return "doing";
+        case "succeeded":
+            return "done";
+        case "cancelled":
+            return "cancelled";
+        default:
+            // failed / lost / interfered：没有「待处理」列了，落到待办等人工处理
+            return "todo";
+    }
+}
 
-const STATE_TONE: Record<JobState, "default" | "accent" | "ok" | "warn" | "bad"> = {
-    queued: "default",
-    leased: "accent",
-    running: "accent",
-    succeeded: "ok",
-    failed: "bad",
-    lost: "bad",
-    cancelled: "warn",
-    interfered: "warn",
-};
+export const COLUMNS: ColumnDef[] = [
+    { key: "todo", title: "待办", match: job => columnOf(job) === "todo", droppable: true },
+    { key: "doing", title: "进行中", match: job => columnOf(job) === "doing", droppable: true },
+    { key: "done", title: "已完成", match: job => columnOf(job) === "done", droppable: true },
+    { key: "cancelled", title: "已取消", match: job => columnOf(job) === "cancelled", droppable: true },
+];
 
 function jobTitle(job: Job): string {
     return job.input.title || job.input.prompt;
@@ -74,9 +78,8 @@ function CardBody({ job }: { job: Job }) {
                 </div>
             )}
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
-                <Badge tone={STATE_TONE[job.state]}>{job.state}</Badge>
+                <Badge tone={STATE_TONE[job.state]}>{stateLabel(job)}</Badge>
                 {job.input.archivedAt && <span>已归档</span>}
-                {job.input.autoStart === false && <span>手动</span>}
                 {job.attempts > 0 && <span>×{job.attempts}</span>}
                 <span className="font-mono">{job.id.slice(-6)}</span>
             </div>
@@ -107,9 +110,10 @@ function DraggableCard({
             className={cn(
                 // touch-none：移动端拖动卡片时不要连带滚动看板
                 "flex touch-none cursor-grab flex-col gap-1.5 rounded-lg border border-border bg-panel p-2.5 active:cursor-grabbing",
-                // 选中只换边框色 + 一层极淡底：ring 会外扩压住列间距，视觉上发脏
-                selected && "border-accent bg-accent/5",
-                focused && !selected && "ring-2 ring-accent/60",
+                // 选中用内缩 outline 而不是 1px 边框变色：1px 在圆角处会被抗锯齿磨断，
+                // 看起来像"边框缺了一截"；outline 不占布局，也压不住列间距
+                selected && "bg-accent/5 outline-2 outline-accent -outline-offset-2",
+                focused && !selected && "outline-2 outline-accent/60 -outline-offset-2",
                 isDragging && "dragging",
                 job.input.archivedAt && "opacity-60",
             )}
