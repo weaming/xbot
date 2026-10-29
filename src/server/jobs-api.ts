@@ -27,6 +27,7 @@ import { readMcpSelection } from "../tools/session-mcp-selection.js";
 import { toolCatalog } from "../tools/tool-catalog.js";
 import { fail, json, readJson } from "./respond.js";
 import { toSessionEventView, toSessionEventViews } from "./event-view.js";
+import { subscribeLive as subscribeLiveFrames } from "./live-stream.js";
 import { openSseStream, parseSseCursor, type SseSource } from "./sse.js";
 
 export interface JobsApiContext {
@@ -63,6 +64,8 @@ function sessionEventSource(host: SessionHost, sessionId: string, jobId: string)
         readSince: async since =>
             toSessionEventViews(await host.readSessionEventsSince(sessionId, since))
                 .map(view => ({ seq: view.seq, payload: view })),
+        subscribeLive: listener =>
+            subscribeLiveFrames(sessionId, frame => listener({ event: "live", data: JSON.stringify(frame) })),
         subscribe: listener =>
             host.subscribeEvents((changedSessionId, event) => {
                 if (changedSessionId !== sessionId) return;
@@ -261,11 +264,12 @@ export async function handleJobsRoute(
             return json(list);
         }
 
-        // 列表状态流：/jobs/events（必须排在 /jobs/:id 之前，否则 "events" 会被当成 id）
-        if (action === "events" && req.method === "GET") {
+        // 列表状态：/jobs/events 一次性 JSON，/jobs/live 长连接
+        // （都必须排在 /jobs/:id 之前，否则 "events"/"live" 会被当成 id）
+        if ((action === "events" || action === "live") && req.method === "GET") {
             const cursor = parseSseCursor(req, url);
             if ("error" in cursor) return fail(cursor.error, 400);
-            if (url.searchParams.get("format") === "json") return json(ctx.store.eventsSince(cursor.since));
+            if (action === "events") return json(ctx.store.eventsSince(cursor.since));
             return openSseStream(jobListSource(ctx.store), cursor.since, ctx.heartbeatMs, req.signal);
         }
 
@@ -462,7 +466,7 @@ export async function handleJobsRoute(
             return json({ cancelled: true, job: ctx.store.get(jobId) });
         }
 
-        if (sub === "events" && req.method === "GET") {
+        if ((sub === "events" || sub === "live") && req.method === "GET") {
             const job = ctx.store.get(jobId);
             if (!job) return fail("任务不存在", 404);
 
@@ -477,7 +481,8 @@ export async function handleJobsRoute(
 
             const cursor = parseSseCursor(req, url);
             if ("error" in cursor) return fail(cursor.error, 400);
-            if (url.searchParams.get("format") === "json") {
+            // 名字区分职责：/events 一次性 JSON，/live 长连接（含实时增量）
+            if (sub === "events") {
                 return json(toSessionEventViews(await ctx.host.readSessionEventsSince(sessionId, cursor.since)));
             }
             return openSseStream(

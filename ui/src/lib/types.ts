@@ -88,6 +88,8 @@ export interface AgentEvent {
         text?: string;
         /** user_message 的来源：user=本人输入，pending=回合中补发，peer=别的会话 */
         trigger?: "user" | "pending" | "peer";
+        /** 所属回合：配合 turn_commit 判断该回合是否已收尾 */
+        turnId?: string;
         images?: Array<{ id: string; path: string; filename: string; mimeType: string }>;
         message?: {
             role: string;
@@ -104,6 +106,8 @@ export interface AgentEvent {
                 function?: { name: string; arguments: string };
             }>;
             tool_call_id?: string;
+            /** 工具名（服务端投影后带上，省得界面反查 tool_call_id） */
+            name?: string;
             /** 有推理内容（正文不下发） */
             hasReasoning?: boolean;
             /** 工具输出长度（正文不下发） */

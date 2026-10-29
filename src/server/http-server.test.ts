@@ -146,7 +146,7 @@ describe("http-server 鉴权与路由", () => {
         const handle = serve(host);
         try {
             expect((await fetch(`${handle.url}/api/healthz`)).status).toBe(401);
-            expect((await fetch(`${handle.url}/api/healthz?token=wrong`)).status).toBe(401);
+            expect((await fetch(`${handle.url}/api/healthz`)).status).toBe(401);
             expect(
                 (
                     await fetch(`${handle.url}/api/healthz`, {
@@ -154,7 +154,11 @@ describe("http-server 鉴权与路由", () => {
                     })
                 ).status,
             ).toBe(401);
-            expect((await fetch(`${handle.url}/api/healthz?token=${TOKEN}`)).status).toBe(200);
+            // 只认 header：URL 令牌不再接受（会被缓存/写进历史/进 Referer）
+            expect((await fetch(`${handle.url}/api/healthz?token=${TOKEN}`)).status).toBe(401);
+            expect((await fetch(`${handle.url}/api/healthz`, {
+                headers: { authorization: `Bearer ${TOKEN}` },
+            })).status).toBe(200);
         } finally {
             await handle.stop();
         }
@@ -332,11 +336,11 @@ describe("http-server 会话接口", () => {
 });
 
 describe("http-server 事件流", () => {
-    test("format=json 把 since 透传给 host 并按游标过滤", async () => {
+    test("events 一次性 JSON 把 since 透传给 host 并按游标过滤", async () => {
         const { host, calls } = createStubHost({ history: [event(1), event(2), event(3)] });
         const handle = serve(host);
         try {
-            const res = await call(handle, "/api/sessions/s1/events?since=2&format=json");
+            const res = await call(handle, "/api/sessions/s1/events?since=2");
             const events = await res.json() as AgentEvent[];
 
             expect(calls.sinceCalls).toEqual([2]);
@@ -350,8 +354,8 @@ describe("http-server 事件流", () => {
         const { host } = createStubHost();
         const handle = serve(host);
         try {
-            expect((await call(handle, "/api/sessions/s1/events?since=5abc&format=json")).status).toBe(400);
-            expect((await call(handle, "/api/sessions/s1/events?since=-1&format=json")).status).toBe(400);
+            expect((await call(handle, "/api/sessions/s1/events?since=5abc")).status).toBe(400);
+            expect((await call(handle, "/api/sessions/s1/events?since=-1")).status).toBe(400);
         } finally {
             await handle.stop();
         }
@@ -361,7 +365,8 @@ describe("http-server 事件流", () => {
         const { host, calls } = createStubHost({ history: [event(1), event(2)] });
         const handle = serve(host);
         try {
-            const res = await call(handle, "/api/sessions/s1/events?since=0&format=json", {
+            // Last-Event-ID 是游标语义，仍按一次性 JSON 接口验证
+            const res = await call(handle, "/api/sessions/s1/events?since=0", {
                 headers: { "last-event-id": "1" },
             });
             const events = await res.json() as AgentEvent[];
@@ -377,7 +382,7 @@ describe("http-server 事件流", () => {
         const stub = createStubHost({ history: [event(1), event(2)] });
         const handle = serve(stub.host);
         try {
-            const res = await call(handle, "/api/sessions/s1/events?since=0");
+            const res = await call(handle, "/api/sessions/s1/live?since=0");
             expect(res.headers.get("content-type")).toContain("text/event-stream");
 
             const frames = openFrameReader(res);
@@ -398,7 +403,7 @@ describe("http-server 事件流", () => {
         const stub = createStubHost({ history: [event(5)] });
         const handle = serve(stub.host);
         try {
-            const frames = openFrameReader(await call(handle, "/api/sessions/s1/events?since=0"));
+            const frames = openFrameReader(await call(handle, "/api/sessions/s1/live?since=0"));
             expect((await frames.read(1))[0]).toContain("id: 5");
 
             stub.emit("s1", null);
@@ -418,7 +423,7 @@ describe("http-server 事件流", () => {
         const { host } = createStubHost();
         const handle = serve(host, 20);
         try {
-            const frames = openFrameReader(await call(handle, "/api/sessions/s1/events?since=0"));
+            const frames = openFrameReader(await call(handle, "/api/sessions/s1/live?since=0"));
             expect((await frames.read(1))[0]).toContain(": ping");
             await frames.close();
         } finally {
@@ -431,7 +436,7 @@ describe("http-server 事件流", () => {
         const handle = serve(stub.host, 20);
         const abort = new AbortController();
         try {
-            const res = await fetch(`${handle.url}/api/sessions/s1/events?since=0`, {
+            const res = await fetch(`${handle.url}/api/sessions/s1/live?since=0`, {
                 headers: { authorization: `Bearer ${TOKEN}` },
                 signal: abort.signal,
             });
@@ -473,7 +478,7 @@ describe("http-server 事件流", () => {
         const abort = new AbortController();
         try {
             // 慢回放期间不会发出任何帧，服务端可能迟迟不 flush 响应头，这里不 await 请求本身
-            const pending = fetch(`${handle.url}/api/sessions/s1/events?since=0`, {
+            const pending = fetch(`${handle.url}/api/sessions/s1/live?since=0`, {
                 headers: { authorization: `Bearer ${TOKEN}` },
                 signal: abort.signal,
             }).catch(() => undefined);

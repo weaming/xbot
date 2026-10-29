@@ -20,6 +20,7 @@ import { handleJobsRoute, type JobsApiContext } from "./jobs-api.js";
 import { enqueueInput, pendingStats, takeInputs } from "./pending-inputs.js";
 import { fail, json, readJson } from "./respond.js";
 import { toSessionEventView, toSessionEventViews } from "./event-view.js";
+import { subscribeLive as subscribeLiveFrames } from "./live-stream.js";
 import { openSseStream, parseSseCursor, type SseSource } from "./sse.js";
 import { renderUiPage } from "./ui.js";
 import { createImageAsset } from "../utils/image-assets.js";
@@ -43,7 +44,7 @@ export interface HttpServerOptions {
     port: number;
     /** 监听地址，默认只绑本机回环。 */
     bind?: string;
-    /** 访问令牌：请求需带 `Authorization: Bearer <token>` 或 `?token=`。 */
+    /** 访问令牌：所有 /api 请求都必须带 `Authorization: Bearer <token>`。 */
     token: string;
     heartbeatMs?: number;
     /** 传入后启用 /jobs 路由（Job 调度由调用方装配）。 */
@@ -63,11 +64,16 @@ function safeEqual(left: string, right: string): boolean {
     return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
 }
 
-/** SSE 用 query 传令牌（EventSource 不能自定义 header），其余走 Bearer。 */
-function isAuthorized(req: Request, url: URL, token: string): boolean {
+/**
+ * 只认 `Authorization: Bearer`。
+ *
+ * 不接受 `?token=`：URL 会被浏览器缓存、写进历史、带进 Referer 与反代日志，
+ * 令牌一旦出现在 URL 里就等于泄漏。SSE 与图片都改成带 header 的 fetch 实现。
+ */
+function isAuthorized(req: Request, token: string): boolean {
     const header = req.headers.get("authorization");
-    if (header?.startsWith("Bearer ")) return safeEqual(header.slice("Bearer ".length).trim(), token);
-    return safeEqual(url.searchParams.get("token") ?? "", token);
+    if (!header?.startsWith("Bearer ")) return false;
+    return safeEqual(header.slice("Bearer ".length).trim(), token);
 }
 
 /**
@@ -157,6 +163,8 @@ function sessionEventSource(host: SessionHost, sessionId: string): SseSource {
         readSince: async since =>
             toSessionEventViews(await host.readSessionEventsSince(sessionId, since))
                 .map(view => ({ seq: view.seq, payload: view })),
+        subscribeLive: listener =>
+            subscribeLiveFrames(sessionId, frame => listener({ event: "live", data: JSON.stringify(frame) })),
         subscribe: listener =>
             host.subscribeEvents((changedSessionId, event) => {
                 if (changedSessionId !== sessionId) return;
@@ -200,7 +208,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
             if (segments[0] !== "api") return fail("接口统一在 /api 下", 404);
             const apiPath = segments.slice(1);
 
-            if (!isAuthorized(req, url, token)) return fail("未授权：缺少或错误的访问令牌", 401);
+            if (!isAuthorized(req, token)) return fail("未授权：缺少或错误的访问令牌", 401);
 
             const endpoints = [
                 "GET  /（Web 界面）",
@@ -209,7 +217,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
                 "GET  /api/sessions",
                 "POST /api/sessions {cwd?, title?}",
                 "GET  /api/sessions/:id",
-                "GET  /api/sessions/:id/events?since=<seq>（SSE，format=json 一次性拉取）",
+                "GET  /api/sessions/:id/events?since=<seq>（一次性 JSON）",
+                "GET  /api/sessions/:id/live?since=<seq>（SSE 长连接）",
                 "POST /api/sessions/:id/messages {text, wait?}",
                 "POST /api/sessions/:id/cancel",
                 ...(jobs
@@ -243,7 +252,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
                 });
             }
 
-            // 图片：上传走 base64，读取给 <img> 用（不能带 header，所以用 ?token=）
+            // 图片：上传走 base64，读取由前端 fetch 成 blob（带 Authorization，不用 URL 令牌）
             if (apiPath[0] === "assets") {
                 if (req.method === "POST" && !apiPath[1]) {
                     const body = await readJson(req);
@@ -313,13 +322,16 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
                     return summary ? json(summary) : fail("会话不存在", 404);
                 }
 
+                // 会话事件：一次性 JSON 用 /events，长连接用 /live —— 名字上就分开
                 if (action === "events" && req.method === "GET") {
-                    // 断线重连时 EventSource 会自动带 Last-Event-ID，优先于显式 since
                     const cursor = parseSseCursor(req, url);
                     if ("error" in cursor) return fail(cursor.error, 400);
-                    if (url.searchParams.get("format") === "json") {
-                        return json(toSessionEventViews(await host.readSessionEventsSince(sessionId, cursor.since)));
-                    }
+                    return json(toSessionEventViews(await host.readSessionEventsSince(sessionId, cursor.since)));
+                }
+
+                if (action === "live" && req.method === "GET") {
+                    const cursor = parseSseCursor(req, url);
+                    if ("error" in cursor) return fail(cursor.error, 400);
                     return openSseStream(
                         sessionEventSource(host, sessionId),
                         cursor.since,

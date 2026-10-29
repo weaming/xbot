@@ -6,10 +6,11 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiError, getToken, sseUrl } from "../lib/api";
+import { api, ApiError, openEventStream } from "../lib/api";
 import type { AgentEvent, ImageAsset, Job, JobComment, JobSession, McpServer } from "../lib/types";
 import { cn } from "../lib/utils";
 import { abbreviateHome } from "../lib/format";
+import { AssetImage } from "./AssetImage";
 import { Timeline } from "./Timeline";
 import { TagInput } from "./TagInput";
 import { MarkdownBlock } from "./Markdown";
@@ -48,6 +49,10 @@ export function CardDetail({
     const [editingPrompt, setEditingPrompt] = useState(false);
     const [inputDraft, setInputDraft] = useState("");
     const [pending, setPending] = useState({ request: 0, turn: 0 });
+    /** 正在发生的回合：正文增量与"是否在思考"（回合收尾即清空，交给持久化消息） */
+    const [live, setLive] = useState<{ text: string; thinking: boolean }>({ text: "", thinking: false });
+    /** 是否贴底：用户往上翻看历史时暂停自动滚动，翻回底部自动恢复 */
+    const stickToBottom = useRef(true);
     /** 会话的 MCP 选中集（有执行会话时以它为准）；null = 还没拉/任务尚未开始 */
     const [mcpSelection, setMcpSelection] = useState<string[] | null>(null);
     /** 会话是否已落过选中集：false 时运行期等于"不限制"，界面回退成全选 */
@@ -99,31 +104,77 @@ export function CardDetail({
             return;
         }
         let cancelled = false;
-        let source: EventSource | null = null;
+        let stream: { close(): void } | null = null;
 
         void (async () => {
             const history = await api.listEvents(job.id, activeSessionId, 0).catch(() => []);
             if (cancelled) return;
             setEvents(history);
+            // 打开或切换会话默认停在最新位置
+            stickToBottom.current = true;
             const since = history.length > 0 ? history[history.length - 1].seq : 0;
-            source = new EventSource(sseUrl(`/api/jobs/${job.id}/events?sessionId=${encodeURIComponent(activeSessionId)}`, since));
-            source.onmessage = event => {
-                const parsed = JSON.parse(event.data) as AgentEvent;
-                setEvents(current => [...current, parsed]);
-            };
-            source.addEventListener("reset", () => setEvents([]));
+            stream = openEventStream(
+                `/api/jobs/${job.id}/live?sessionId=${encodeURIComponent(activeSessionId)}`,
+                since,
+                {
+                    onMessage: data => {
+                        try {
+                            const parsed = JSON.parse(data) as AgentEvent;
+                            setEvents(current => [...current, parsed]);
+                        } catch {
+                            // 半帧或未知格式：丢掉一帧即可，不必打断整条时间线
+                        }
+                    },
+                    onReset: () => {
+                        setEvents([]);
+                        setLive({ text: "", thinking: false });
+                    },
+                    onLive: frame => {
+                        if (frame.t === "text") {
+                            // 正文开始 = 这轮思考结束，标记同步收掉
+                            setLive(current => ({ text: current.text + frame.d, thinking: false }));
+                        } else if (frame.t === "think") {
+                            setLive(current => ({ ...current, thinking: frame.on }));
+                        } else {
+                            setLive({ text: "", thinking: false });
+                        }
+                    },
+                },
+            );
         })();
 
         return () => {
             cancelled = true;
-            source?.close();
+            stream?.close();
         };
     }, [job.id, activeSessionId]);
 
     useEffect(() => {
         const node = timelineRef.current;
-        if (node) node.scrollTop = node.scrollHeight;
-    }, [events]);
+        if (!node) return;
+        const onScroll = (): void => {
+            stickToBottom.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48;
+        };
+        node.addEventListener("scroll", onScroll, { passive: true });
+        return () => node.removeEventListener("scroll", onScroll);
+    }, [tab, activeSessionId]);
+
+    // 新消息与流式增量都跟着贴底，否则看不到正在生成的最后几行
+    useEffect(() => {
+        const node = timelineRef.current;
+        if (node && stickToBottom.current) node.scrollTop = node.scrollHeight;
+    }, [events, live.text, live.thinking]);
+
+    // 点进「会话」页时容器才挂载：此时 events 没变，需要单独拉到底
+    useEffect(() => {
+        if (tab !== "sessions") return;
+        stickToBottom.current = true;
+        const raf = requestAnimationFrame(() => {
+            const node = timelineRef.current;
+            if (node) node.scrollTop = node.scrollHeight;
+        });
+        return () => cancelAnimationFrame(raf);
+    }, [tab, activeSessionId]);
 
     const patch = async (body: Record<string, unknown>) => {
         setError(null);
@@ -504,8 +555,8 @@ export function CardDetail({
                                     <div className="flex flex-wrap gap-2">
                                         {attachments.map(asset => (
                                             <div key={asset.id} className="relative">
-                                                <img
-                                                    src={`/api/assets/${asset.id}?token=${encodeURIComponent(getToken())}`}
+                                                <AssetImage
+                                                    id={asset.id}
                                                     alt={asset.filename}
                                                     className="h-16 w-16 rounded-md border border-border object-cover"
                                                 />

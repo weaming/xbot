@@ -182,11 +182,11 @@ describe("jobs API 查询与取消", () => {
 });
 
 describe("jobs API 事件流", () => {
-    test("列表状态流支持 format=json 与游标", async () => {
+    test("列表状态：events 出 JSON、stream 出 SSE", async () => {
         const { handle, store } = serve();
         try {
             const job = store.create({ source: "t", input: { prompt: "a", workspace: WORKSPACE } }).job;
-            const all = await call(handle, "/api/jobs/events?since=0&format=json");
+            const all = await call(handle, "/api/jobs/events?since=0");
             const events = await all.json() as Array<{ seq: number; type: string }>;
 
             expect(events.map(event => event.type)).toEqual(["job_created"]);

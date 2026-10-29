@@ -11,7 +11,8 @@ zbot serve [--port 8787] [--bind 127.0.0.1] [--cwd <目录>] [--token <令牌>]
 - 默认只绑 `127.0.0.1`。
 - `--cwd` 是新建会话与工具的默认基准。
 - 令牌优先级：`--token` > `ZBOT_SERVE_TOKEN` > `~/.zbot/serve/token`（首次启动自动生成，权限 0600）。
-- 请求带 `Authorization: Bearer <token>`；SSE 用 `?token=<token>`（EventSource 不能自定义 header）。
+- 所有 `/api` 请求带 `Authorization: Bearer <token>`；不再接受 `?token=`（URL 会被缓存、写进历史与反代日志）。
+  页面首次进入在输入框里粘贴令牌，存在 localStorage；SSE 与图片都由前端 fetch 带 header 取回。
 - **界面壳不需要令牌**（否则没法在页面里输入令牌）：`GET /` 与 `GET /ui` 公开，页面里输入一次后存 localStorage；
   数据接口（`/jobs`、`/sessions`、`/endpoints` 等）一律要令牌。
 
@@ -26,7 +27,8 @@ zbot serve [--port 8787] [--bind 127.0.0.1] [--cwd <目录>] [--token <令牌>]
 | `GET /api/sessions` | 会话摘要列表 |
 | `POST /api/sessions` | 建会话并立即认领，body `{cwd?, title?}`，返回 `{sessionId}` |
 | `GET /api/sessions/:id` | 单个会话摘要，不存在 404 |
-| `GET /api/sessions/:id/events?since=<seq>` | 事件流（SSE）；加 `format=json` 一次性拉取 |
+| `GET /api/sessions/:id/events?since=<seq>` | 会话事件（一次性 JSON） |
+| `GET /api/sessions/:id/live?since=<seq>` | 会话事件（SSE 长连接）；除持久化帧外还有 `event: live` 实时增量 |
 | `POST /api/sessions/:id/messages` | body `{text, wait?}`；不带 `wait` 返回 202 并后台执行，带 `wait: true` 等到回合结束 |
 | `POST /api/sessions/:id/cancel` | 中止当前回合 |
 | `POST /api/sessions/:id/inputs` | 随时输入：body `{text, mode?}`；空闲直接开跑，忙则排队 |
@@ -50,8 +52,10 @@ zbot serve [--port 8787] [--bind 127.0.0.1] [--cwd <目录>] [--token <令牌>]
 | `POST /api/jobs` | body `{prompt, workspace?, idempotencyKey?, priority?, timeoutSec?, model?, maxAttempts?, freshSession?, retriedFrom?}`；新建 201，幂等命中 200 |
 | `GET /api/jobs?state=&limit=` | 任务列表（`state` 逗号分隔，如 `queued,running`） |
 | `GET /api/jobs/:id` | 单个任务 |
-| `GET /api/jobs/events?since=<seq>` | **列表状态流**（SSE），推所有任务的状态变迁 |
-| `GET /api/jobs/:id/events?since=<seq>` | **执行流**（SSE），转发该任务绑定会话的事件；未开始时 404 |
+| `GET /api/jobs/events?since=<seq>` | 列表状态（一次性 JSON） |
+| `GET /api/jobs/live?since=<seq>` | **列表状态流**（SSE），推所有任务的状态变迁 |
+| `GET /api/jobs/:id/events?sessionId=&since=` | 任务会话事件（一次性 JSON） |
+| `GET /api/jobs/:id/live?sessionId=&since=` | 任务会话事件（SSE，含 `event: live`）；未开始时 404 |
 | `POST /api/jobs/:id/cancel` | 取消；已结束返回 409 |
 
 ### 卡片：属性、评论、会话、看板拖拽
@@ -65,7 +69,7 @@ zbot serve [--port 8787] [--bind 127.0.0.1] [--cwd <目录>] [--token <令牌>]
 | `DELETE /api/jobs/:id/comments/:cid` | 软删除，保留历史 |
 | `GET /api/jobs/:id/sessions` | 该卡片的执行会话列表（每次 attempt 一条，人工新建为 `branch`） |
 | `POST /api/jobs/:id/sessions` | `{prompt?}` 手动开一个新会话（同卡片下换思路继续） |
-| `GET /api/jobs/:id/events?sessionId=` | 指定看哪个会话的执行流；不填看最近一个 |
+| `GET /api/jobs/:id/events?sessionId=` | 指定看哪个会话的事件；不填看最近一个 |
 | `POST /api/jobs/:id/start` | 手动触发排队中的任务 |
 | `POST /api/jobs/:id/move` | `{column}` 看板拖拽：`todo / doing / done / cancelled` |
 | `POST /api/jobs/:id/archive` | 归档：从看板隐藏，状态与历史保留（运行中拒绝） |
@@ -105,7 +109,7 @@ zbot serve [--port 8787] [--bind 127.0.0.1] [--cwd <目录>] [--token <令牌>]
 | 方法与路径 | 说明 |
 | --- | --- |
 | `POST /api/assets` | 上传图片：body `{data（base64 或 data URL）, filename}`，落盘后返回引用，随消息发送时带上 |
-| `GET /api/assets/:id?token=` | 读图片。`<img>` 不能带 header，所以用 query 令牌；id 形如 `img_<20 位 hex>` |
+| `GET /api/assets/:id` | 读图片。前端带 `Authorization` fetch 成 blob URL 再交给 `<img>`；id 形如 `img_<20 位 hex>` |
 | `GET /api/fs/dirs?path=` | 目录补全：按输入前缀返回最多 20 个子目录（只列目录名，不读文件） |
 
 **安全边界**：`fs/dirs` 能枚举本机任意目录，`assets` 能往状态目录写文件。两者都只依赖「仅绑回环 + 持有令牌」，
@@ -156,7 +160,7 @@ data: {}
 
 用 `format=json` 一次性拉取的客户端没有推送通道可依赖：truncate 后旧游标只会一直返回空数组，客户端需自行用「返回为空且会话仍在推进」或「`max(seq)` 变小」判定游标失效，并从 `since=0` 重取。
 
-`GET /api/sessions/:id/events` 对未知会话返回空流（不报 404），因为事件流是「订阅该 id 的时间轴」，会话之后可能被创建。
+`GET /api/sessions/:id/live` 对未知会话返回空流（不报 404），因为事件流是「订阅该 id 的时间轴」，会话之后可能被创建。
 
 ## 错误码
 

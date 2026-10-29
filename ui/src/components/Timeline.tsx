@@ -8,8 +8,8 @@
 
 import { Fragment, useState, type ReactNode } from "react";
 import type { AgentEvent } from "../lib/types";
-import { getToken } from "../lib/api";
 import { formatDuration } from "../lib/format";
+import { AssetImage } from "./AssetImage";
 import { MarkdownBlock } from "./Markdown";
 
 function oneLine(text: string, max = 120): string {
@@ -82,9 +82,9 @@ function UserMessage({ event, isFirst }: { event: AgentEvent; isFirst: boolean }
             {(event.payload.images?.length ?? 0) > 0 && (
                 <div className="flex max-w-[85%] flex-wrap justify-end gap-2">
                     {event.payload.images!.map(image => (
-                        <img
+                        <AssetImage
                             key={image.id}
-                            src={`/api/assets/${image.id}?token=${encodeURIComponent(getToken())}`}
+                            id={image.id}
                             alt={image.filename}
                             className="max-h-40 rounded-md border border-border object-contain"
                         />

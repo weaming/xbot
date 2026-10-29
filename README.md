@@ -70,6 +70,6 @@ open http://127.0.0.1:8787/
 ```
 
 界面首次打开会要求输入令牌（读自 `~/.zbot/serve/token`），之后记在浏览器 localStorage；
-也可以用 `http://127.0.0.1:8787/?token=<令牌>` 打开一次自动记住。
+首次打开 `http://127.0.0.1:8787/` 时在页面上粘贴令牌即可（存在本机 localStorage，之后自动带上）。
 
 文档：[会话命令行](docs/session-cli.md)、[serve 接口](docs/serve-api.md)、[MCP 多服务配置](docs/mcp.md)、[TUI 链接与终端交互](docs/tui-links.md)。

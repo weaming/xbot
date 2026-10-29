@@ -21,6 +21,11 @@ export interface SseSource {
     readSince(since: number): Promise<SseRecord[]>;
     /** 订阅增量；listener 收到 null 表示时间轴被重置（客户端须丢弃游标）。 */
     subscribe(listener: (record: SseRecord | null) => void): () => void;
+    /**
+     * 订阅瞬态信号（如正在生成的正文）：帧不带 id，不参与游标，断线重连后由持久化事件补齐。
+     * 只在"正在发生"时才推，历史回放不涉及。
+     */
+    subscribeLive?(listener: (frame: { event: string; data: string }) => void): () => void;
 }
 
 /**
@@ -42,6 +47,7 @@ export function openSseStream(
             let replaying = true;
             let closed = false;
             let heartbeat: ReturnType<typeof setInterval> | undefined;
+            let unsubscribeLive: (() => void) | undefined;
             const buffered: Array<SseRecord | null> = [];
 
             const write = (text: string): boolean => {
@@ -75,6 +81,7 @@ export function openSseStream(
                 if (closed) return;
                 closed = true;
                 unsubscribe();
+                unsubscribeLive?.();
                 if (heartbeat) clearInterval(heartbeat);
                 heartbeat = undefined;
                 try {
@@ -102,6 +109,13 @@ export function openSseStream(
                 send(record);
             }
             buffered.length = 0;
+
+            // 回放结束后再接实时信号：历史与"正在发生"不混在一起，也不参与 seq 去重
+            if (!closed && source.subscribeLive) {
+                unsubscribeLive = source.subscribeLive(frame => {
+                    if (!write(`event: ${frame.event}\ndata: ${frame.data}\n\n`)) dispose();
+                });
+            }
 
             // 回放期间已断开就别再建定时器：否则 interval 无人清理，会永久空转
             if (closed) return;

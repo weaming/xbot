@@ -3,7 +3,7 @@ import { Board, COLUMNS } from "./components/Board";
 import { CardDetail } from "./components/CardDetail";
 import { CreateDialog } from "./components/CreateDialog";
 import { Button, Field, Input } from "./components/ui";
-import { api, ApiError, getToken, saveToken, sseUrl } from "./lib/api";
+import { api, ApiError, getToken, openEventStream, saveToken } from "./lib/api";
 import type { BoardColumnKey, Job, McpServer } from "./lib/types";
 
 export default function App() {
@@ -47,7 +47,7 @@ export default function App() {
     // 首屏：列表 + MCP 选项 + 全局状态流
     useEffect(() => {
         if (!token) return;
-        let source: EventSource | null = null;
+        let stream: { close(): void } | null = null;
         let cancelled = false;
 
         void (async () => {
@@ -62,22 +62,23 @@ export default function App() {
             if (cancelled) return;
             const since = history.length > 0 ? history[history.length - 1].seq : 0;
 
-            source = new EventSource(sseUrl("/api/jobs/events", since));
-            source.onopen = () => setConnected(true);
-            source.onerror = () => setConnected(false);
-            source.onmessage = () => {
-                // 状态流只用来触发刷新：卡片数少，重拉全量比增量合并更不容易出错
-                if (refreshTimer.current) return;
-                refreshTimer.current = setTimeout(() => {
-                    refreshTimer.current = null;
-                    void refresh();
-                }, 200);
-            };
+            stream = openEventStream("/api/jobs/live", since, {
+                onOpen: () => setConnected(true),
+                onError: () => setConnected(false),
+                onMessage: () => {
+                    // 状态流只用来触发刷新：卡片数少，重拉全量比增量合并更不容易出错
+                    if (refreshTimer.current) return;
+                    refreshTimer.current = setTimeout(() => {
+                        refreshTimer.current = null;
+                        void refresh();
+                    }, 200);
+                },
+            });
         })();
 
         return () => {
             cancelled = true;
-            source?.close();
+            stream?.close();
             if (refreshTimer.current) clearTimeout(refreshTimer.current);
         };
     }, [token, refresh]);
@@ -189,8 +190,8 @@ export default function App() {
             <div className="mx-auto mt-[10dvh] w-[min(420px,92vw)] rounded-xl border border-border bg-panel p-5">
                 <h1 className="text-base font-semibold">输入访问令牌</h1>
                 <p className="mt-1 text-xs text-muted">
-                    令牌在 <code className="rounded bg-col px-1">~/.zbot/serve/token</code>；
-                    也可以用 <code className="rounded bg-col px-1">/?token=…</code> 打开一次，之后会记住。
+                    令牌在 <code className="rounded bg-col px-1">~/.zbot/serve/token</code>，
+                    粘贴后记在本机 localStorage；令牌只走 Authorization 请求头，不再出现在 URL 里。
                 </p>
                 <form
                     className="mt-3 flex flex-col gap-2"

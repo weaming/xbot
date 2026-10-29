@@ -19,14 +19,13 @@ export class ApiError extends Error {
     }
 }
 
-/** 令牌来源：URL 参数（一次性）> localStorage。读 URL 后立刻从地址栏抹掉。 */
+/**
+ * 令牌只从 localStorage 读。
+ *
+ * 不再支持 `/?token=`：URL 会进浏览器缓存、历史记录、Referer 和反代日志，
+ * 令牌出现在 URL 里等于泄漏。首次进入用页面上的令牌输入框。
+ */
 export function initToken(): string {
-    const fromUrl = new URLSearchParams(location.search).get("token");
-    if (fromUrl) {
-        localStorage.setItem(STORAGE_KEY, fromUrl);
-        history.replaceState({}, "", location.pathname);
-        return fromUrl;
-    }
     return localStorage.getItem(STORAGE_KEY) ?? "";
 }
 
@@ -60,9 +59,125 @@ function jsonInit(method: string, body: unknown): RequestInit {
     return { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) };
 }
 
-/** SSE 只能用 query 传令牌（EventSource 不能自定义 header）。 */
-export function sseUrl(path: string, since: number): string {
-    return `${path}${path.includes("?") ? "&" : "?"}since=${since}&token=${encodeURIComponent(token)}`;
+/** 服务端推送的实时信号（只包含界面要渲染的东西）。 */
+export type LiveFrame =
+    | { t: "text"; d: string }
+    | { t: "think"; on: boolean }
+    | { t: "end" };
+
+export interface EventStreamOptions {
+    onOpen?(): void;
+    /** 连接失败或断开（会自动重连） */
+    onError?(): void;
+    /** 普通消息帧（data 为原始字符串） */
+    onMessage?(data: string, seq: number): void;
+    /** 服务端要求重置时间轴：游标归零，调用方清空已有事件 */
+    onReset?(): void;
+    /** 实时信号：正在生成的正文 / 是否在思考 / 回合收尾（瞬态，不参与游标） */
+    onLive?(frame: LiveFrame): void;
+}
+
+/**
+ * 带 Authorization 的 SSE 客户端。
+ *
+ * 原生 EventSource 不能自定义请求头，只能把令牌塞进 URL —— 那会被缓存、写进历史、
+ * 带进 Referer。这里用 fetch + ReadableStream 自己解析 SSE 帧，令牌照常走 header。
+ * 断线后 1s 重连，用最后一次 `id:` 作 since 游标，语义与 EventSource 的 Last-Event-ID 一致。
+ */
+export function openEventStream(path: string, since: number, options: EventStreamOptions): { close(): void } {
+    let closed = false;
+    let cursor = since;
+    let controller: AbortController | null = null;
+
+    const dispatch = (frame: string): void => {
+        let id = -1;
+        let event = "message";
+        const data: string[] = [];
+        for (const line of frame.split("\n")) {
+            if (line.startsWith(":")) continue; // 注释/心跳
+            if (line.startsWith("id:")) id = Number(line.slice(3).trim());
+            else if (line.startsWith("event:")) event = line.slice(6).trim();
+            else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+        }
+        if (event === "reset") {
+            cursor = 0;
+            options.onReset?.();
+            return;
+        }
+        if (event === "live") {
+            try {
+                options.onLive?.(JSON.parse(data.join("\n")) as LiveFrame);
+            } catch {
+                // 半帧：忽略即可
+            }
+            return;
+        }
+        if (id >= 0) cursor = Math.max(cursor, id);
+        options.onMessage?.(data.join("\n"), id);
+    };
+
+    const run = async (): Promise<void> => {
+        while (!closed) {
+            controller = new AbortController();
+            try {
+                const url = `${path}${path.includes("?") ? "&" : "?"}since=${cursor}`;
+                const res = await fetch(url, {
+                    headers: { authorization: `Bearer ${token}`, accept: "text/event-stream" },
+                    signal: controller.signal,
+                });
+                if (res.status === 401) {
+                    options.onError?.();
+                    return; // 令牌不对，重连也没用；让上层弹登录框
+                }
+                if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+                options.onOpen?.();
+
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = "";
+                while (!closed) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+                    let boundary = buffer.indexOf("\n\n");
+                    while (boundary >= 0) {
+                        dispatch(buffer.slice(0, boundary));
+                        buffer = buffer.slice(boundary + 2);
+                        boundary = buffer.indexOf("\n\n");
+                    }
+                }
+            } catch {
+                // abort 或网络错误：下面统一按断开处理
+            }
+            if (closed) return;
+            options.onError?.();
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+    };
+
+    void run();
+    return {
+        close(): void {
+            closed = true;
+            controller?.abort();
+        },
+    };
+}
+
+/** 已取回的图片 blob URL：同一张图不重复下载。 */
+const assetUrls = new Map<string, string>();
+
+/** 用带 header 的 fetch 取图片，返回 blob URL（`<img>` 不能自带 Authorization）。 */
+export async function fetchAssetUrl(id: string): Promise<string | undefined> {
+    const cached = assetUrls.get(id);
+    if (cached) return cached;
+    const res = await fetch(`/api/assets/${encodeURIComponent(id)}`, {
+        headers: { authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return undefined;
+    const url = URL.createObjectURL(await res.blob());
+    assetUrls.set(id, url);
+    return url;
 }
 
 export const api = {
@@ -96,13 +211,13 @@ export const api = {
     createSession: (id: string, prompt?: string) =>
         request<{ sessionId: string }>(`/api/jobs/${id}/sessions`, jsonInit("POST", { prompt })),
 
-    /** 一次拉取历史事件；增量由 EventSource 接管。 */
+    /** 一次拉取历史事件；增量走 /live 长连接。 */
     listEvents: (jobId: string, sessionId: string, since: number) =>
         request<AgentEvent[]>(
-            `/api/jobs/${jobId}/events?sessionId=${encodeURIComponent(sessionId)}&since=${since}&format=json`,
+            `/api/jobs/${jobId}/events?sessionId=${encodeURIComponent(sessionId)}&since=${since}`,
         ),
     listJobEvents: (since: number) => request<Array<{ seq: number; jobId: string }>>(
-        `/api/jobs/events?since=${since}&format=json`,
+        `/api/jobs/events?since=${since}`,
     ),
 
     listMcpServers: () => request<McpServer[]>("/api/jobs/mcp/servers"),
