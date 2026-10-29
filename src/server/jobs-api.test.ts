@@ -13,7 +13,14 @@ const TOKEN = "job-token";
 /** 必须是真实存在的目录：创建任务时会被校验。 */
 const WORKSPACE = process.cwd();
 
-function stubHost(): SessionHost {
+/** 宿主侧的会话处置记录：谁被归档、谁被删除。 */
+interface HostState {
+    archived: string[];
+    deleted: string[];
+}
+
+/** archived/deleted 收集会话处置结果；isBusy 模拟「会话正在跑一轮」。 */
+function stubHost(state: HostState = { archived: [], deleted: [] }, isBusy = false): SessionHost {
     return {
         listActiveSessionIds: () => [],
         createSession: async () => ({ sessionId: "s-1" }),
@@ -22,23 +29,36 @@ function stubHost(): SessionHost {
         renameSession: async () => {},
         sendMessage: async () => ({}),
         abortSession: async () => true,
-        isSessionBusy: () => false,
+        isSessionBusy: () => isBusy,
+        closeSession: async (sessionId: string) => {
+            state.archived.push(sessionId);
+        },
+        deleteSession: async (sessionId: string) => {
+            state.deleted.push(sessionId);
+        },
         readSessionEventsSince: async () => [],
         subscribeEvents: () => () => {},
     } as unknown as SessionHost;
 }
 
-function serve(): { handle: HttpServerHandle; store: JobStore; runner: JobRunner } {
+function serve(options: { isBusy?: boolean } = {}): {
+    handle: HttpServerHandle;
+    store: JobStore;
+    runner: JobRunner;
+    archived: string[];
+    deleted: string[];
+} {
+    const state: HostState = { archived: [], deleted: [] };
     const store = new JobStore({ path: ":memory:" });
-    const runner = new JobRunner({ store, host: stubHost(), owner: "w1", tickMs: 60_000 });
+    const runner = new JobRunner({ store, host: stubHost(state), owner: "w1", tickMs: 60_000 });
     const handle = startHttpServer({
-        host: stubHost(),
+        host: stubHost(state),
         port: 0,
         token: TOKEN,
         heartbeatMs: 60_000,
-        jobs: { store, runner, host: stubHost(), heartbeatMs: 60_000 },
+        jobs: { store, runner, host: stubHost(state, options.isBusy), heartbeatMs: 60_000 },
     });
-    return { handle, store, runner };
+    return { handle, store, runner, archived: state.archived, deleted: state.deleted };
 }
 
 async function call(handle: HttpServerHandle, path: string, init: RequestInit = {}): Promise<Response> {
@@ -217,6 +237,68 @@ describe("jobs API 事件流", () => {
 });
 
 describe("jobs API 其它端点", () => {
+
+    test("归档卡片连带归档它名下的会话", async () => {
+        const { handle, store, archived } = serve();
+        try {
+            const { job } = store.create({ source: "t", input: { prompt: "a", workspace: WORKSPACE } });
+            store.addSession(job.id, "s-attempt", "attempt", 1);
+            store.addSession(job.id, "s-branch", "branch", 0);
+
+            const res = await call(handle, `/api/jobs/${job.id}/archive`, { method: "POST" });
+            expect(res.status).toBe(200);
+            expect(archived.sort()).toEqual(["s-attempt", "s-branch"]);
+        } finally {
+            await handle.stop();
+        }
+    });
+
+    test("删除卡片连带删除它名下的会话", async () => {
+        const { handle, store, archived, deleted } = serve();
+        try {
+            const { job } = store.create({ source: "t", input: { prompt: "a", workspace: WORKSPACE } });
+            store.addSession(job.id, "s-attempt", "attempt", 1);
+            store.addSession(job.id, "s-branch", "branch", 0);
+
+            const res = await call(handle, `/api/jobs/${job.id}`, { method: "DELETE" });
+            expect(res.status).toBe(200);
+            expect(deleted.sort()).toEqual(["s-attempt", "s-branch"]);
+            expect(archived).toEqual([]);
+            expect(store.get(job.id)).toBeUndefined();
+        } finally {
+            await handle.stop();
+        }
+    });
+
+    test("会话正在执行时卡片照常归档，只是跳过该会话", async () => {
+        const { handle, store, archived } = serve({ isBusy: true });
+        try {
+            const { job } = store.create({ source: "t", input: { prompt: "a", workspace: WORKSPACE } });
+            store.addSession(job.id, "s-busy", "attempt", 1);
+
+            const res = await call(handle, `/api/jobs/${job.id}/archive`, { method: "POST" });
+            expect(res.status).toBe(200);
+            expect(archived).toEqual([]);
+        } finally {
+            await handle.stop();
+        }
+    });
+
+    test("会话正在执行时拒绝删除卡片（不可逆操作不半途而废）", async () => {
+        const { handle, store, deleted } = serve({ isBusy: true });
+        try {
+            const { job } = store.create({ source: "t", input: { prompt: "a", workspace: WORKSPACE } });
+            store.addSession(job.id, "s-busy", "attempt", 1);
+
+            const res = await call(handle, `/api/jobs/${job.id}`, { method: "DELETE" });
+            expect(res.status).toBe(409);
+            expect(deleted).toEqual([]);
+            expect(store.get(job.id)).toBeDefined();
+        } finally {
+            await handle.stop();
+        }
+    });
+
     test("healthz 带上队列统计", async () => {
         const { handle, store } = serve();
         try {

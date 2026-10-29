@@ -79,6 +79,38 @@ function sessionEventSource(host: SessionHost, sessionId: string, jobId: string)
     };
 }
 
+/** 收集卡片名下的所有会话（历次执行 + 手动分支），卡片删除后 job_sessions 表就没了，须先取。 */
+function collectBoundSessionIds(ctx: JobsApiContext, jobId: string): string[] {
+    const ids = new Set<string>();
+    const job = ctx.store.get(jobId);
+    if (job?.sessionId) ids.add(job.sessionId);
+    for (const item of ctx.store.listSessions(jobId)) ids.add(item.sessionId);
+    return [...ids];
+}
+
+/**
+ * 对卡片名下的每个会话执行一次 action。
+ * 正在执行或锁在别处的会话跳过——卡片操作不能因为某个会话忙就整体失败。
+ */
+async function applyToBoundSessions(
+    ctx: JobsApiContext,
+    sessionIds: string[],
+    action: (sessionId: string) => Promise<void>,
+    label: string,
+): Promise<void> {
+    for (const sessionId of sessionIds) {
+        if (ctx.host.isSessionBusy(sessionId)) {
+            console.warn(`⚠️ [serve] 会话 ${sessionId} 正在执行，跳过${label}`);
+            continue;
+        }
+        try {
+            await action(sessionId);
+        } catch (error) {
+            console.warn(`⚠️ [serve] ${label}会话失败 ${sessionId}:`, error instanceof Error ? error.message : error);
+        }
+    }
+}
+
 function expandHome(value: string): string {
     if (value === "~") return os.homedir();
     if (value.startsWith("~/")) return path.join(os.homedir(), value.slice(2));
@@ -349,7 +381,10 @@ export async function handleJobsRoute(
         }
 
         if (sub === "archive" && req.method === "POST") {
-            return json(ctx.store.archiveJob(jobId));
+            const job = ctx.store.archiveJob(jobId);
+            // 归档卡片连带归档会话：会话是资产，只归档不删除
+            await applyToBoundSessions(ctx, collectBoundSessionIds(ctx, jobId), id => ctx.host.closeSession(id), "归档");
+            return json(job);
         }
 
         if (sub === "unarchive" && req.method === "POST") {
@@ -357,7 +392,14 @@ export async function handleJobsRoute(
         }
 
         if (!sub && req.method === "DELETE") {
+            const sessionIds = collectBoundSessionIds(ctx, jobId);
+            // 删除会话不可逆：有一个还在跑就整体拒绝，避免「卡片没了、会话还在」
+            if (sessionIds.some(id => ctx.host.isSessionBusy(id))) {
+                return fail("任务名下的会话仍在执行，先取消再删除", 409);
+            }
             ctx.store.deleteJob(jobId);
+            // 删除卡片连带删除会话（日志、快照、图片资产一并清掉）；卡片已删，失败只记日志
+            await applyToBoundSessions(ctx, sessionIds, id => ctx.host.deleteSession(id), "删除");
             return json({ deleted: true, id: jobId });
         }
 

@@ -331,6 +331,7 @@ export function CardDetail({
                     )}
                     {!isActive && (
                         <Button
+                            title="卡片从看板隐藏，运行过的会话也一并归档"
                             onClick={async () => {
                                 try {
                                     await api.archiveJob(job.id);
@@ -348,7 +349,7 @@ export function CardDetail({
                         <Button
                             variant="danger"
                             onClick={async () => {
-                                if (!window.confirm("删除这张卡片？评论与执行记录会一并删除（对话本身保留）。")) return;
+                                if (!window.confirm("删除这张卡片？评论、执行记录和它名下的会话都会被永久删除，不可恢复。")) return;
                                 try {
                                     await api.deleteJob(job.id);
                                     onClose();

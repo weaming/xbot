@@ -477,7 +477,7 @@ export class JobStore {
 
     /**
      * 彻底删除任务单：连带清掉它的评论、执行会话记录与状态事件。
-     * 只删 job 侧数据——zbot 的会话本身是资产，留在会话列表里仍可回看。
+     * 只删 job 侧数据——zbot 的会话本身是资产，由调用方先行归档（日志仍可回看）。
      */
     deleteJob(id: string): void {
         this.assertMutable(id, "删除");
