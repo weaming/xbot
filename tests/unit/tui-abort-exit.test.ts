@@ -77,7 +77,7 @@ function makeApp(agent = makeAgent()) {
 /** 拦截 process.exit，避免测试真的退出进程。 */
 async function runExit(app: any): Promise<{ order: string[] }> {
     const order: string[] = [];
-    app.drainTerminalInput = async () => { order.push("drain"); };
+    app.discardTerminalInput = async () => { order.push("drain"); };
     app.tui.stop = () => { order.push("stop"); };
     const originalExit = process.exit;
     (process as any).exit = () => { order.push("exit"); };

@@ -79,7 +79,8 @@ import {
 } from "../utils/user-question.js";
 
 import { getWheelLogFile } from "../utils/state-paths.js";
-import { drainPendingInput, installTerminalExitGuard } from "../utils/terminal-state.js";
+import { discardPendingInput } from "../utils/tty-input.js";
+import { installTerminalExitGuard } from "./terminal-state.js";
 import { ChatStore } from "./store.js";
 import { editorTheme, theme } from "./theme.js";
 import { setLogSession } from "../host/runtime-context.js";
@@ -3005,9 +3006,9 @@ export class ChatApp {
         process.exit(exitCode);
     }
 
-    /** 退出前排空 stdin 队列。抽成方法只为了让退出顺序可测（测试会替换掉它）。 */
-    async drainTerminalInput(): Promise<number> {
-        return await drainPendingInput({ maxMs: 400, idleMs: 60 });
+    /** 退出前丢弃 stdin 队列里的残留字节。抽成方法只为了让退出顺序可测（测试会替换掉它）。 */
+    async discardTerminalInput(): Promise<number> {
+        return await discardPendingInput({ maxMs: 400, idleMs: 60 });
     }
 
     private async exit(exitCode = 0): Promise<void> {
@@ -3040,7 +3041,7 @@ export class ChatApp {
         // 光标位置）不会再被解析，只能直接丢掉：留在队列里会被 shell 回显成一串 ^[ 垃圾。
         // 先 stop 再排空，顺序不能反：协议栈没弹时后续按键还会生成新的 CSI 序列。
         try {
-            await this.drainTerminalInput();
+            await this.discardTerminalInput();
         } catch (error) {
             console.error("⚠️ [TUI] 退出前排空终端输入失败:", error);
         }

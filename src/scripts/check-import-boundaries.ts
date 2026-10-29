@@ -6,6 +6,8 @@
  *   与宿主层（host）、格式化层（format）不得 import 任何前端；
  * - 两个前端（tui / server）互不 import，也都不 import cli；
  * - cli 是装配层，允许 import 任意层（唯一的跨层入口）。
+ * - 例外是前端入口 `cli/serve.ts`：它装配的是 server 前端，规则按 server 层算，
+ *   否则"serve 不碰任何 TUI 组件"就只是口头约定（见 FRONTEND_ENTRY_LAYERS）。
  *
  * 只检查项目内相对 import（`./x`、`../x`），跳过测试文件与外部包。
  */
@@ -41,6 +43,14 @@ export interface BoundaryViolation {
     from: string;
     to: string;
 }
+
+/**
+ * 前端入口按对应前端层校验：`cli/serve.ts` 是 server 前端的装配入口，
+ * 与 server/ 一样不得反向依赖 tui/ —— 否则"serve 不碰任何 TUI 组件"就没有守卫。
+ */
+const FRONTEND_ENTRY_LAYERS: Record<string, string> = {
+    "cli/serve.ts": "server",
+};
 
 /** 递归列出源文件，跳过 .d.ts 与测试文件。 */
 function listSourceFiles(dir: string): string[] {
@@ -81,7 +91,8 @@ export function checkImportBoundaries(srcRoot: string): BoundaryViolation[] {
     const violations: BoundaryViolation[] = [];
 
     for (const file of listSourceFiles(srcRoot)) {
-        const fromLayer = path.relative(srcRoot, file).split(path.sep)[0];
+        const relativePath = path.relative(srcRoot, file).split(path.sep).join("/");
+        const fromLayer = FRONTEND_ENTRY_LAYERS[relativePath] ?? relativePath.split("/")[0];
         const forbidden = LAYER_RULES[fromLayer!];
         if (!forbidden?.length) continue;
 

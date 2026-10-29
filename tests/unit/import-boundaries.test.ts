@@ -34,3 +34,29 @@ test("检查器能检出反向依赖（自测，防止空转）", () => {
         fs.rmSync(root, { recursive: true, force: true });
     }
 });
+
+test("serve 入口按 server 层校验，不得依赖 tui/", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-boundary-serve-"));
+    try {
+        fs.mkdirSync(path.join(root, "tui"));
+        fs.mkdirSync(path.join(root, "cli"));
+        fs.writeFileSync(path.join(root, "tui", "terminal-state.ts"), "export const reset = 1;\n");
+        fs.writeFileSync(
+            path.join(root, "cli", "serve.ts"),
+            'import { reset } from "../tui/terminal-state.js";\n',
+        );
+
+        const violations = checkImportBoundaries(root);
+
+        expect(violations).toEqual([
+            {
+                file: "cli/serve.ts",
+                specifier: "../tui/terminal-state.js",
+                from: "server",
+                to: "tui",
+            },
+        ]);
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
