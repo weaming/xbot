@@ -107,6 +107,11 @@ export interface SessionHost {
     /** 读该会话 seq > after 的持久化事件（客户端断线续传按游标补齐）。 */
     readSessionEventsSince(sessionId: string, after: number): Promise<AgentEvent[]>;
     /**
+     * 逆序取一页持久化事件：返回 seq < beforeSeq 的最后 count 条（升序）。
+     * 时间线首屏与上翻分页用它，避免为了最后一屏把整份日志都传到浏览器。
+     */
+    readSessionEventsBefore(sessionId: string, beforeSeq: number, count: number): Promise<AgentEvent[]>;
+    /**
      * 订阅持久化事件流：新增一条即推送一次，返回取消函数。
      * TUI 与 HTTP 前端共用同一份事实源，不需要各自轮询日志文件。
      * event 为 null 表示该会话时间轴被重置（truncate / delete），订阅者须丢弃已有游标。

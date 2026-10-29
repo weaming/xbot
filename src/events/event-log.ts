@@ -14,6 +14,10 @@ import type { AgentEvent, AgentEventPayloads, AgentEventType } from "./agent-eve
 const TAIL_WINDOW_BYTES = 8 * 1024;
 const TAIL_WINDOW_MAX_BYTES = 1024 * 1024;
 
+/** 事件分页回读窗口：首屏要的是一屏数据，从 64 KB 起翻倍；比逐行扫全文件快得多。 */
+const PAGE_WINDOW_BYTES = 64 * 1024;
+const PAGE_WINDOW_MAX_BYTES = 8 * 1024 * 1024;
+
 /**
  * 流式片段聚合窗口：每这么久把缓冲里的片段落盘一次，把逐 token 写降成批量写。
  * 只按时间触发即可——pending 文件在进程活着时没有读取方，缓冲上限就等于这个窗口内
@@ -330,6 +334,15 @@ export class EventLog {
         return pending.length === 0 ? events : events.concat(pending);
     }
 
+    /**
+     * 逆序取一页事件：返回 seq < beforeSeq 的最后 count 条，按 seq 升序。
+     * 只看主日志（HTTP 接口承诺的只有带唯一 seq 的持久化事实）。
+     */
+    async readBefore(sessionId: string, beforeSeq: number, count: number): Promise<AgentEvent[]> {
+        if (count <= 0) return [];
+        return readEventsBackward(this.eventFilePath(sessionId), beforeSeq, count);
+    }
+
     /** 截断日志到 upToSeq（时间点恢复 = 该点之后的未来全部作废）。 */
     async truncate(sessionId: string, upToSeq: number): Promise<void> {
         const filePath = this.eventFilePath(sessionId);
@@ -421,14 +434,79 @@ async function readLastSeqFromTail(filePath: string): Promise<number> {
     }
 }
 
-/** 解析一行事件取出 seq；空行或损坏行返回 undefined。 */
-function parseSeq(line: string | undefined): number | undefined {
+/** 解析一行事件；空行、损坏行与非法 seq 都返回 undefined。 */
+function parseEventLine(line: string | undefined): AgentEvent | undefined {
     if (!line || !line.trim()) return undefined;
     try {
         const event = JSON.parse(line) as AgentEvent;
-        return Number.isSafeInteger(event.seq) ? event.seq : undefined;
+        return Number.isSafeInteger(event.seq) ? event : undefined;
     } catch {
         return undefined;
+    }
+}
+
+/** 解析一行事件取出 seq；空行或损坏行返回 undefined。 */
+function parseSeq(line: string | undefined): number | undefined {
+    return parseEventLine(line)?.seq;
+}
+
+/**
+ * 从文件尾部逆序回读一页事件，返回升序结果。
+ *
+ * 收够 count 条之后还要再往前跨一个回合收尾（turn_commit）才停：切点落在回合边界上，
+ * 时间线首屏才不会以"半截回合"（孤立的工具结果）开头。文件里没有 turn_commit 时读到头为止。
+ */
+async function readEventsBackward(
+    filePath: string,
+    beforeSeq: number,
+    count: number,
+): Promise<AgentEvent[]> {
+    let handle: fs.promises.FileHandle;
+    try {
+        handle = await fs.promises.open(filePath, "r");
+    } catch (error: any) {
+        if (error?.code === "ENOENT") return [];
+        throw error;
+    }
+
+    try {
+        const { size } = await handle.stat();
+        let pos = size;
+        let window = PAGE_WINDOW_BYTES;
+        let rest = "";
+        const collected: AgentEvent[] = [];
+        let done = false;
+
+        while (pos > 0 && !done) {
+            const start = Math.max(0, pos - window);
+            const length = pos - start;
+            const buffer = Buffer.allocUnsafe(length);
+            const { bytesRead } = await handle.read(buffer, 0, length, start);
+            // rest 是上一轮剩下的半行（更早的字节还没读到），要拼在本轮文本前面
+            const text = buffer.subarray(0, bytesRead).toString("utf8") + rest;
+            const lines = text.split("\n");
+            // 窗口没覆盖到文件头时，首行很可能是被截断的半行，留给下一轮拼接
+            rest = start > 0 ? lines[0] : "";
+            const complete = start > 0 ? lines.slice(1) : lines;
+
+            for (let index = complete.length - 1; index >= 0; index--) {
+                const event = parseEventLine(complete[index]);
+                if (!event || event.seq >= beforeSeq) continue;
+                if (collected.length >= count && event.type === "turn_commit") {
+                    done = true;
+                    break;
+                }
+                collected.push(event);
+            }
+
+            pos = start;
+            window = Math.min(window * 2, PAGE_WINDOW_MAX_BYTES);
+        }
+
+        collected.reverse();
+        return collected;
+    } finally {
+        await handle.close();
     }
 }
 

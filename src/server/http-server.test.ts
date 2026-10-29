@@ -378,6 +378,29 @@ describe("http-server 事件流", () => {
         }
     });
 
+    test("SSE 帧的 data 省掉 seq 与 sessionId（分别在 id: 行与 URL 里）", async () => {
+        const stub = createStubHost({ history: [event(1)] });
+        const handle = serve(stub.host);
+        try {
+            const res = await call(handle, "/api/sessions/s1/live?since=0");
+            const frames = openFrameReader(res);
+            const [frame] = await frames.read(1);
+
+            expect(frame).toContain("id: 1");
+            const data = frame!.split("\n").find(line => line.startsWith("data: "))!.slice(6);
+            const payload = JSON.parse(data) as Record<string, unknown>;
+            expect(payload.seq).toBeUndefined();
+            expect(payload.sessionId).toBeUndefined();
+            // 其余字段照常下发
+            expect(payload.type).toBe("context_compacted");
+            expect(typeof payload.ts).toBe("string");
+
+            await frames.close();
+        } finally {
+            await handle.stop();
+        }
+    });
+
     test("SSE 先回放历史再推增量，且按 seq 去重", async () => {
         const stub = createStubHost({ history: [event(1), event(2)] });
         const handle = serve(stub.host);

@@ -19,6 +19,9 @@ import { Badge, Button, Field, Input, Tabs, Textarea } from "./ui";
 
 type TabKey = "props" | "sessions" | "comments";
 
+/** 时间线一页的事件条数：够铺几屏，又不至于为了首屏把整份日志传下来。 */
+const EVENT_PAGE_SIZE = 200;
+
 function formatTime(iso?: string): string {
     return iso ? new Date(iso).toLocaleString() : "";
 }
@@ -42,6 +45,10 @@ export function CardDetail({
     const [sessions, setSessions] = useState<JobSession[]>([]);
     const [activeSessionId, setActiveSessionId] = useState<string | null>(job.sessionId ?? null);
     const [events, setEvents] = useState<AgentEvent[]>([]);
+    /** 更早的事件还有没有、是不是正在拉：时间线首屏只取最后一页，上翻再补 */
+    const [older, setOlder] = useState({ hasMore: false, loading: false });
+    /** 上翻插入历史后要还原滚动位置：记录插入前的 scrollHeight / scrollTop */
+    const scrollAnchor = useRef<{ height: number; top: number } | null>(null);
     const [commentDraft, setCommentDraft] = useState("");
     /** 正在内联编辑的评论 id 与草稿；null 表示没有在编辑 */
     const [editingComment, setEditingComment] = useState<{ id: string; body: string } | null>(null);
@@ -105,11 +112,17 @@ export function CardDetail({
         }
         let cancelled = false;
         let stream: { close(): void } | null = null;
+        setOlder({ hasMore: false, loading: false });
+        scrollAnchor.current = null;
 
         void (async () => {
-            const history = await api.listEvents(job.id, activeSessionId, 0).catch(() => []);
+            // 首屏只要最后一页：长会话整份日志动辄上 MB，浏览器根本用不到全部
+            const history = await api
+                .listEvents(job.id, activeSessionId, 0, { limit: EVENT_PAGE_SIZE })
+                .catch(() => []);
             if (cancelled) return;
             setEvents(history);
+            setOlder({ hasMore: history.length >= EVENT_PAGE_SIZE, loading: false });
             // 打开或切换会话默认停在最新位置
             stickToBottom.current = true;
             const since = history.length > 0 ? history[history.length - 1].seq : 0;
@@ -117,10 +130,11 @@ export function CardDetail({
                 `/api/jobs/${job.id}/live?sessionId=${encodeURIComponent(activeSessionId)}`,
                 since,
                 {
-                    onMessage: data => {
+                    onMessage: (data, seq) => {
                         try {
                             const parsed = JSON.parse(data) as AgentEvent;
-                            setEvents(current => [...current, parsed]);
+                            // 服务端省了 seq（在 id: 行）与 sessionId（在 URL 里），这里补回来
+                            setEvents(current => [...current, { ...parsed, seq, sessionId: activeSessionId }]);
                         } catch {
                             // 半帧或未知格式：丢掉一帧即可，不必打断整条时间线
                         }
@@ -154,10 +168,43 @@ export function CardDetail({
         if (!node) return;
         const onScroll = (): void => {
             stickToBottom.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48;
+            // 滚到顶部就是"要看更早的"：正在拉或已经拉到头时不重复请求
+            if (node.scrollTop < 64) void loadOlder();
         };
         node.addEventListener("scroll", onScroll, { passive: true });
         return () => node.removeEventListener("scroll", onScroll);
-    }, [tab, activeSessionId]);
+    }, [tab, activeSessionId, events, older]);
+
+    /** 上翻一页：插入到已有事件之前，并把滚动位置钉在原处，视觉上不跳动。 */
+    async function loadOlder(): Promise<void> {
+        const oldest = events[0];
+        if (!activeSessionId || !oldest || older.loading || !older.hasMore) return;
+        setOlder(current => ({ ...current, loading: true }));
+        const node = timelineRef.current;
+        scrollAnchor.current = node ? { height: node.scrollHeight, top: node.scrollTop } : null;
+
+        const page = await api
+            .listEvents(job.id, activeSessionId, 0, { limit: EVENT_PAGE_SIZE, before: oldest.seq })
+            .catch(() => null);
+        if (!page) {
+            scrollAnchor.current = null;
+            setOlder(current => ({ ...current, loading: false }));
+            return;
+        }
+        // 少于一页说明已经到文件头，别让滚顶反复触发同一个请求
+        setOlder({ hasMore: page.length >= EVENT_PAGE_SIZE, loading: false });
+        if (page.length > 0) setEvents(current => [...page, ...current]);
+    }
+
+    // 上翻插入后还原滚动位置：插在前面会让内容整体下移，不补偿就会跳到别处
+    useEffect(() => {
+        const anchor = scrollAnchor.current;
+        if (!anchor) return;
+        scrollAnchor.current = null;
+        const node = timelineRef.current;
+        if (!node) return;
+        node.scrollTop = node.scrollHeight - anchor.height + anchor.top;
+    }, [events]);
 
     // 新消息与流式增量都跟着贴底，否则看不到正在生成的最后几行
     useEffect(() => {

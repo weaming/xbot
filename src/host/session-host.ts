@@ -502,6 +502,10 @@ export class LocalSessionHost implements SessionHost {
         return this.eventLog.read(sessionId, after + 1, undefined, { persistedOnly: true });
     }
 
+    async readSessionEventsBefore(sessionId: string, beforeSeq: number, count: number): Promise<AgentEvent[]> {
+        return this.eventLog.readBefore(sessionId, beforeSeq, count);
+    }
+
     subscribeEvents(listener: (sessionId: string, event: AgentEvent | null) => void): () => void {
         return this.eventLog.subscribe(listener);
     }

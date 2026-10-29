@@ -633,6 +633,76 @@ describe("EventLog", () => {
     });
 });
 
+describe("EventLog 逆序分页（时间线首屏）", () => {
+    /** 造 n 个回合：每回合 user_message + assistant 正文 + turn_commit，正文够长以跨读窗口。 */
+    async function seedTurns(log: EventLog, sessionId: string, n: number): Promise<void> {
+        await log.append(sessionId, "session_created", { cwd: tmpDir });
+        for (let index = 0; index < n; index++) {
+            const turnId = `T${index}`;
+            await log.append(sessionId, "user_message", { text: `问题 ${index}`, turnId, trigger: "user" });
+            await log.append(sessionId, "turn_message", {
+                turnId,
+                message: { role: "assistant", content: `回答 ${index} `.repeat(20) },
+            } as never);
+            await log.append(sessionId, "turn_commit", {
+                turnId,
+                messageIds: [],
+                interrupted: false,
+                usage: usage(),
+            } as never);
+        }
+    }
+
+    it("取最后 count 条，按 seq 升序，且顶部落在回合边界", async () => {
+        const log = new EventLog();
+        const sessionId = "page-tail";
+        await seedTurns(log, sessionId, 60);
+
+        const page = await log.readBefore(sessionId, Number.MAX_SAFE_INTEGER, 5);
+
+        expect(page.length).toBeGreaterThanOrEqual(5);
+        // 升序
+        expect(page.map(event => event.seq)).toEqual([...page.map(event => event.seq)].sort((a, b) => a - b));
+        // 页首必须是某个回合的起点（前一页的 turn_commit 之后），不能是半截回合
+        expect(["user_message", "session_created"]).toContain(page[0]!.type);
+    });
+
+    it("before 游标取更早一页，且与上一页不重叠", async () => {
+        const log = new EventLog();
+        const sessionId = "page-before";
+        await seedTurns(log, sessionId, 40);
+
+        const firstPage = await log.readBefore(sessionId, Number.MAX_SAFE_INTEGER, 5);
+        const secondPage = await log.readBefore(sessionId, firstPage[0]!.seq, 5);
+
+        expect(secondPage.length).toBeGreaterThan(0);
+        expect(secondPage[secondPage.length - 1]!.seq).toBeLessThan(firstPage[0]!.seq);
+        // 文件头：再往前应当是空页，而不是重复内容
+        const empty = await log.readBefore(sessionId, secondPage[0]!.seq, 1000);
+        expect(empty.length).toBeLessThanOrEqual(1000);
+        expect(empty.every(event => event.seq < secondPage[0]!.seq)).toBe(true);
+    });
+
+    it("日志不存在时返回空数组", async () => {
+        expect(await new EventLog().readBefore("missing-session", Number.MAX_SAFE_INTEGER, 10)).toEqual([]);
+    });
+
+    it("日志超过单个读窗口时跨越窗口拼接仍然正确", async () => {
+        const log = new EventLog();
+        const sessionId = "page-cross-window";
+        // 每回合 ~700 字节，400 回合约 280 KB，跨多个 64 KB 读窗口
+        await seedTurns(log, sessionId, 400);
+
+        const page = await log.readBefore(sessionId, Number.MAX_SAFE_INTEGER, 10);
+        const seqs = page.map(event => event.seq);
+
+        expect(page.length).toBeGreaterThanOrEqual(10);
+        expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
+        expect(new Set(seqs).size).toBe(seqs.length);
+        expect(["user_message", "session_created"]).toContain(page[0]!.type);
+    });
+});
+
 describe("standalone_turn replay", () => {
     it("standalone_turn 投影为独立 completed turn", async () => {
         const log = new EventLog();

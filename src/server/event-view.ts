@@ -183,3 +183,14 @@ export function toSessionEventViews(events: AgentEvent[]): SessionEventView[] {
     }
     return views;
 }
+
+/**
+ * SSE 帧的 data：省掉客户端本来就知道的两个字段。
+ * - `seq` 已经在 `id:` 行（断线续传的游标），data 里再放一份是纯冗余；
+ * - `sessionId` 在 URL 里（/sessions/:id/live、/jobs/:id/live?sessionId=）。
+ * 一帧省下约 50 字节，帧多时（长会话回放）就是可见的体积。
+ */
+export function toLiveEventPayload(view: SessionEventView): Omit<SessionEventView, "seq" | "sessionId"> {
+    const { seq: _seq, sessionId: _sessionId, ...rest } = view;
+    return rest;
+}

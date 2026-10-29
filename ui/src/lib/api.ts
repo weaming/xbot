@@ -112,8 +112,9 @@ export function openEventStream(path: string, since: number, options: EventStrea
             }
             return;
         }
+        // 没有 id: 的帧按 SSE 规范沿用上一个 id（服务端所有数据帧都带 id，这里只是兜底）
         if (id >= 0) cursor = Math.max(cursor, id);
-        options.onMessage?.(data.join("\n"), id);
+        options.onMessage?.(data.join("\n"), id >= 0 ? id : cursor);
     };
 
     const run = async (): Promise<void> => {
@@ -211,11 +212,18 @@ export const api = {
     createSession: (id: string, prompt?: string) =>
         request<{ sessionId: string }>(`/api/jobs/${id}/sessions`, jsonInit("POST", { prompt })),
 
-    /** 一次拉取历史事件；增量走 /live 长连接。 */
-    listEvents: (jobId: string, sessionId: string, since: number) =>
-        request<AgentEvent[]>(
-            `/api/jobs/${jobId}/events?sessionId=${encodeURIComponent(sessionId)}&since=${since}`,
-        ),
+    /**
+     * 拉取历史事件；增量走 /live 长连接。
+     * 带 page 时按「最近 limit 条（seq < before）」取一页，顶部对齐回合边界；
+     * 不带 page 时保持全量语义。
+     */
+    listEvents: (jobId: string, sessionId: string, since: number, page?: { limit: number; before?: number }) => {
+        const base = `/api/jobs/${jobId}/events?sessionId=${encodeURIComponent(sessionId)}&since=${since}`;
+        const query = page
+            ? `&limit=${page.limit}${page.before !== undefined ? `&before=${page.before}` : ""}`
+            : "";
+        return request<AgentEvent[]>(base + query);
+    },
     listJobEvents: (since: number) => request<Array<{ seq: number; jobId: string }>>(
         `/api/jobs/events?since=${since}`,
     ),

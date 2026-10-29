@@ -17,10 +17,12 @@ const WORKSPACE = process.cwd();
 interface HostState {
     archived: string[];
     deleted: string[];
+    /** /events?limit= 分页请求参数：验证接口把尾页语义传给了宿主。 */
+    pages: Array<{ sessionId: string; before: number; count: number }>;
 }
 
 /** archived/deleted 收集会话处置结果；isBusy 模拟「会话正在跑一轮」。 */
-function stubHost(state: HostState = { archived: [], deleted: [] }, isBusy = false): SessionHost {
+function stubHost(state: HostState = { archived: [], deleted: [], pages: [] }, isBusy = false): SessionHost {
     return {
         listActiveSessionIds: () => [],
         createSession: async () => ({ sessionId: "s-1" }),
@@ -37,6 +39,10 @@ function stubHost(state: HostState = { archived: [], deleted: [] }, isBusy = fal
             state.deleted.push(sessionId);
         },
         readSessionEventsSince: async () => [],
+        readSessionEventsBefore: async (sessionId: string, before: number, count: number) => {
+            state.pages.push({ sessionId, before, count });
+            return [];
+        },
         subscribeEvents: () => () => {},
     } as unknown as SessionHost;
 }
@@ -47,8 +53,9 @@ function serve(options: { isBusy?: boolean } = {}): {
     runner: JobRunner;
     archived: string[];
     deleted: string[];
+    pages: Array<{ sessionId: string; before: number; count: number }>;
 } {
-    const state: HostState = { archived: [], deleted: [] };
+    const state: HostState = { archived: [], deleted: [], pages: [] };
     const store = new JobStore({ path: ":memory:" });
     const runner = new JobRunner({ store, host: stubHost(state), owner: "w1", tickMs: 60_000 });
     const handle = startHttpServer({
@@ -58,7 +65,7 @@ function serve(options: { isBusy?: boolean } = {}): {
         heartbeatMs: 60_000,
         jobs: { store, runner, host: stubHost(state, options.isBusy), heartbeatMs: 60_000 },
     });
-    return { handle, store, runner, archived: state.archived, deleted: state.deleted };
+    return { handle, store, runner, archived: state.archived, deleted: state.deleted, pages: state.pages };
 }
 
 async function call(handle: HttpServerHandle, path: string, init: RequestInit = {}): Promise<Response> {
@@ -294,6 +301,38 @@ describe("jobs API 其它端点", () => {
             expect(res.status).toBe(409);
             expect(deleted).toEqual([]);
             expect(store.get(job.id)).toBeDefined();
+        } finally {
+            await handle.stop();
+        }
+    });
+
+    test("/events?limit= 取尾部一页，把 before 与条数交给宿主", async () => {
+        const { handle, store, pages } = serve();
+        try {
+            const { job } = store.create({ source: "t", input: { prompt: "a", workspace: WORKSPACE } });
+            store.attachSession(job.id, "s-run");
+
+            const res = await call(handle, `/api/jobs/${job.id}/events?limit=2&before=99`);
+            expect(res.status).toBe(200);
+            expect(pages).toEqual([{ sessionId: "s-run", before: 99, count: 2 }]);
+        } finally {
+            await handle.stop();
+        }
+    });
+
+    test("/events 的 limit 缺省时保持全量语义；非法值报 400", async () => {
+        const { handle, store, pages } = serve();
+        try {
+            const { job } = store.create({ source: "t", input: { prompt: "a", workspace: WORKSPACE } });
+            store.attachSession(job.id, "s-run");
+
+            const all = await call(handle, `/api/jobs/${job.id}/events`);
+            expect(all.status).toBe(200);
+            expect(pages).toEqual([]);
+
+            for (const query of ["limit=0", "limit=abc", "limit=2&before=-1"]) {
+                expect((await call(handle, `/api/jobs/${job.id}/events?${query}`)).status).toBe(400);
+            }
         } finally {
             await handle.stop();
         }

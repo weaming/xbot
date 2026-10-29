@@ -26,7 +26,8 @@ import { defaultMcpSelection, getMcpServersStatus } from "../mcp/client-manager.
 import { readMcpSelection } from "../tools/session-mcp-selection.js";
 import { toolCatalog } from "../tools/tool-catalog.js";
 import { fail, json, readJson } from "./respond.js";
-import { toSessionEventView, toSessionEventViews } from "./event-view.js";
+import { parseEventPage } from "./page-params.js";
+import { toLiveEventPayload, toSessionEventView, toSessionEventViews } from "./event-view.js";
 import { subscribeLive as subscribeLiveFrames } from "./live-stream.js";
 import { openSseStream, parseSseCursor, type SseSource } from "./sse.js";
 
@@ -63,7 +64,7 @@ function sessionEventSource(host: SessionHost, sessionId: string, jobId: string)
         label: `任务 ${jobId} 执行流`,
         readSince: async since =>
             toSessionEventViews(await host.readSessionEventsSince(sessionId, since))
-                .map(view => ({ seq: view.seq, payload: view })),
+                .map(view => ({ seq: view.seq, payload: toLiveEventPayload(view) })),
         subscribeLive: listener =>
             subscribeLiveFrames(sessionId, frame => listener({ event: "live", data: JSON.stringify(frame) })),
         subscribe: listener =>
@@ -74,7 +75,7 @@ function sessionEventSource(host: SessionHost, sessionId: string, jobId: string)
                     return;
                 }
                 const view = toSessionEventView(event);
-                if (view) listener({ seq: view.seq, payload: view });
+                if (view) listener({ seq: view.seq, payload: toLiveEventPayload(view) });
             }),
     };
 }
@@ -528,6 +529,13 @@ export async function handleJobsRoute(
             if ("error" in cursor) return fail(cursor.error, 400);
             // 名字区分职责：/events 一次性 JSON，/live 长连接（含实时增量）
             if (sub === "events") {
+                // 带 limit 时取尾部一页（首屏与上翻），否则维持全量
+                const page = parseEventPage(url);
+                if ("error" in page) return fail(page.error, 400);
+                if (page.limit !== undefined) {
+                    const events = await ctx.host.readSessionEventsBefore(sessionId, page.before, page.limit);
+                    return json(toSessionEventViews(events));
+                }
                 return json(toSessionEventViews(await ctx.host.readSessionEventsSince(sessionId, cursor.since)));
             }
             return openSseStream(

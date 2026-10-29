@@ -17,9 +17,10 @@ import {
     type SessionHost,
 } from "../host/session-host-types.js";
 import { handleJobsRoute, type JobsApiContext } from "./jobs-api.js";
+import { parseEventPage } from "./page-params.js";
 import { enqueueInput, pendingStats, takeInputs } from "./pending-inputs.js";
 import { fail, json, readJson } from "./respond.js";
-import { toSessionEventView, toSessionEventViews } from "./event-view.js";
+import { toLiveEventPayload, toSessionEventView, toSessionEventViews } from "./event-view.js";
 import { subscribeLive as subscribeLiveFrames } from "./live-stream.js";
 import { openSseStream, parseSseCursor, type SseSource } from "./sse.js";
 import { renderUiPage } from "./ui.js";
@@ -162,7 +163,7 @@ function sessionEventSource(host: SessionHost, sessionId: string): SseSource {
         label: `会话 ${sessionId}`,
         readSince: async since =>
             toSessionEventViews(await host.readSessionEventsSince(sessionId, since))
-                .map(view => ({ seq: view.seq, payload: view })),
+                .map(view => ({ seq: view.seq, payload: toLiveEventPayload(view) })),
         subscribeLive: listener =>
             subscribeLiveFrames(sessionId, frame => listener({ event: "live", data: JSON.stringify(frame) })),
         subscribe: listener =>
@@ -173,7 +174,7 @@ function sessionEventSource(host: SessionHost, sessionId: string): SseSource {
                     return;
                 }
                 const view = toSessionEventView(event);
-                if (view) listener({ seq: view.seq, payload: view });
+                if (view) listener({ seq: view.seq, payload: toLiveEventPayload(view) });
             }),
     };
 }
@@ -218,7 +219,8 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
                 "POST /api/sessions {cwd?, title?}",
                 "GET  /api/sessions/:id",
                 "GET  /api/sessions/:id/events?since=<seq>（一次性 JSON）",
-                "GET  /api/sessions/:id/live?since=<seq>（SSE 长连接）",
+                "GET  /api/sessions/:id/events?limit=<n>&before=<seq>（取尾部一页，回落回合边界）",
+                "GET  /api/sessions/:id/live?since=<seq>（SSE；data 省略 seq 与 sessionId）",
                 "POST /api/sessions/:id/messages {text, wait?}",
                 "POST /api/sessions/:id/cancel",
                 ...(jobs
@@ -324,9 +326,16 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
                 }
 
                 // 会话事件：一次性 JSON 用 /events，长连接用 /live —— 名字上就分开
+                // /events 支持 ?limit=&before= 取尾部一页（首屏与上翻），不带 limit 则仍是全量
                 if (action === "events" && req.method === "GET") {
                     const cursor = parseSseCursor(req, url);
                     if ("error" in cursor) return fail(cursor.error, 400);
+                    const page = parseEventPage(url);
+                    if ("error" in page) return fail(page.error, 400);
+                    if (page.limit !== undefined) {
+                        const events = await host.readSessionEventsBefore(sessionId, page.before, page.limit);
+                        return json(toSessionEventViews(events));
+                    }
                     return json(toSessionEventViews(await host.readSessionEventsSince(sessionId, cursor.since)));
                 }
 
