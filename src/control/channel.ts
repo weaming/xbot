@@ -17,6 +17,7 @@ import { getSocketPath } from "./paths.js";
 import { createPeerMessage, isCancelledStopReason, type PeerMessage, type PeerResult } from "./protocol.js";
 import { listOwnership, probeOwnership, type PeerOwnership } from "./registry.js";
 import { PeerServer } from "./server.js";
+import type { SessionOrigin } from "../types/session.js";
 
 /** `session_send` 的失败原因：只有 unreachable 表示目标不在线，busy 由调用方决定是否重试。 */
 export type PeerSendError = "unreachable" | "busy" | "internal";
@@ -53,7 +54,7 @@ export interface SessionControlHost {
     /** 是否正在跑 turn。 */
     isBusy(sessionId: string): boolean;
     /** 新建一个空会话（只进内存，不落盘）；cwd 缺省用宿主默认目录。 */
-    createSession(cwd?: string): Promise<{ sessionId: string }>;
+    createSession(cwd?: string, init?: { origin?: SessionOrigin }): Promise<{ sessionId: string }>;
     /** 会话绑定的工作目录（派生新会话时继承父会话）。 */
     sessionCwd(sessionId: string): Promise<string>;
     /** 子会话已建立并认领：宿主把它加进会话列表 / 固化标题。 */
@@ -250,7 +251,7 @@ export class SessionControl {
         }
 
         const cwd = await this.host.sessionCwd(parentSessionId);
-        const { sessionId } = await this.host.createSession(cwd);
+        const { sessionId } = await this.host.createSession(cwd, { origin: "tool" });
 
         const claimed = await this.claim(sessionId);
         if (!claimed.ok) {

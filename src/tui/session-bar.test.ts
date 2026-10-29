@@ -99,6 +99,17 @@ describe("会话条渲染", () => {
         expect(plain(text)).toContain("修复");
     });
 
+    test("任务会话的标题前带 ⚑，且不撑破等宽排版", () => {
+        const job = { sessionId: "01A", title: "跑测试", messageCount: 0, busy: false, active: true, origin: "job" as const };
+        const text = renderSessionTab(job, 18, "⠋", 1);
+
+        expect(visibleWidth(text)).toBe(18);
+        expect(plain(text)).toContain("⚑ 跑测试");
+        // 交互终端建的会话不标记：常态不该逐行占宽
+        const user = { sessionId: "01B", title: "跑测试", messageCount: 0, busy: false, active: false, origin: "user" as const };
+        expect(plain(renderSessionTab(user, 18, "⠋", 2))).not.toContain("⚑");
+    });
+
     test("运行中优先于选中：当前会话生成时同样显示转圈帧", () => {
         const busyActive = { sessionId: "01A", title: "运行中", messageCount: 0, busy: true, active: true };
         const idleActive = { sessionId: "01B", title: "空闲", messageCount: 0, busy: false, active: true };

@@ -4,8 +4,10 @@
  */
 
 import { sliceByColumn, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import { originPrefix } from "../format/session-origin.js";
 import { DEFAULT_SPINNER, sessionMarker } from "./session-marker.js";
 import { SESSION_NEW_URL, SESSION_PANEL_URL, wrapAppLink, wrapTabLink } from "./slash-commands.js";
+import type { SessionOrigin } from "../types/session.js";
 
 /** 单个 tab 的最大列宽：调大则一行放得更少，等宽与美观不受影响。 */
 export const TAB_WIDTH_CAP = 20;
@@ -20,6 +22,8 @@ const TAB_FIXED_WIDTH = 6;
 
 export interface SessionBarTab {
     sessionId: string;
+    /** 会话来源：`job`（任务会话）在标题前加 ⚑ 标记。 */
+    origin?: SessionOrigin;
     title?: string;
     messageCount: number;
     busy: boolean;
@@ -99,7 +103,7 @@ export function renderSessionTab(tab: SessionBarTab, tabWidth: number, spinner: 
         count = "";
         titleWidth = tabWidth - TAB_FIXED_WIDTH;
     }
-    const title = truncatePlain(tab.title ?? "", titleWidth);
+    const title = truncatePlain(`${originPrefix(tab.origin)}${tab.title ?? ""}`, titleWidth);
     const text = ` ${label} ${marker} ${title}${count} `;
     return padTo(text, tabWidth, "right");
 }

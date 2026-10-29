@@ -5,7 +5,7 @@
 
 import type { UsageInfo } from "../types/chat.js";
 import type { ChatModelSelection } from "../types/chat-model.js";
-import type { Citation } from "../types/session.js";
+import type { Citation, SessionOrigin } from "../types/session.js";
 
 export interface UiMessage {
     id: number;
@@ -81,6 +81,8 @@ export interface ToolBlock {
 
 export interface SessionView {
     sessionId: string;
+    /** 会话来源：`job`（任务跑出来的会话）在会话条/面板标题前显示 ⚑。 */
+    origin?: SessionOrigin;
     /** 会话绑定的工作目录（来自会话摘要），会话面板的目录列据此标识来源。 */
     cwd?: string;
     messageCount: number;

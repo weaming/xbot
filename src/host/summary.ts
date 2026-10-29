@@ -15,6 +15,7 @@ export function summarizeEvents(sessionId: string, events: AgentEvent[]): Sessio
     let updatedAt: string | undefined;
     let archived = false;
     let modelSelection: SessionSummary["modelSelection"];
+    let origin: SessionSummary["origin"];
     let cwd: string | undefined;
 
     for (const event of events) {
@@ -33,11 +34,13 @@ export function summarizeEvents(sessionId: string, events: AgentEvent[]): Sessio
         if (event.type === "session_renamed") renamedTitle = event.payload.title;
         if (event.type === "model_selected") modelSelection = event.payload;
         if (event.type === "session_created") cwd = event.payload.cwd;
+        if (event.type === "session_created" && event.payload.origin) origin = event.payload.origin;
         if (event.type === "session_cwd_changed") cwd = event.payload.cwd;
     }
 
     return {
         sessionId,
+        ...(origin ? { origin } : {}),
         ...(cwd ? { cwd } : {}),
         updatedAt,
         messageCount,

@@ -21,9 +21,11 @@ import { handlePanelScroll } from "./panel-scroll.js";
 import { padColumns, truncatePlain } from "../format/text.js";
 import { abbreviatePath } from "../format/path.js";
 import { composeSessionRow, planSessionRows, type SessionRow } from "./session-row.js";
+import { originPrefix } from "../format/session-origin.js";
 import { DEFAULT_SPINNER, sessionMarker, type SessionOwnerState } from "./session-marker.js";
 import { selectListTheme, theme } from "./theme.js";
 import { formatRelativeTime } from "../utils/time.js";
+import type { SessionOrigin } from "../types/session.js";
 
 /** 面板列表一次最多显示的行数（超出滚动）。 */
 const MAX_VISIBLE = 10;
@@ -37,6 +39,8 @@ const LEFT_PAD = " ";
 
 export interface SessionPanelItem {
     sessionId: string;
+    /** 会话来源：`job`（任务会话）的标题前加 ⚑ 标记。 */
+    origin?: SessionOrigin;
     title?: string;
     /** 会话绑定的工作目录：多仓库并行时靠它区分同名会话。 */
     cwd?: string;
@@ -355,7 +359,7 @@ export class SessionPanel implements Component {
                 { archived: item.archived, busy: item.busy, active: item.active, question: item.question, owner: item.ownerState },
                 this.spinner,
             ),
-            title: flattenTitle(item) || item.sessionId.slice(0, 8),
+            title: `${originPrefix(item.origin)}${flattenTitle(item) || item.sessionId.slice(0, 8)}`,
             rounds: `${item.messageCount}轮`,
             time: formatRelativeTime(item.updatedAt),
             ...(cwd ? { cwd } : {}),

@@ -56,7 +56,7 @@ import type {
     SessionReleaseCause,
     SessionHost,
     SessionHostOptions,
-    SessionMcpInit,
+    SessionCreateInit,
     SessionSummary,
     TurnSpec,
     TurnUserMessage,
@@ -161,7 +161,7 @@ export class LocalSessionHost implements SessionHost {
         const host: SessionControlHost = {
             title: (sessionId) => this.activeSessions.get(sessionId)?.session.title,
             isBusy: (sessionId) => this.isSessionBusy(sessionId),
-            createSession: (cwd) => this.createSession(cwd),
+            createSession: (cwd, init) => this.createSession(cwd, init),
             sessionCwd: (sessionId) => this.getSessionCwd(sessionId),
             onSessionSpawned: (sessionId, title) => this.onSessionSpawned?.(sessionId, title),
             archiveSpawnedSession: async (sessionId, automatic) => {
@@ -457,15 +457,15 @@ export class LocalSessionHost implements SessionHost {
         }
     }
 
-    async createSession(cwd?: string, mcp?: SessionMcpInit): Promise<{ sessionId: string }> {
+    async createSession(cwd?: string, init?: SessionCreateInit): Promise<{ sessionId: string }> {
         const sessionId = createUlid();
         // 缺省 cwd 固定为宿主启动目录；会话 cwd 会随后续切换变化，不能作为新建会话默认值。
-        const session = createEmptySession(sessionId, cwd ?? this.startupCwd);
+        const session = createEmptySession(sessionId, cwd ?? this.startupCwd, init?.origin);
         this.activeSessions.set(sessionId, { session, lastSeq: 0 });
         // MCP 选中集必须在会话交出去之前写好：先建后设会留下一个"工具还不全"的窗口，
         // 无人的任务会话可能正好在这个窗口里发出第一轮请求。
-        if (mcp?.selectedServers !== undefined) {
-            await this.setSessionLazyMcpServers(sessionId, mcp.selectedServers);
+        if (init?.selectedServers !== undefined) {
+            await this.setSessionLazyMcpServers(sessionId, init.selectedServers);
         }
         return { sessionId };
     }

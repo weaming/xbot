@@ -457,7 +457,10 @@ export async function handleJobsRoute(
 
                 // 与调度器建会话保持同一口径：勾选的 MCP 直接生效，没勾就把 lazy 服务全加载
                 const selection = job.input.mcpServers ?? defaultMcpSelection();
-                const created = await ctx.host.createSession(job.input.workspace, { selectedServers: selection });
+                const created = await ctx.host.createSession(job.input.workspace, {
+                    selectedServers: selection,
+                    origin: "job",
+                });
                 const claim = await ctx.host.claimSession(created.sessionId, { noNegotiate: true });
                 if (!claim.ok) return fail("会话认领失败，请稍后重试", 409);
 

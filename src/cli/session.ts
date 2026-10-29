@@ -18,6 +18,7 @@ import { listSavedSessionIds } from "../events/session-files.js";
 import { SessionReplay } from "../events/session-replay.js";
 import { summarizeEvents } from "../host/summary.js";
 import { abbreviatePath } from "../format/path.js";
+import { describeOrigin } from "../format/session-origin.js";
 import { padColumns, truncatePlain } from "../format/text.js";
 import { sortSessions, type SessionOrderItem } from "../utils/session-order.js";
 import { formatRelativeTime } from "../utils/time.js";
@@ -425,6 +426,7 @@ async function runShow(command: ShowCommand, write: (text: string) => void): Pro
             sessionId,
             title: title ?? null,
             cwd: cwd ?? null,
+            origin: summary?.origin ?? session.origin ?? null,
             ...toJsonOwnership(ownership),
             archived: summary?.archived === true,
             ...(corrupted ? { corrupted: true } : {}),
@@ -448,6 +450,7 @@ async function runShow(command: ShowCommand, write: (text: string) => void): Pro
         `会话   ${sessionId}`,
         `标题   ${title ?? "（未命名）"}`,
         `目录   ${cwd ? abbreviatePath(cwd, process.env.HOME, CWD_COLUMNS) : "（未知）"}`,
+        `来源   ${describeOrigin(summary?.origin ?? session.origin)}`,
         `状态   ${describePeerOwnership(sessionId, ownership ?? { state: "free" })}${summary?.archived ? " · 已归档" : ""}`,
         `轮数   ${session.turns.length}（压缩 ${session.compactCount} 次）`,
         `更新   ${formatTimestamp(updatedAt)}`,
@@ -470,7 +473,7 @@ async function runNew(command: NewCommand, write: (text: string) => void): Promi
     const title = command.title ? cleanTitle(command.title) : undefined;
 
     const sessionId = createUlid();
-    await eventLog.append(sessionId, "session_created", { cwd });
+    await eventLog.append(sessionId, "session_created", { cwd, origin: "user" });
     if (title) await eventLog.append(sessionId, "session_renamed", { title });
 
     if (command.json) {
@@ -676,6 +679,7 @@ function toJsonRow(row: SessionListRow): Record<string, unknown> {
         sessionId: summary.sessionId,
         title: summary.title ?? null,
         cwd: summary.cwd ?? null,
+        origin: summary.origin ?? null,
         turns: summary.messageCount,
         createdAt: row.createdAt ?? null,
         updatedAt: summary.updatedAt ?? null,
@@ -699,12 +703,13 @@ function toJsonOwnership(ownership?: PeerOwnership): { status: string; holderPid
 
 // ── 展示 ─────────────────────────────────────────────────────
 
-const TABLE_HEADERS = ["状态", "ID", "轮数", "更新", "目录", "标题"];
+const TABLE_HEADERS = ["状态", "ID", "来源", "轮数", "更新", "目录", "标题"];
 
 export function formatTable(rows: SessionListRow[]): string[] {
     const body = rows.map(row => [
         formatStatusCell(row),
         shortSessionId(row.summary.sessionId),
+        describeOrigin(row.summary.origin),
         `${row.summary.messageCount}轮`,
         formatRelativeTime(row.summary.updatedAt),
         abbreviatePath(row.summary.cwd ?? "", process.env.HOME, CWD_COLUMNS) || "-",

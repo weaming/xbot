@@ -301,6 +301,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
                         const body = (await readJson(req)) ?? {};
                         const { sessionId } = await host.createSession(
                             typeof body.cwd === "string" ? body.cwd : undefined,
+                            { origin: "web" },
                         );
                         if (typeof body.title === "string" && body.title.trim()) {
                             await host.renameSession(sessionId, body.title);

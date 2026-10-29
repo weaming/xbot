@@ -131,6 +131,11 @@ describe("summarizeEvents 会话更新时间", () => {
         expect(summary.cwd).toBe("/opt/work");
     });
 
+    test("来源取自 session_created；老日志没有该字段时摘要不带 origin", () => {
+        expect(summarizeEvents("s", [eventOf("session_created", at(0), { cwd: "/tmp", origin: "job" })]).origin).toBe("job");
+        expect(summarizeEvents("s", [eventOf("session_created", at(0), { cwd: "/tmp" })]).origin).toBeUndefined();
+    });
+
     test("注水多但无用户活动的会话不会排到活跃会话前面", () => {
         const idle = summarizeEvents("idle", [created(0), injected(50), injected(55)]);
         const active = summarizeEvents("active", [created(0), eventOf("user_message", at(30), { text: "在跑", turnId: "t1", trigger: "user" })]);

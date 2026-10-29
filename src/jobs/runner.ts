@@ -324,7 +324,10 @@ export class JobRunner {
         // 勾选即选中：选中集决定这轮下发哪些 MCP 工具，lazy 只影响「默认选中」。
         // 未勾选时用默认集合（= 配置里没标 lazy 的服务），在建会话时一次写好。
         const selection = job.input.mcpServers ?? defaultMcpSelection();
-        const created = await this.host.createSession(job.input.workspace, { selectedServers: selection });
+        const created = await this.host.createSession(job.input.workspace, {
+            selectedServers: selection,
+            origin: "job",
+        });
         const claim = await this.host.claimSession(created.sessionId, { noNegotiate: true });
         if (!claim.ok) throw new Error(`会话认领失败：${claim.reason}`);
         await this.host.renameSession(created.sessionId, titleOf(job.input.prompt));

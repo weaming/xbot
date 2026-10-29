@@ -7,7 +7,7 @@ import type { UIEvent } from "../events/ui-events.js";
 import type { AgentEvent, AgentEventPayloads } from "../events/agent-events.js";
 import type { ClaimResult } from "../control/channel.js";
 import type { PeerOwnership } from "../control/registry.js";
-import type { Session } from "../types/session.js";
+import type { Session, SessionOrigin } from "../types/session.js";
 import type { ToolCall } from "../types/tool-call.js";
 import type { LLMRequestKind } from "../utils/logger.js";
 import type { ImageAssetRef, UserMessageInput } from "../types/image.js";
@@ -48,6 +48,8 @@ export interface SessionHostOptions {
 
 export interface SessionSummary {
     sessionId: string;
+    /** 会话来源（谁建的）；老会话缺失时按 user 理解。 */
+    origin?: SessionOrigin;
     /** 会话绑定的工作目录（取自 session_created 事件），面板用于区分同名会话。 */
     cwd?: string;
     createdAt?: string;
@@ -81,19 +83,21 @@ export interface InstanceNetworkStats {
 export type SessionReleaseCause = "peer" | "user" | "tool" | "auto" | "archive" | "delete";
 
 /**
- * 新建会话时的 MCP 选中集：决定这次会话下发哪些 MCP 服务器的工具。
+ * 新建会话的初始化参数：MCP 选中集 + 来源。
  *
- * `undefined` = 没有初值（沿用会话已有的选中集，老会话等于"不限制"）；
+ * selectedServers：`undefined` = 没有初值（沿用会话已有的选中集，老会话等于"不限制"）；
  * 空数组 = 明确一个都不选。配置里的 `lazy` 只影响调用方给的默认值，这里只认选中集。
+ * origin：缺省视为 user（交互终端）。
  */
-export interface SessionMcpInit {
+export interface SessionCreateInit {
     selectedServers?: string[];
+    origin?: SessionOrigin;
 }
 
 export interface SessionHost {
     onEvent?: (requestId: number, sessionId: string, event: UIEvent) => void;
-    /** 新建会话（内存态，未认领）；cwd 缺省用 TUI 启动目录，mcp 缺省表示不额外初始化。 */
-    createSession(cwd?: string, mcp?: SessionMcpInit): Promise<{ sessionId: string }>;
+    /** 新建会话（内存态，未认领）；cwd 缺省用 TUI 启动目录，init 缺省表示不额外初始化。 */
+    createSession(cwd?: string, init?: SessionCreateInit): Promise<{ sessionId: string }>;
     listSessions(): Promise<SessionSummary[]>;
     /** 本进程内存里正在使用的会话 id（清理时必须跳过，避免删掉活跃会话）。 */
     listActiveSessionIds(): string[];

@@ -3,6 +3,12 @@ type ToolResultMode = 'adaptive' | 'full';
 /** 会话标题长度上限（renameSession 与命令行共用）。 */
 export const MAX_SESSION_TITLE_LENGTH = 200;
 
+/**
+ * 会话来源：谁建的。只用于区分「任务跑出来的会话」与「人开的会话」，
+ * 不参与会话运行语义；老会话没有该字段时视为 user。
+ */
+export type SessionOrigin = "user" | "web" | "job" | "tool";
+
 export interface ToolResultPolicy {
     mode: ToolResultMode;
 }
@@ -68,6 +74,8 @@ interface ContextState {
 
 export interface Session {
     sessionId: string; // ULID，会话唯一标识
+    /** 会话来源（建会话的一方）；老会话缺省视为 user。 */
+    origin?: SessionOrigin;
     /** 会话绑定的工作目录：新会话取创建时当前工具目录；旧数据无记录时回退当前工具目录。恢复/切换会话时作为工具执行与路径渲染基准。 */
     cwd: string;
     /** 会话标题：显式重命名优先，否则取首条用户消息；tab 展示用。 */

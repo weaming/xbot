@@ -2002,7 +2002,10 @@ export class ChatApp {
     private async createSessionSilently(): Promise<string> {
         // 与 serve 同一口径：默认选中集（= 配置里没标 lazy 的服务）在建会话时一次写好，
         // 之后 /mcp 的切换决定下发，执行期不再回头看 lazy 配置
-        const { sessionId } = await this.agent.createSession(undefined, { selectedServers: defaultMcpSelection() });
+        const { sessionId } = await this.agent.createSession(undefined, {
+            selectedServers: defaultMcpSelection(),
+            origin: "user",
+        });
         // 新建即认领：自己的空会话不会与别的实例冲突，失败只可能是极端情况
         await this.agent.claimSession(sessionId);
         // 未落盘前 listSessions 看不到它，cwd 只能就地补上，否则面板目录列会缺一格
@@ -2555,6 +2558,7 @@ export class ChatApp {
             const ownership = this.describeSessionOwner(session.sessionId);
             return {
                 sessionId: session.sessionId,
+                ...(session.origin ? { origin: session.origin } : {}),
                 title: session.title,
                 cwd: session.cwd,
                 messageCount: session.messageCount,
@@ -2958,6 +2962,7 @@ export class ChatApp {
         return this.claimedSessions()
             .map((session) => ({
                 sessionId: session.sessionId,
+                ...(session.origin ? { origin: session.origin } : {}),
                 title: session.title,
                 messageCount: session.messageCount,
                 busy: this.turnState.isBusy(session.sessionId),

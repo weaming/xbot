@@ -10,7 +10,7 @@ import { getSessionsDir, getStartupToolCwd, getToolCwd } from "../utils/runtime-
 import { createUlid } from "../utils/ulid.js";
 import { appendCompletedTurn, appendInterruptedTurn, appendStandaloneTurn, replaceWithCompactedContext } from "../utils/conversation-history.js";
 import { repairEmptyAssistantHistory } from "../utils/conversation-history-repair.js";
-import type { ChatMessage, Session } from "../types/session.js";
+import type { ChatMessage, Session, SessionOrigin } from "../types/session.js";
 import type { AgentEvent, AgentEventPayloads } from "./agent-events.js";
 import type { UsageInfo } from "../types/chat.js";
 import type { UserMessageInput } from "../types/image.js";
@@ -158,6 +158,7 @@ export class SessionReplay {
         if ((await this.eventLog.lastSeq(session.sessionId)) === 0) {
             await this.eventLog.append(session.sessionId, "session_created", {
                 cwd: session.cwd,
+                ...(session.origin ? { origin: session.origin } : {}),
             });
         }
         if (writeUserMessages) {
@@ -320,6 +321,10 @@ export function eventCwd(event: AgentEvent): string | undefined {
 function applyEvent(session: Session, event: AgentEvent): void {
     switch (event.type) {
         case "session_created":
+            if (event.payload.origin) session.origin = event.payload.origin;
+            // 事件为事实源；旧事件无 cwd 字段时归一到启动目录（不能继承当前选中会话的 cwd）
+            session.cwd = eventCwd(event) ?? getStartupToolCwd();
+            break;
         case "session_cwd_changed":
             // 事件为事实源；旧事件无 cwd 字段时归一到启动目录（不能继承当前选中会话的 cwd）
             session.cwd = eventCwd(event) ?? getStartupToolCwd();
@@ -372,10 +377,11 @@ function rememberPromptTokens(session: Session, usage?: UsageInfo): void {
 }
 
 /** 新会话工厂：cwd 默认当前工具目录。 */
-export function createEmptySession(sessionId: string, cwd = getToolCwd()): Session {
+export function createEmptySession(sessionId: string, cwd = getToolCwd(), origin?: SessionOrigin): Session {
     const timestamp = new Date().toISOString();
     return {
         sessionId,
+        ...(origin ? { origin } : {}),
         cwd,
         contextEpochId: createUlid(),
         turns: [],
