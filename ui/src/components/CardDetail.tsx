@@ -550,9 +550,9 @@ export function CardDetail({
                                             排队中 请求 {pending.request} · 回合 {pending.turn}
                                         </span>
                                     )}
-                                    <Button onClick={() => void sendInput("turn")}>结束后</Button>
+                                    <Button onClick={() => void sendInput("turn")}>排队</Button>
                                     <Button variant="primary" onClick={() => void sendInput("request")}>
-                                        发送
+                                        尽快处理
                                     </Button>
                                 </div>
                             </div>

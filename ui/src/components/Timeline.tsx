@@ -75,7 +75,6 @@ function UserMessage({ event, isFirst }: { event: AgentEvent; isFirst: boolean }
                     <span className="rounded bg-accent/15 px-1.5 py-0.5 text-accent">会话间</span>
                 )}
                 {imageCount > 0 && <span>🖼 {imageCount}</span>}
-                <span>你</span>
             </div>
             <div className="max-w-[85%] rounded-lg rounded-tr-sm bg-accent/10 px-3 py-2 text-sm break-words whitespace-pre-wrap">
                 {event.payload.text}
@@ -106,8 +105,22 @@ function Thinking() {
     return <div className="text-xs text-muted">🧠 思考中</div>;
 }
 
-function ToolCall({ name, summary, args }: { name: string; summary: string; args?: string }) {
+function ToolCall({
+    name,
+    summary,
+    args,
+    durationMs,
+    resultSize,
+}: {
+    name: string;
+    summary: string;
+    args?: string;
+    /** 该工具调用的结果（同一条工具消息）已经到达：用时直接贴在原块上，不再另起一行 */
+    durationMs?: number;
+    resultSize?: number;
+}) {
     const [open, setOpen] = useState(false);
+    const hasResult = durationMs !== undefined || resultSize !== undefined;
     return (
         <div className="rounded-md border border-border bg-col/60">
             <button
@@ -118,6 +131,14 @@ function ToolCall({ name, summary, args }: { name: string; summary: string; args
                 <span className="text-accent">▸</span>
                 <span className="shrink-0 font-mono">{name}</span>
                 <span className="flex-1 truncate text-left font-mono text-muted">{summary}</span>
+                {hasResult && (
+                    <span
+                        className="shrink-0 text-ok"
+                        title={resultSize === undefined ? undefined : `输出 ${resultSize} 字`}
+                    >
+                        {durationMs === undefined ? "✓" : formatDuration(durationMs)}
+                    </span>
+                )}
                 {/* 大参数只发摘要，参数面板自然也就没有 */}
                 {args !== undefined && (
                     <span className="ml-auto shrink-0 text-muted">{open ? "收起" : "参数"}</span>
@@ -164,13 +185,37 @@ function PeerMessage({ event }: { event: AgentEvent }) {
     );
 }
 
-export function Timeline({ events }: { events: AgentEvent[] }) {
-    // 工具输出只有 tool_call_id，先扫一遍建立 id → 名字的映射
+export function Timeline({ events, live }: { events: AgentEvent[]; live?: { text: string; thinking: boolean } }) {
+    // 工具输出只有 tool_call_id，先扫一遍建立 id → 名字/结果的映射。
+    // 结果回填到发起它的那个工具块上，时间线里不再单独占一行。
     const callNames = new Map<string, string>();
+    const callResults = new Map<string, { durationMs?: number; size?: number }>();
     for (const event of events) {
-        for (const call of event.payload.message?.tool_calls ?? []) {
+        const message = event.payload.message;
+        for (const call of message?.tool_calls ?? []) {
             if (call.id) callNames.set(call.id, call.name ?? call.function?.name ?? "工具");
         }
+        if (message?.role === "tool" && message.tool_call_id) {
+            callResults.set(message.tool_call_id, { durationMs: message.durationMs, size: message.contentLength });
+        }
+    }
+    // 「思考中」只属于"还没收尾的那一轮的最后一条 assistant 消息"：
+    // 历史轮回放时 turn_commit 早就在了，一律不显示。
+    // 必须两趟：turn_commit 排在同回合消息之后，单趟扫描时它还没进集合
+    const committedTurns = new Set<string>();
+    for (const event of events) {
+        if (event.type === "turn_commit" && event.payload.turnId) committedTurns.add(event.payload.turnId);
+    }
+    let pendingThinkSeq: number | undefined;
+    for (const event of events) {
+        const message = event.payload.message;
+        if (event.type !== "turn_message" || message?.role !== "assistant") continue;
+        const thinks = message.hasReasoning === true
+            || (typeof message.reasoning_content === "string" && message.reasoning_content.length > 0);
+        if (!thinks) continue;
+        const turnId = event.payload.turnId;
+        // 每遇到一条就覆盖：只有最后一条可能还在等下一次响应
+        pendingThinkSeq = turnId !== undefined && !committedTurns.has(turnId) ? event.seq : undefined;
     }
     const firstUserSeq = events.find(event => event.type === "user_message")?.seq;
 
@@ -202,8 +247,8 @@ export function Timeline({ events }: { events: AgentEvent[] }) {
                 if (!message) break;
                 if (message.role === "assistant") {
                     const hasContent = typeof message.content === "string" && message.content.trim().length > 0;
-                    const hasReasoning = message.hasReasoning === true
-                        || (typeof message.reasoning_content === "string" && message.reasoning_content.length > 0);
+                    // 只有"最后一轮、还没收尾"的那条 assistant 消息显示，历史轮不显示
+                    const hasReasoning = event.seq === pendingThinkSeq;
                     nodes.push(
                         <Fragment key={event.seq}>
                             {hasReasoning && <Thinking />}
@@ -212,24 +257,50 @@ export function Timeline({ events }: { events: AgentEvent[] }) {
                                 const name = call.name ?? call.function?.name ?? "工具";
                                 const args = call.arguments ?? call.function?.arguments;
                                 const summary = call.summary ?? (args ? summarizeToolCall(args) : "");
+                                const result = call.id ? callResults.get(call.id) : undefined;
                                 return (
-                                    <ToolCall key={`${event.seq}-${index}`} name={name} summary={summary} args={args} />
+                                    <ToolCall
+                                        key={`${event.seq}-${index}`}
+                                        name={name}
+                                        summary={summary}
+                                        args={args}
+                                        durationMs={result?.durationMs}
+                                        resultSize={result?.size}
+                                    />
                                 );
                             })}
                         </Fragment>,
                     );
                 } else if (message.role === "tool") {
-                    const name = message.name
-                        ?? (message.tool_call_id ? (callNames.get(message.tool_call_id) ?? "工具") : "工具");
-                    nodes.push(
-                        <ToolStatus key={event.seq} name={name} durationMs={message.durationMs} size={message.contentLength} />,
-                    );
+                    // 结果已经回填到上面的调用块里；只有找不到调用（历史被裁掉）时才单独显示
+                    const attached = message.tool_call_id ? callNames.has(message.tool_call_id) : false;
+                    if (!attached) {
+                        const name = message.name ?? "工具";
+                        nodes.push(
+                            <ToolStatus
+                                key={event.seq}
+                                name={name}
+                                durationMs={message.durationMs}
+                                size={message.contentLength}
+                            />,
+                        );
+                    }
                 }
                 break;
             }
             default:
                 break;
         }
+    }
+
+    // 正在发生的回合：正文边到边渲染；只收到推理增量时显示「思考中」
+    if (live && (live.text || live.thinking)) {
+        nodes.push(
+            <div key="live" className="flex flex-col gap-1">
+                {live.thinking && <Thinking />}
+                {live.text && <MarkdownBlock content={live.text} />}
+            </div>,
+        );
     }
 
     return <div className="flex flex-col gap-2.5">{nodes}</div>;
