@@ -29,6 +29,8 @@ export interface ToolExecutionOutput {
     imageContent?: ToolImageContent[];
     audioContent?: AudioContent[];
     contextPolicy?: ToolResultPolicy;
+    /** 工具自己判定失败（非零退出码、校验不过等）。抛异常之外的失败必须走这里，否则调度层看不见。 */
+    isError?: boolean;
 }
 
 export type ToolExecutionResponse = string | ToolExecutionOutput;

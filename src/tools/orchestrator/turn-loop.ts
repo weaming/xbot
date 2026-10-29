@@ -66,8 +66,11 @@ export interface TurnContext {
   getContextReminders?(): string[] | undefined;
   onAssistantToolCallContent?(content: string): Promise<void> | void;
   onInvalidAssistantHistory?(): void;
-  /** 执行一批工具调用（含并行调度），由调用方实现。 */
-  runToolCalls(calls: ToolCall[]): Promise<void>;
+  /**
+   * 执行一批工具调用（含 `_order` 编排），由调用方实现。
+   * 入列责任也在这里：传 assistantMessage 是为了在串行链中断时按实际执行集合裁剪历史。
+   */
+  runToolCalls(calls: ToolCall[], assistantMessage?: ChatMessage): Promise<void>;
   /** 单轮请求：发请求并归一化。 */
   sendRequest(requestBody: Record<string, any>): Promise<any>;
 }
@@ -293,7 +296,6 @@ export async function runTurnLoop(ctx: TurnContext): Promise<TurnLoopResult> {
         break;
       }
 
-      ctx.appendTurnMessage(messageToStore);
       if (citations.length > 0) ctx.emit({ type: "citations", items: citations });
 
       const toolCallResponseContent = extractText(assistantMsg)?.trim();
@@ -302,7 +304,8 @@ export async function runTurnLoop(ctx: TurnContext): Promise<TurnLoopResult> {
         ctx.emit({ type: "assistant_text_before_tools", content: toolCallResponseContent });
       }
 
-      await ctx.runToolCalls(toolCalls);
+      // assistant 消息的入列交给 runToolCalls：`_order` 串行链中断时要按实际执行集合裁剪
+      await ctx.runToolCalls(toolCalls, messageToStore);
 
       if (ctx.signal?.aborted) throw new DOMException("User terminated the request", "AbortError");
     }

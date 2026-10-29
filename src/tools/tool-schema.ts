@@ -1,4 +1,5 @@
 import type { ExecutableTool } from "./tool-interface.js";
+import { withOrderParam } from "./orchestrator/tool-order.js";
 
 const cleanedSchemaCache = new WeakMap<object, any>();
 
@@ -24,7 +25,8 @@ export function formatToolDef(tool: ExecutableTool) {
         function: {
             name: tool.name,
             description: tool.description || "",
-            parameters: getCachedCleanedSchema(tool.inputSchema),
+            // `_order` 由调度层消费，注入在这里而不是各工具自己的 schema 里
+            parameters: withOrderParam(getCachedCleanedSchema(tool.inputSchema)),
         },
     };
 }

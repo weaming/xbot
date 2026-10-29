@@ -448,6 +448,8 @@ export async function runChatQuery(options: ChatRunOptions) {
                     imageContent: await toolContentToImageContent(result.content, options.sessionId),
                     audioContent,
                     contextPolicy: result.contextPolicy,
+                    // 结构化失败必须一路上行到调度层：`_order` 串行链靠它决定是否中止
+                    isError: result.isError,
                 };
             },
             getSystemPrompt: () => options.systemPrompt,

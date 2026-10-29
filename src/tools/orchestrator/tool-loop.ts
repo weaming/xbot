@@ -3,6 +3,10 @@
  *
  * 结果按调用顺序稳定入列。并行执行只影响耗时，不影响消息顺序，
  * 否则下一轮的请求前缀会随调度时序抖动，破坏前缀缓存。
+ *
+ * 调度规则由 tool-order.ts 决定：没写 `_order` 整批并发；写了就按该字段串行，
+ * 相同值组内并行、组间串行；链上一旦失败，后续组与并发组都不再执行
+ * （由调用方据此裁剪历史）。
  */
 
 import type { ToolCall } from "../../types/tool-call.js";
@@ -13,6 +17,7 @@ import {
 } from "../tool-interface.js";
 import type { UIEvent } from "../../events/ui-events.js";
 import type { ChatMessage } from "../../types/session.js";
+import { planToolExecution, stripToolOrder, type PlannedToolCall } from "./tool-order.js";
 
 function normalizeToolExecutionOutput(output: ToolExecutionResponse): ToolExecutionOutput {
     return typeof output === "string" ? { content: output } : output;
@@ -22,10 +27,6 @@ export interface ToolLoopHost {
     executeTool?: (name: string, args: any) => Promise<ToolExecutionResponse>;
     onToolCall?: (name: string, args: any, mode: "serial" | "parallel") => void;
     onToolResult?: (name: string, result: string) => void;
-    /** 追加一条完整消息（含落盘），保持顺序。收集模式下不提供。 */
-    appendTurnMessage?(message: ChatMessage): void;
-    /** 收集模式：只返回消息，由调用方按调用顺序统一入列。 */
-    collectMessages?: ChatMessage[];
     emit(event: UIEvent): void;
     /** 分配工具事件的展示 id（单调递增）。 */
     nextToolId(): number;
@@ -33,16 +34,35 @@ export interface ToolLoopHost {
     assertNotAborted(): void;
 }
 
-/** 执行单个工具调用并把结果追加进本回合消息。 */
+/** 单条调用的执行结果，带原下标以便调用方按原顺序入列与裁剪历史。 */
+interface ProcessedToolCall {
+    index: number;
+    callId: string;
+    message: ChatMessage;
+    failed: boolean;
+}
+
+export interface ToolBatchOutcome {
+    /** 按原下标升序排列，只含实际执行过的调用。 */
+    results: ProcessedToolCall[];
+    /** 实际执行过的调用下标集合；串行链失败时是它的真子集。 */
+    executed: Set<number>;
+    /** 串行链在某一环失败时的下标；全部成功或没有串行链时为 null。 */
+    failedIndex: number | null;
+}
+
+/** 执行单个工具调用，只产出消息，不决定入列。 */
 async function processToolCall(
     host: ToolLoopHost,
-    toolCall: ToolCall,
+    planned: PlannedToolCall,
     mode: "serial" | "parallel",
-): Promise<void> {
+): Promise<ProcessedToolCall> {
+    const toolCall = planned.call;
+    const args = stripToolOrder(toolCall.args);
     host.assertNotAborted();
-    host.onToolCall?.(toolCall.name, toolCall.args, mode);
+    host.onToolCall?.(toolCall.name, args, mode);
     const toolId = host.nextToolId();
-    host.emit({ type: "tool_start", toolId, callId: toolCall.id, name: toolCall.name, args: toolCall.args, mode });
+    host.emit({ type: "tool_start", toolId, callId: toolCall.id, name: toolCall.name, args, mode });
     const toolStartedAt = Date.now();
 
     let toolOutput = "";
@@ -54,9 +74,12 @@ async function processToolCall(
     if (host.executeTool) {
         try {
             const executionOutput = normalizeToolExecutionOutput(
-                await host.executeTool(toolCall.name, toolCall.args),
+                await host.executeTool(toolCall.name, args),
             );
             toolOutput = executionOutput.content;
+            // 工具自报的失败（非零退出码等）与抛异常同等对待：
+            // `_order` 串行链据此中止，tool_result 事件也据此标错。
+            toolFailed = executionOutput.isError === true;
             toolContextPolicy = executionOutput.contextPolicy;
             toolImageContent = executionOutput.imageContent;
             toolAudioContent = executionOutput.audioContent;
@@ -71,7 +94,7 @@ async function processToolCall(
         toolOutput = JSON.stringify({
             mock: true,
             tool: toolCall.name,
-            args: toolCall.args,
+            args,
             timestamp: new Date().toISOString(),
         });
         toolOutput = compactJsonToolOutput(toolOutput, toolCall.name);
@@ -89,8 +112,6 @@ async function processToolCall(
         ...(toolImageContent && toolImageContent.length > 0 ? { imageContent: toolImageContent } : {}),
         ...(toolAudioContent && toolAudioContent.length > 0 ? { audioContent: toolAudioContent } : {}),
     };
-    if (host.collectMessages) host.collectMessages.push(toolMessage);
-    else host.appendTurnMessage?.(toolMessage);
 
     host.onToolResult?.(toolCall.name, toolOutput);
     host.emit({
@@ -102,36 +123,53 @@ async function processToolCall(
         isError: toolFailed,
         durationMs,
     });
+
+    return { index: planned.index, callId: toolCall.id, message: toolMessage, failed: toolFailed };
 }
 
 /**
- * 执行一批工具调用。
+ * 执行一批工具调用并按 `_order` 编排。
  *
- * 并发只发生在「执行」阶段，落盘严格按调用顺序：
- * 先并行跑完，再按 calls 的原顺序逐条 append，避免结果顺序依赖完成时序。
+ * 并发只发生在「执行」阶段，返回结果按调用顺序排好：
+ * 调用方据此保证「执行可以乱序，入列必须按原顺序」，让下一轮请求前缀稳定。
  */
-async function runToolCalls(host: ToolLoopHost, calls: ToolCall[]): Promise<void> {
-    if (calls.length === 0) return;
+export async function runToolBatch(host: ToolLoopHost, calls: ToolCall[]): Promise<ToolBatchOutcome> {
+    const plan = planToolExecution(calls);
+    const results: ProcessedToolCall[] = [];
+    const executed = new Set<number>();
+    let failedIndex: number | null = null;
 
-    await Promise.all(calls.map(toolCall => processToolCall(host, toolCall, "parallel")));
-}
+    /** 跑一组调用：组内并发，结果并入汇总。返回首个失败项（若有）。 */
+    const runConcurrently = async (
+        stage: PlannedToolCall[],
+        mode: "serial" | "parallel",
+    ): Promise<ProcessedToolCall | undefined> => {
+        // 组内并发意味着无法中途撤回：只要有失败，整组已完成的结果照样落地并上报，
+        // 只有「之后的阶段」才会被跳过。
+        const settled = await Promise.all(
+            stage.map(planned => processToolCall(host, planned, mode)),
+        );
+        for (const result of settled) {
+            results.push(result);
+            executed.add(result.index);
+        }
+        return settled.find(result => result.failed);
+    };
 
-/**
- * 执行一批工具调用，只返回消息、不决定入列顺序。
- *
- * 调用方据此保证「执行可以并行，入列必须按调用顺序」，
- * 让下一轮请求前缀不随调度时序抖动。
- */
-export async function runToolCallsCollecting(
-    host: Omit<ToolLoopHost, "appendTurnMessage" | "collectMessages">,
-    calls: ToolCall[],
-): Promise<ChatMessage[]> {
-    if (calls.length === 0) return [];
+    if (plan.stages.length > 0) {
+        for (const stage of plan.stages) {
+            const failed = await runConcurrently(stage, "serial");
+            if (failed) {
+                failedIndex = failed.index;
+                break;
+            }
+        }
+        // 串行链失败即中止整批：并发组同样不执行
+        if (failedIndex === null) await runConcurrently(plan.parallel, "parallel");
+    } else {
+        await runConcurrently(plan.parallel, "parallel");
+    }
 
-    // 每通调用独立缓冲区：并行完成后由调用方按原顺序拼接
-    const buffers = calls.map(() => [] as ChatMessage[]);
-    await Promise.all(calls.map((toolCall, index) =>
-        processToolCall({ ...host, collectMessages: buffers[index]! }, toolCall, "parallel"),
-    ));
-    return buffers.flat();
+    results.sort((left, right) => left.index - right.index);
+    return { results, executed, failedIndex };
 }

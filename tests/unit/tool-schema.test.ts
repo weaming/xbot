@@ -94,19 +94,26 @@ describe("tool schema", () => {
         const cleanedB = getCachedCleanedSchema(schema);
 
         expect(cleanedA).toBe(cleanedB);
-        expect(formatToolDef({
+        const definition = formatToolDef({
             name: "read_file",
             description: "Read a file",
             inputSchema: schema,
             execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
-        })).toEqual({
+        });
+        expect(definition).toEqual({
             type: "function",
             function: {
                 name: "read_file",
                 description: "Read a file",
-                parameters: cleanedA,
+                parameters: {
+                    ...cleanedA,
+                    // 顺序字段由调度层统一注入，工具自身 schema 里不写
+                    properties: { ...cleanedA.properties, _order: expect.any(Object) },
+                },
             },
         });
+        // 注入不污染被缓存的清理结果
+        expect(cleanedA.properties).not.toHaveProperty("_order");
     });
 
     test("保留 MCP deferLoading 内部标记供 Responses 构造器使用", () => {

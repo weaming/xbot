@@ -43,7 +43,8 @@ import {
   isDeepSeekEndpoint,
   prepareRequest,
 } from "./orchestrator/turn-request.js";
-import { runToolCallsCollecting } from "./orchestrator/tool-loop.js";
+import { runToolBatch, type ToolBatchOutcome } from "./orchestrator/tool-loop.js";
+import { truncateAssistantToolCalls } from "./orchestrator/tool-order.js";
 import { runTurnLoop, type TurnContext } from "./orchestrator/turn-loop.js";
 import { resolveProtocol } from "./orchestrator/request-builder.js";
 import { normalizeResponsesResponse } from "./orchestrator/responses-shape.js";
@@ -272,23 +273,38 @@ export async function executeWithChat(
   const emit = (event: UIEvent): void => { void onEvent?.(event); };
   let toolIdCounter = 0;
 
-  const runToolCalls = async (calls: ToolCall[]): Promise<void> => {
-    if (calls.length === 0) return;
-    const results = await runToolCallsCollecting(
-      {
-        ...(executeTool ? { executeTool } : {}),
-        ...(onToolCall ? { onToolCall } : {}),
-        ...(onToolResult ? { onToolResult } : {}),
-        emit,
-        nextToolId: () => ++toolIdCounter,
-        assertNotAborted: () => {
-          if (signal?.aborted) throw new DOMException("User terminated the request", "AbortError");
-        },
+  /** 执行一批工具调用，并把 assistant 消息与工具结果按原顺序入列。 */
+  const runToolCalls = async (calls: ToolCall[], assistantMessage?: ChatMessage): Promise<void> => {
+    if (calls.length === 0) {
+      if (assistantMessage) appendTurnMessage(assistantMessage);
+      return;
+    }
+
+    const host = {
+      ...(executeTool ? { executeTool } : {}),
+      ...(onToolCall ? { onToolCall } : {}),
+      ...(onToolResult ? { onToolResult } : {}),
+      emit,
+      nextToolId: () => ++toolIdCounter,
+      assertNotAborted: () => {
+        if (signal?.aborted) throw new DOMException("User terminated the request", "AbortError");
       },
-      calls,
-    );
-    // 统一入列：并行只影响耗时，不影响消息顺序
-    for (const message of results) appendTurnMessage(message);
+    };
+
+    let outcome: ToolBatchOutcome | undefined;
+    try {
+      outcome = await runToolBatch(host, calls);
+    } finally {
+      // assistant 必须先于工具结果入列。`_order` 链失败后被跳过的调用要从历史里删掉，
+      // 否则上游会因 tool_calls 与 tool 结果不成对而拒绝下一次请求；
+      // 中止等异常路径拿不到 outcome，此时保留全量调用，交给续跑机制补结果。
+      if (assistantMessage) {
+        appendTurnMessage(outcome
+          ? truncateAssistantToolCalls(assistantMessage, new Set(outcome.results.map(result => result.callId)))
+          : assistantMessage);
+      }
+      for (const result of outcome?.results ?? []) appendTurnMessage(result.message);
+    }
   };
 
   const ctx: TurnContext = {
