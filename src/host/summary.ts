@@ -4,17 +4,17 @@
 
 import { isInjectedContext, type AgentEvent } from "../events/agent-events.js";
 import type { UsageInfo } from "../types/chat.js";
-import type { InstanceNetworkStats, TuiSessionSummary } from "./agent-types.js";
+import type { InstanceNetworkStats, SessionSummary } from "./session-host-types.js";
 
 /** 由事件流派生会话摘要（标题、消息数、归档态、更新时间）。 */
-export function summarizeEvents(sessionId: string, events: AgentEvent[]): TuiSessionSummary {
+export function summarizeEvents(sessionId: string, events: AgentEvent[]): SessionSummary {
     let messageCount = 0;
     let lastUserMessage: string | undefined;
     let firstUserMessage: string | undefined;
     let renamedTitle: string | undefined;
     let updatedAt: string | undefined;
     let archived = false;
-    let modelSelection: TuiSessionSummary["modelSelection"];
+    let modelSelection: SessionSummary["modelSelection"];
     let cwd: string | undefined;
 
     for (const event of events) {

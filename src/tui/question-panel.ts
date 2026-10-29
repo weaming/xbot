@@ -16,7 +16,7 @@ import {
     type UserQuestionAnswer,
 } from "../utils/user-question.js";
 import { parseWheelDelta } from "./panel-input.js";
-import { padColumns, truncatePlain, wrapPlain } from "./panel-text.js";
+import { padColumns, truncatePlain, wrapPlain } from "../format/text.js";
 import { PasteAssembler } from "./paste-assembler.js";
 import { editorTheme, theme } from "./theme.js";
 

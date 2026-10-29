@@ -44,7 +44,7 @@ mock.module("../../src/services/chat-runtime.js", () => ({
     },
 }));
 
-const { LocalTuiAgent } = await import("../../src/tui/agent.js");
+const { LocalSessionHost } = await import("../../src/host/session-host.js");
 const { getSessionLockFilePath } = await import("../../src/utils/session-lock.js");
 const { createToolImageAsset } = await import("../../src/utils/image-assets.js");
 
@@ -61,10 +61,10 @@ afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-describe("LocalTuiAgent 多实例并发协同", () => {
+describe("LocalSessionHost 多实例并发协同", () => {
     test("实例 A 完成 Turn 1 后，实例 B 自动检测落盘版本并无缝接力 Turn 2", async () => {
-        const agentA = new LocalTuiAgent();
-        const agentB = new LocalTuiAgent();
+        const agentA = new LocalSessionHost();
+        const agentB = new LocalSessionHost();
 
         const { sessionId } = await agentA.createSession();
 
@@ -98,7 +98,7 @@ describe("LocalTuiAgent 多实例并发协同", () => {
     });
 
     test("其他存活进程占用会话时拦截并发发送", async () => {
-        const agent = new LocalTuiAgent();
+        const agent = new LocalSessionHost();
         const { sessionId } = await agent.createSession();
 
         // 模拟其他存活进程（PID 1）持有该 session 的锁
@@ -116,7 +116,7 @@ describe("LocalTuiAgent 多实例并发协同", () => {
     });
 
     test("其他实例持锁时 isSessionLockedByOther 为 true，锁释放后为 false", async () => {
-        const agent = new LocalTuiAgent();
+        const agent = new LocalSessionHost();
         const { sessionId } = await agent.createSession();
 
         const lockPath = getSessionLockFilePath(sessionId);
@@ -136,7 +136,7 @@ describe("LocalTuiAgent 多实例并发协同", () => {
     });
 
     test("同一实例并发发送时只允许一个请求进入会话", async () => {
-        const agent = new LocalTuiAgent();
+        const agent = new LocalSessionHost();
         const { sessionId } = await agent.createSession();
 
         const first = agent.sendMessage(sessionId, "第一条");
@@ -145,7 +145,7 @@ describe("LocalTuiAgent 多实例并发协同", () => {
     });
 
     test("实例级统计只累计本实例真实网络请求（会话数/输入/缓存命中）", async () => {
-        const agent = new LocalTuiAgent();
+        const agent = new LocalSessionHost();
         const { sessionId: s1 } = await agent.createSession();
         const { sessionId: s2 } = await agent.createSession();
 
@@ -164,11 +164,11 @@ describe("LocalTuiAgent 多实例并发协同", () => {
         expect((stats.cacheHitTokens / stats.promptTokens) * 100).toBeCloseTo(40);
 
         // 未发起网络请求的会话不计入统计
-        expect(new LocalTuiAgent().getInstanceNetworkStats().sessionCount).toBe(0);
+        expect(new LocalSessionHost().getInstanceNetworkStats().sessionCount).toBe(0);
     });
 
     test("归档后取消归档：会话恢复可写并带完整历史继续对话", async () => {
-        const agent = new LocalTuiAgent();
+        const agent = new LocalSessionHost();
         const { sessionId } = await agent.createSession();
         await agent.sendMessage(sessionId, "归档前的问题");
 
@@ -188,7 +188,7 @@ describe("LocalTuiAgent 多实例并发协同", () => {
     });
 
     test("清空和删除会话时清理各自的工具图片", async () => {
-        const agent = new LocalTuiAgent();
+        const agent = new LocalSessionHost();
         const { sessionId } = await agent.createSession();
         await agent.sendMessage(sessionId, "创建会话");
 

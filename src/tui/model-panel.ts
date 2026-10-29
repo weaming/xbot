@@ -5,7 +5,7 @@ import type { Component } from "@earendil-works/pi-tui";
 import type { ChatModelSelection } from "../types/chat-model.js";
 import { PanelBody } from "./panel-body.js";
 import { handlePanelScroll } from "./panel-scroll.js";
-import { truncatePlain } from "./panel-text.js";
+import { truncatePlain } from "../format/text.js";
 import { theme } from "./theme.js";
 
 type Step = "protocol" | "model" | "default";

@@ -1,6 +1,6 @@
 /**
- * TUI agent 的公共类型与内部数据结构。
- * 公共接口（TuiAgent / TuiSessionSummary / InstanceNetworkStats）由 agent.ts 统一 re-export。
+ * 会话宿主的公共类型与内部数据结构。
+ * 公共接口（SessionHost / SessionSummary / InstanceNetworkStats）由 session-host.ts 统一 re-export。
  */
 
 import type { UIEvent } from "../events/ui-events.js";
@@ -13,7 +13,40 @@ import type { LLMRequestKind } from "../utils/logger.js";
 import type { ImageAssetRef, UserMessageInput } from "../types/image.js";
 import type { ChatModelSelection } from "../types/chat-model.js";
 
-export interface TuiSessionSummary {
+/**
+ * 宿主对外的可判别错误：前端据此映射 HTTP 状态码，不必依赖错误文案。
+ * message 保持人类可读（TUI 直接展示），类型用于程序化分流。
+ */
+export class SessionNotFoundError extends Error {
+    constructor(sessionId: string) {
+        super(`会话不存在: ${sessionId}`);
+        this.name = "SessionNotFoundError";
+    }
+}
+
+/** 会话已归档：需要先取消归档才能继续写。 */
+export class SessionArchivedError extends Error {
+    constructor(sessionId: string) {
+        super(`会话已归档，请先取消归档: ${sessionId}`);
+        this.name = "SessionArchivedError";
+    }
+}
+
+/** 抢不到会话互斥：已有回合在跑，或正在取消。message 前缀 `busy:` 只用于日志辨识。 */
+export class SessionBusyError extends Error {
+    constructor(message: string) {
+        super(`busy: ${message}`);
+        this.name = "SessionBusyError";
+    }
+}
+
+/** 构造宿主实例的选项：宿主不读进程全局启动态，全部由调用方显式注入。 */
+export interface SessionHostOptions {
+    /** 新建会话（未显式给 cwd）时的默认工作目录，缺省为 process.cwd()。 */
+    startupCwd?: string;
+}
+
+export interface SessionSummary {
     sessionId: string;
     /** 会话绑定的工作目录（取自 session_created 事件），面板用于区分同名会话。 */
     cwd?: string;
@@ -47,16 +80,24 @@ export interface InstanceNetworkStats {
  */
 export type SessionReleaseCause = "peer" | "user" | "tool" | "auto" | "archive" | "delete";
 
-export interface TuiAgent {
+export interface SessionHost {
     onEvent?: (requestId: number, sessionId: string, event: UIEvent) => void;
     /** 新建会话（内存态，未认领）；cwd 缺省用 TUI 启动目录。 */
     createSession(cwd?: string): Promise<{ sessionId: string }>;
-    listSessions(): Promise<TuiSessionSummary[]>;
+    listSessions(): Promise<SessionSummary[]>;
     /** 本进程内存里正在使用的会话 id（清理时必须跳过，避免删掉活跃会话）。 */
     listActiveSessionIds(): string[];
     /** 丢弃该会话的进程内缓存（磁盘上的日志已删除时调用）。 */
     forgetSession(sessionId: string): void;
     readSessionEvents(sessionId: string): Promise<AgentEvent[]>;
+    /** 读该会话 seq > after 的持久化事件（客户端断线续传按游标补齐）。 */
+    readSessionEventsSince(sessionId: string, after: number): Promise<AgentEvent[]>;
+    /**
+     * 订阅持久化事件流：新增一条即推送一次，返回取消函数。
+     * TUI 与 HTTP 前端共用同一份事实源，不需要各自轮询日志文件。
+     * event 为 null 表示该会话时间轴被重置（truncate / delete），订阅者须丢弃已有游标。
+     */
+    subscribeEvents(listener: (sessionId: string, event: AgentEvent | null) => void): () => void;
     clearSession(sessionId: string): Promise<void>;
     deleteSession(sessionId: string): Promise<void>;
     isSessionBusy(sessionId: string): boolean;
@@ -107,7 +148,8 @@ export interface TuiAgent {
      * 认领会话：本实例成为该会话的唯一持有者。
      * 被其他实例持有时发起协商式转移，持有者忙或无应答则失败（绝不夺权）。
      */
-    claimSession(sessionId: string): Promise<ClaimResult>;
+    /** noNegotiate：被其他实例持有时直接失败，不发起协商式转移（编程化入口用）。 */
+    claimSession(sessionId: string, options?: { noNegotiate?: boolean }): Promise<ClaimResult>;
     /**
      * 放弃会话持有：关闭监听、释放 socket 文件，并摘掉本实例的内存视图。
      * 事件日志不动，别的实例（或本实例面板）随后可重新认领。
@@ -138,7 +180,7 @@ export interface TuiAgent {
      * 与 onSessionReleased 同理，非用户主动发起的状态变化也要让宿主知情。
      */
     onSessionSpawned?: (sessionId: string, title?: string) => void;
-    /** 会话工作目录被改写后的回调（见 TuiAgent.setSessionCwd）。 */
+    /** 会话工作目录被改写后的回调（见 SessionHost.setSessionCwd）。 */
     onSessionCwdChanged?: (sessionId: string, cwd: string) => void;
     /** 归档会话被 session_wake 恢复并认领后回调宿主刷新会话列表。 */
     onSessionWoken?: (sessionId: string) => void;

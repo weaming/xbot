@@ -3,8 +3,9 @@
  * 列宽一律按 visibleWidth（显示列）计算，中文/emoji 不会错位。
  */
 
-import { sliceByColumn, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
-import { truncatePlain } from "./panel-text.js";
+import { sliceByColumn, visibleWidth } from "@earendil-works/pi-tui";
+import { CWD_MAX, truncatePath } from "../format/path.js";
+import { truncatePlain } from "../format/text.js";
 
 /** 选中指针 `→ `。 */
 const POINTER_WIDTH = 2;
@@ -22,8 +23,6 @@ const TITLE_FLOOR = 8;
 const STATUS_MIN = 8;
 /** 状态列短于此宽度就不画：宁可少一列，也不要只剩一个省略号。 */
 const STATUS_FLOOR = 6;
-/** 工作目录列宽上限：够看清 `~/src/infra/deploy` 这种两级路径，再长就尾部省略。 */
-const CWD_MAX = 20;
 /** 工作目录列宽下限：再窄就只够看半截目录名，不如整列不显示。 */
 const CWD_MIN = 10;
 /** 状态列理想宽度：留够"本实例 · 等待 2"，目录列按剩余空间让位。 */
@@ -106,35 +105,6 @@ export function planSessionRows(rows: SessionRow[], width: number): SessionRowPl
     // 与渲染层的状态下限保持一致，避免留下"算了但没画"的空列
     const status = rawStatus >= STATUS_FLOOR ? rawStatus : 0;
     return { title, rounds, time, cwd, status };
-}
-
-/** 尾部截断：保留末尾（目录名比前缀更有信息量），按显示列计算。 */
-function truncateTail(text: string, columns: number): string {
-    const flat = stripTerminalSequences(text);
-    const width = visibleWidth(flat);
-    if (width <= columns) return flat;
-    const tail = sliceByColumn(flat, width - Math.max(0, columns - 1), Math.max(0, columns - 1), true);
-    return `…${tail}`;
-}
-
-/** 路径缩写：home 前缀换成 `~`，超宽时保留尾部并在目录边界断开（`…/src/zbot`）。 */
-export function abbreviatePath(path: string, home?: string, maxColumns = CWD_MAX): string {
-    const trimmed = path.replace(/[\\/]+$/, "");
-    if (!trimmed) return "";
-    const short = home && trimmed === home
-        ? "~"
-        : home && trimmed.startsWith(`${home}/`) ? `~${trimmed.slice(home.length)}` : trimmed;
-    if (visibleWidth(short) <= maxColumns) return short;
-
-    return truncatePath(short, maxColumns);
-}
-
-/** 按列宽截断路径：保留尾部，并尽量让断开点落在目录分隔符上（`…/src/zbot` 好过 `…rc/zbot`）。 */
-function truncatePath(text: string, columns: number): string {
-    const tail = truncateTail(text, columns);
-    if (!tail.startsWith("…")) return tail;
-    const cut = tail.indexOf("/", 1);
-    return cut > 0 ? `…${tail.slice(cut)}` : tail;
 }
 
 /**

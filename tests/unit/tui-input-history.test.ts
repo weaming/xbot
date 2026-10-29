@@ -25,7 +25,7 @@ afterEach(() => {
 
 describe("TUI 输入历史", () => {
     test("当前 session 历史优先，其他 session 按时间倒序补充（含已删除 session）", async () => {
-        const { appendInputHistory, loadInputHistory } = await import("../../src/tui/input-history.js");
+        const { appendInputHistory, loadInputHistory } = await import("../../src/host/input-history.js");
         const sessionA = "01A";
         const sessionB = "01B";
         const deletedSession = "01C";
@@ -43,7 +43,7 @@ describe("TUI 输入历史", () => {
     });
 
     test("刚启动的空 session 直接回滚其他 session 合并历史", async () => {
-        const { appendInputHistory, loadInputHistory } = await import("../../src/tui/input-history.js");
+        const { appendInputHistory, loadInputHistory } = await import("../../src/host/input-history.js");
         await appendInputHistory("01A", "a1");
         await appendInputHistory("01B", "b1");
         await appendInputHistory("01A", "a2");
@@ -53,7 +53,7 @@ describe("TUI 输入历史", () => {
     });
 
     test("同 session 最近一条重复时不重复写入", async () => {
-        const { appendInputHistory, loadInputHistory } = await import("../../src/tui/input-history.js");
+        const { appendInputHistory, loadInputHistory } = await import("../../src/host/input-history.js");
         await appendInputHistory("01A", "same");
         await appendInputHistory("01A", "same");
         await appendInputHistory("01B", "same");
@@ -65,14 +65,14 @@ describe("TUI 输入历史", () => {
 
     test("兼容旧 string[] 格式，旧条目归入其他 session 列表", async () => {
         fs.writeFileSync(path.join(tmpDir, "input-history.json"), JSON.stringify(["legacy-a", "legacy-b"]));
-        const { loadInputHistory } = await import("../../src/tui/input-history.js");
+        const { loadInputHistory } = await import("../../src/host/input-history.js");
 
         const history = loadInputHistory("01A");
         expect(history).toEqual(["legacy-a", "legacy-b"]);
     });
 
     test("并发追加不丢失条目（文件锁读改写）", async () => {
-        const { appendInputHistory, loadInputHistory } = await import("../../src/tui/input-history.js");
+        const { appendInputHistory, loadInputHistory } = await import("../../src/host/input-history.js");
 
         await Promise.all([
             appendInputHistory("01A", "x1"),

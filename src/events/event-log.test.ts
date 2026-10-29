@@ -798,3 +798,78 @@ describe("流式片段 pending 文件", () => {
         expect(fs.existsSync(streamFile(sessionId))).toBe(false);
     });
 });
+
+describe("EventLog 事件订阅与对外读口径", () => {
+    it("append 后推送给订阅者，取消订阅后不再推送", async () => {
+        const log = new EventLog();
+        const sessionId = "sess-subscribe";
+        const received: Array<{ sessionId: string; seq: number }> = [];
+        const unsubscribe = log.subscribe((id, event) => {
+            if (event) received.push({ sessionId: id, seq: event.seq });
+        });
+
+        const saved = await log.append(sessionId, "session_created", { cwd: tmpDir });
+        expect(received).toEqual([{ sessionId, seq: saved.seq }]);
+
+        unsubscribe();
+        await log.append(sessionId, "user_message", { text: "问题", turnId: "T1", trigger: "user" });
+        expect(received).toHaveLength(1);
+    });
+
+    it("订阅者抛错不影响写入与其它订阅者", async () => {
+        const log = new EventLog();
+        const sessionId = "sess-subscribe-throw";
+        const seen: number[] = [];
+        // 这条用例故意让订阅者抛错，静音宿主打的错误日志以免污染测试输出
+        const originalError = console.error;
+        console.error = () => {};
+        log.subscribe(() => {
+            throw new Error("订阅者内部错误");
+        });
+        log.subscribe((_id, event) => {
+            if (event) seen.push(event.seq);
+        });
+
+        let saved;
+        try {
+            saved = await log.append(sessionId, "session_created", { cwd: tmpDir });
+        } finally {
+            console.error = originalError;
+        }
+
+        expect(seen).toEqual([saved.seq]);
+        expect((await log.read(sessionId)).map(event => event.seq)).toEqual([saved.seq]);
+    });
+
+    it("truncate 广播重置信号（event 为 null）", async () => {
+        const log = new EventLog();
+        const sessionId = "sess-subscribe-reset";
+        const signals: Array<number | null> = [];
+        log.subscribe((_id, event) => {
+            signals.push(event ? event.seq : null);
+        });
+
+        await log.append(sessionId, "session_created", { cwd: tmpDir });
+        await log.append(sessionId, "user_message", { text: "问题", turnId: "T1", trigger: "user" });
+        await log.truncate(sessionId, 1);
+
+        expect(signals).toEqual([1, 2, null]);
+    });
+
+    it("persistedOnly 读法剔除 pending 流片段（对外游标必须唯一）", async () => {
+        const log = new EventLog();
+        const sessionId = "sess-persisted-only";
+        await log.append(sessionId, "user_message", { text: "问题", turnId: "T1", trigger: "user" });
+        await log.appendStreamDelta(sessionId, "T1", 1, { text: "片段" });
+        await log.flushStream(sessionId);
+
+        const full = await log.read(sessionId);
+        expect(full.some(event => event.type === "turn_stream_delta")).toBe(true);
+        // 片段 seq 全等于日志末尾：混进对外接口会让客户端按 seq 去重时丢帧
+        expect(new Set(full.map(event => event.seq)).size).toBeLessThan(full.length);
+
+        const persisted = await log.read(sessionId, 1, undefined, { persistedOnly: true });
+        expect(persisted.map(event => event.seq)).toEqual([1]);
+        expect(persisted.some(event => event.type === "turn_stream_delta")).toBe(false);
+    });
+});

@@ -46,4 +46,17 @@ Responses API 和 Chat Completions 可使用各自的 `OPENAI_RESPONSES_*` 与 `
 ~/.bun/bin/zbot session send <id> "跑一下测试" --wait
 ```
 
-文档：[会话命令行](docs/session-cli.md)、[MCP 多服务配置](docs/mcp.md)、[TUI 链接与终端交互](docs/tui-links.md)。
+也可以常驻成无 UI 宿主，用 HTTP 发布任务、SSE 订阅进度：
+
+```sh
+~/.bun/bin/zbot serve --port 8787 --cwd ~/src/project
+```
+
+```sh
+TOKEN=$(cat ~/.zbot/serve/token)
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "content-type: application/json" \
+  -d '{"title":"跑测试"}' http://127.0.0.1:8787/sessions
+curl -sN -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:8787/sessions/<id>/events?since=0"
+```
+
+文档：[会话命令行](docs/session-cli.md)、[serve 接口](docs/serve-api.md)、[MCP 多服务配置](docs/mcp.md)、[TUI 链接与终端交互](docs/tui-links.md)。

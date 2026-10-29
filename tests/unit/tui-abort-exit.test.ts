@@ -131,12 +131,12 @@ describe("Esc/⌃C 中断", () => {
 });
 
 describe("agent.close 的落盘等待有上限", () => {
-    // 直接验证 LocalTuiAgent 的超时保护：turn 永不结束时，close 不能挂死退出。
+    // 直接验证 LocalSessionHost 的超时保护：turn 永不结束时，close 不能挂死退出。
     // 用固定 3s 常量不现实，这里验证的是"race 结构存在且生效"，用极短的可控 promise。
 
     test("inflight turn 永不结束时，close 仍在超时后返回", async () => {
-        const { LocalTuiAgent } = await import("../../src/tui/agent.js");
-        const agent: any = new LocalTuiAgent(Promise.resolve());
+        const { LocalSessionHost } = await import("../../src/host/session-host.js");
+        const agent: any = new LocalSessionHost(Promise.resolve());
         // 塞一个永不 resolve 的 turn
         agent.inflightTurns.add(new Promise(() => {}));
         agent.activeSessions.set(SESSION, { abortController: new AbortController() });

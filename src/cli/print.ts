@@ -1,7 +1,7 @@
 import path from "node:path";
 import os from "node:os";
 import { DEFAULT_MEMORY_USER_ID } from "../utils/runtime-paths.js";
-import { redirectTuiLogsToFile } from "../tui/runtime-context.js";
+import { redirectLogsToFile } from "../host/runtime-context.js";
 
 export interface PrintArgs {
     prompt: string[];
@@ -59,7 +59,7 @@ export async function runPrintCli(argv: string[]): Promise<void> {
     const prompt = (args.prompt.length > 0 ? args.prompt.join(" ") : await readStdin()).trim();
     if (!prompt) throw new Error("请提供任务文本，或通过 stdin 输入任务");
 
-    const restoreConsole = redirectTuiLogsToFile();
+    const restoreConsole = redirectLogsToFile();
     try {
         const [skills, runtime, mcp] = await Promise.all([
             import("../skills/skill-registry.js"),

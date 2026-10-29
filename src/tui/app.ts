@@ -24,8 +24,8 @@ import type { Component } from "@earendil-works/pi-tui";
 import { describeClaimFailure } from "../control/channel.js";
 import { cleanupStaleSockets, describeOwnership, type PeerOwnership } from "../control/registry.js";
 import { cleanupArchivedSessions } from "../events/session-cleanup.js";
-import type { TuiAgent } from "./agent.js";
-import type { SessionReleaseCause } from "./agent-types.js";
+import type { SessionHost } from "../host/session-host.js";
+import type { SessionReleaseCause } from "../host/session-host-types.js";
 import { openExternalUrl } from "./app-helpers.js";
 import {
     buildHelpText,
@@ -56,7 +56,7 @@ import {
 } from "./panel-overlay.js";
 import { PanelStack } from "./panel-stack.js";
 import { PendingQueue, type PendingMessage } from "./pending-queue.js";
-import { truncatePlain } from "./panel-text.js";
+import { truncatePlain } from "../format/text.js";
 import { parseWheelEvent, type WheelEvent } from "./panel-input.js";
 import { PromptEditor } from "./prompt-editor.js";
 import { StatusBar } from "./status-bar.js";
@@ -81,7 +81,7 @@ import {
 import { getTuiWheelLogFile } from "../utils/tui-state-paths.js";
 import { ChatStore } from "./store.js";
 import { editorTheme, theme } from "./theme.js";
-import { setTuiLogSession } from "./runtime-context.js";
+import { setLogSession } from "../host/runtime-context.js";
 import { DraftStore, loadRichDrafts, persistRichDrafts } from "./draft-store.js";
 import { isCmdDown, isCmdGateSupported } from "./cmd-modifier.js";
 import { herdrReporter } from "./herdr-reporter.js";
@@ -304,7 +304,7 @@ export class ChatApp {
     }
 
     constructor(
-        private readonly agent: TuiAgent,
+        private readonly agent: SessionHost,
         private readonly store: ChatStore,
     ) {
         // 弹窗激活时 Enter 走 tab 分支（填入不发送）；非弹窗 Enter 仍为提交
@@ -1783,7 +1783,7 @@ export class ChatApp {
             this.editor.setText(draft.text);
             // 输入历史按 session 区分：当前 session 优先，其他 session 按时间倒序补充。
             this.editor.setHistory(this.agent.loadInputHistory(sessionId));
-            setTuiLogSession(sessionId);
+            setLogSession(sessionId);
             this.layout.setMinSize(this.editor, 3);
             if (hasCachedView) {
                 this.store.refreshView();

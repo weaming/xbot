@@ -19,7 +19,7 @@ import type { EventLog } from "../events/event-log.js";
 import type { SessionReplay } from "../events/session-replay.js";
 import type { UsageInfo } from "../types/chat.js";
 import type { Session } from "../types/session.js";
-import type { ActiveSession, TurnSpec } from "./agent-types.js";
+import type { ActiveSession, TurnSpec } from "./session-host-types.js";
 import { toUserContent, type UserMessageInput } from "../types/image.js";
 import { repairEmptyAssistantHistory } from "../utils/conversation-history-repair.js";
 
@@ -48,7 +48,7 @@ export async function runSessionTurn(
     spec: TurnSpec,
     options: { alreadyReserved?: boolean } = {},
 ): Promise<{ aborted?: boolean; contextTrimmed?: boolean }> {
-    // 会话间投递在回 ack 前就已抢到互斥（见 LocalTuiAgent.acceptPeerMessage），
+    // 会话间投递在回 ack 前就已抢到互斥（见 LocalSessionHost.acceptPeerMessage），
     // 这条路径不能再抢一次，否则自己把自己判成 busy。
     if (!options.alreadyReserved) host.beginSessionOperation(sessionId);
     const { turnId } = spec;
@@ -271,7 +271,7 @@ export async function compactSessionContext(
             try {
                 await host.replay.appendAgentEvent(session, "usage_recorded", { usage }, false);
             } catch (persistError) {
-                console.error("❌ [TUI] 压缩 usage 持久化失败:", persistError);
+                console.error("❌ [host] 压缩 usage 持久化失败:", persistError);
             }
         }
         throw error;

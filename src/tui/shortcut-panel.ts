@@ -8,7 +8,7 @@ import { Key, matchesKey, Spacer, Text } from "@earendil-works/pi-tui";
 import type { Component } from "@earendil-works/pi-tui";
 import { PanelBody } from "./panel-body.js";
 import { handlePanelScroll } from "./panel-scroll.js";
-import { padColumns, truncatePlain } from "./panel-text.js";
+import { padColumns, truncatePlain } from "../format/text.js";
 import { SHORTCUT_GROUPS } from "./shortcuts.js";
 import { theme } from "./theme.js";
 

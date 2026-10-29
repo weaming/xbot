@@ -146,7 +146,12 @@ export class SessionControl {
     }
 
     /** 认领会话：本进程 bind 其 socket；被其他实例占用时协商释放，绝不夺权。 */
-    async claim(sessionId: string): Promise<ClaimResult> {
+    /**
+     * 认领会话。
+     * noNegotiate：被其他实例持有时直接失败，不发起协商式转移 ——
+     * 编程化入口（HTTP）不该把会话从正在运行的 TUI 里抢走。
+     */
+    async claim(sessionId: string, options: { noNegotiate?: boolean } = {}): Promise<ClaimResult> {
         if (this.servers.has(sessionId)) return { ok: true };
 
         const server = new PeerServer(
@@ -178,6 +183,11 @@ export class SessionControl {
 
         // 被其他实例持有：协商式转移，持有者忙则放弃
         if (first.pid === process.pid) return { ok: false, reason: "error", message: "会话已被本实例持有" };
+        if (options.noNegotiate) {
+            return first.pid !== undefined
+                ? { ok: false, reason: "busy", pid: first.pid }
+                : { ok: false, reason: "unresponsive" };
+        }
 
         const negotiation = await this.requestRelease(sessionId);
         if (!negotiation.ok) return negotiation;

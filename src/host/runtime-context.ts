@@ -1,7 +1,7 @@
 import fs from "fs";
 import os from "os";
 import path from "path";
-import embeddedTuiIdentity from "./AGENTS.md" with { type: "text" };
+import embeddedIdentity from "./AGENTS.md" with { type: "text" };
 import { setEmbeddedIdentity } from "../skills/base-skill.js";
 import { getTuiSessionLogFile, getTuiStartupLogFile } from "../utils/tui-state-paths.js";
 import { CONSOLE_TIMESTAMP_MARK } from "../utils/logger.js";
@@ -50,15 +50,15 @@ function formatLogArgument(argument: unknown): string {
 }
 
 let currentLogFile: string | null = null;
-let tuiStartupCwd = "";
+let startupCwd = "";
 
 /** TUI 启动时的 cwd：新会话默认工作目录的固定基准，不随会话切换而变化。 */
-export function getTuiStartupCwd(): string {
-    return tuiStartupCwd || process.cwd();
+export function getStartupCwd(): string {
+    return startupCwd || process.cwd();
 }
 
 /** 将 agent 和 MCP 的后台日志写入文件，避免破坏 TUI 的终端绘制。 */
-export function redirectTuiLogsToFile(): () => void {
+export function redirectLogsToFile(): () => void {
     currentLogFile = getTuiStartupLogFile();
     const original = {
         log: console.log,
@@ -101,26 +101,26 @@ export function redirectTuiLogsToFile(): () => void {
 }
 
 /** 会话就绪后把日志目标切到该会话的文件；日志按 session 分离存储。 */
-export function setTuiLogSession(sessionId: string): void {
+export function setLogSession(sessionId: string): void {
     if (currentLogFile) {
         currentLogFile = getTuiSessionLogFile(sessionId);
     }
 }
 
 /** 将本地工具依赖的路径和宿主服务地址切换为 TUI 所在环境。 */
-export function configureTuiHostEnvironment(): void {
+export function configureHostEnvironment(): void {
     const stateDir = DEFAULT_HOST_STATE_DIR;
     const srcRoot = resolveHostSrcRoot();
     fs.mkdirSync(stateDir, { recursive: true });
 
     process.env.SRC_ROOT = srcRoot;
     process.env.ZBOT_STATE_DIR = stateDir;
-    setEmbeddedIdentity(embeddedTuiIdentity);
+    setEmbeddedIdentity(embeddedIdentity);
     process.env.ZBOT_EXTRA_IDENTITY_FILE = path.join(os.homedir(), ".zbot", "AGENTS.md");
     process.env.TUI_PLATFORM = `${process.platform} ${process.arch}`;
     process.env.TUI_CWD = process.cwd();
     // 固化启动目录：TUI_CWD 之后会随会话切换被改写，新建会话仍须以启动目录为初始值。
-    tuiStartupCwd = process.cwd();
+    startupCwd = process.cwd();
     // 同一份固化值也交给工具层：旧会话缺 cwd 时不能继承当前选中会话的目录。
     setStartupToolCwd(process.cwd());
     process.env.TUI_SRC_ROOT = srcRoot;

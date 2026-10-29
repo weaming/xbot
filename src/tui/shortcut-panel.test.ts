@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
-import { padColumns } from "./panel-text.js";
+import { padColumns } from "../format/text.js";
 import { ShortcutPanel } from "./shortcut-panel.js";
 import { SHORTCUT_GROUPS } from "./shortcuts.js";
 

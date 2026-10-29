@@ -18,8 +18,9 @@ import {
 } from "@earendil-works/pi-tui";
 import type { Component } from "@earendil-works/pi-tui";
 import { handlePanelScroll } from "./panel-scroll.js";
-import { padColumns, truncatePlain } from "./panel-text.js";
-import { abbreviatePath, composeSessionRow, planSessionRows, type SessionRow } from "./session-row.js";
+import { padColumns, truncatePlain } from "../format/text.js";
+import { abbreviatePath } from "../format/path.js";
+import { composeSessionRow, planSessionRows, type SessionRow } from "./session-row.js";
 import { DEFAULT_SPINNER, sessionMarker, type SessionOwnerState } from "./session-marker.js";
 import { selectListTheme, theme } from "./theme.js";
 import { formatRelativeTime } from "../utils/time.js";

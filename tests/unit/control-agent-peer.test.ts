@@ -1,5 +1,5 @@
 /**
- * LocalTuiAgent 的会话间投递：认领、入站受理与落盘、回合结束自动回传结果、
+ * LocalSessionHost 的会话间投递：认领、入站受理与落盘、回合结束自动回传结果、
  * 结果到达即驱动空闲请求方继续一轮（忙则留队列，回合结束补跑）。
  */
 
@@ -38,13 +38,13 @@ mock.module("../../src/services/chat-runtime.js", () => ({
     },
 }));
 
-const { LocalTuiAgent } = await import("../../src/tui/agent.js");
+const { LocalSessionHost } = await import("../../src/host/session-host.js");
 const { getSessionDirectory, setSessionControl, setSessionDirectory } = await import("../../src/control/runtime.js");
 const { getSocketPath } = await import("../../src/control/paths.js");
 
 let tmpDir: string;
 let originalStateDir: string | undefined;
-let agent: InstanceType<typeof LocalTuiAgent>;
+let agent: InstanceType<typeof LocalSessionHost>;
 let sessionA: string;
 let sessionB: string;
 
@@ -53,7 +53,7 @@ beforeEach(async () => {
     originalStateDir = process.env.ZBOT_STATE_DIR;
     process.env.ZBOT_STATE_DIR = tmpDir;
 
-    agent = new LocalTuiAgent();
+    agent = new LocalSessionHost();
     sessionA = (await agent.createSession()).sessionId;
     sessionB = (await agent.createSession()).sessionId;
     turnContent = "默认输出";

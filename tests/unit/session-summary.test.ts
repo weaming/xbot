@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import type { AgentEvent } from "../../src/events/agent-events.js";
-import { summarizeEvents } from "../../src/tui/agent.js";
+import { summarizeEvents } from "../../src/host/session-host.js";
 
 const SESSION_ID = "01J00000000000000000000000";
 

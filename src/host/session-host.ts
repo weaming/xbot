@@ -1,10 +1,12 @@
 /**
- * TUI 专用 agent：在当前宿主机进程内管理会话、调用工具并转发渲染事件。
+ * 会话宿主（进程内实现）：管理会话、调用工具并转发事件。
+ *
+ * 与前端无关：不 import tui/ 或 server/，前端只经 SessionHost 契约与事件回调接入。
  *
  * 拆分后的职责：
- * - agent-types.ts   公共接口（TuiAgent / TuiSessionSummary / InstanceNetworkStats）与内部数据结构
- * - agent-summary.ts 会话摘要与实例用量聚合（纯函数）
- * - agent-turn.ts    turn 执行与上下文压缩（宿主能力经 TurnHost 注入）
+ * - session-host-types.ts 公共接口（SessionHost / SessionSummary / InstanceNetworkStats）与内部数据结构
+ * - summary.ts            会话摘要与实例用量聚合（纯函数）
+ * - turn.ts               turn 执行与上下文压缩（宿主能力经 TurnHost 注入）
  *
  * 本文件只负责：会话容器与生命周期、锁与并发保护、对外门面。
  */
@@ -18,7 +20,6 @@ import { listSavedSessionIds } from "../events/session-files.js";
 import { getSessionExchangeLogFile } from "../utils/logger.js";
 import { appendInputHistory, loadInputHistory } from "./input-history.js";
 import { getTuiSessionLogFile } from "../utils/tui-state-paths.js";
-import { getTuiStartupCwd } from "./runtime-context.js";
 import { getSessionTodosFile, getStartupToolCwd, getToolCwd } from "../utils/runtime-paths.js";
 import { planResume } from "../services/resume-plan.js";
 import {
@@ -46,23 +47,29 @@ import type { UsageInfo } from "../types/chat.js";
 import type { AgentEvent, AgentEventPayloads } from "../events/agent-events.js";
 import { MAX_SESSION_TITLE_LENGTH, type Session } from "../types/session.js";
 import type { ChatModelSelection } from "../types/chat-model.js";
-import { aggregateInstanceUsage, summarizeEvents } from "./agent-summary.js";
-import { compactSessionContext, runSessionTurn, type TurnHost } from "./agent-turn.js";
+import { aggregateInstanceUsage, summarizeEvents } from "./summary.js";
+import { compactSessionContext, runSessionTurn, type TurnHost } from "./turn.js";
 import type {
     ActiveSession,
     InstanceNetworkStats,
     SessionReleaseCause,
-    TuiAgent,
-    TuiSessionSummary,
+    SessionHost,
+    SessionHostOptions,
+    SessionSummary,
     TurnSpec,
     TurnUserMessage,
-} from "./agent-types.js";
+} from "./session-host-types.js";
+import {
+    SessionArchivedError,
+    SessionBusyError,
+    SessionNotFoundError,
+} from "./session-host-types.js";
 import { toUserContent, type UserMessageInput } from "../types/image.js";
 import { backgroundTaskManager } from "../tools/background-tasks.js";
 import { deleteSessionImageAssets } from "../utils/image-assets.js";
 
-export type { InstanceNetworkStats, TuiAgent, TuiSessionSummary } from "./agent-types.js";
-export { summarizeEvents } from "./agent-summary.js";
+export type { InstanceNetworkStats, SessionHost, SessionSummary } from "./session-host-types.js";
+export { summarizeEvents } from "./summary.js";
 
 /** 退出时等待进行中的 turn 落盘的上限，超时后放弃等待直接退出。 */
 const CLOSE_FLUSH_TIMEOUT_MS = 3_000;
@@ -72,7 +79,7 @@ const CANCEL_TURN_TIMEOUT_MS = 30_000;
 const PEER_RESULT_SCAN_EVENTS = 2_000;
 
 /** 初始化 TUI 所需的技能和 MCP 连接。 */
-export async function initializeTuiAgentRuntime(): Promise<void> {
+export async function initializeSessionHostRuntime(): Promise<void> {
     const { skillRegistry } = await import("../skills/skill-registry.js");
     await skillRegistry.init();
 
@@ -80,13 +87,13 @@ export async function initializeTuiAgentRuntime(): Promise<void> {
     await initMcpClients({ mode: "tui" });
 }
 
-interface TuiRuntimeReloadResult {
+interface RuntimeReloadResult {
     skillCount: number;
     mcpServerCount: number;
     mcpToolCount: number;
 }
 
-export class LocalTuiAgent implements TuiAgent {
+export class LocalSessionHost implements SessionHost {
     // TUI 会话数据直接使用 sessions/ 根目录。
     private readonly eventLog = new EventLog();
     private readonly replay = new SessionReplay(this.eventLog);
@@ -104,6 +111,11 @@ export class LocalTuiAgent implements TuiAgent {
     /** 已进入退出流程：不再接受新的驱动回合（结果留在队列里即可）。 */
     private isClosing = false;
     private nextRequestId = 1;
+    /**
+     * 宿主启动目录：新建会话（未显式给 cwd）时的默认基准。
+     * 由调用方注入，宿主不读 TUI 的全局启动态。
+     */
+    private readonly startupCwd: string;
     /** turn 执行器所需的宿主能力，随实例生命周期固定。 */
     private readonly turnHost: TurnHost = {
         eventLog: this.eventLog,
@@ -122,11 +134,11 @@ export class LocalTuiAgent implements TuiAgent {
     };
 
     onEvent?: (requestId: number, sessionId: string, event: UIEvent) => void;
-    /** 回合结束回调：宿主据此放行排队的用户输入（见 TuiAgent.onTurnFinished）。 */
+    /** 回合结束回调：宿主据此放行排队的用户输入（见 SessionHost.onTurnFinished）。 */
     onTurnFinished?: (sessionId: string) => void;
-    /** 会话持有被释放（/close 主动关闭 / 被其他实例拿走）时的回调（见 TuiAgent.onSessionReleased）。 */
+    /** 会话持有被释放（/close 主动关闭 / 被其他实例拿走）时的回调（见 SessionHost.onSessionReleased）。 */
     onSessionReleased?: (sessionId: string, cause: SessionReleaseCause) => void;
-    /** 模型派生新子会话时的回调（见 TuiAgent.onSessionSpawned）。 */
+    /** 模型派生新子会话时的回调（见 SessionHost.onSessionSpawned）。 */
     onSessionSpawned?: (sessionId: string, title?: string) => void;
     /** 会话工作目录被改写（cwd 工具 / /cwd）时回调宿主：状态栏与工具基准要跟着换。 */
     onSessionCwdChanged?: (sessionId: string, cwd: string) => void;
@@ -139,7 +151,11 @@ export class LocalTuiAgent implements TuiAgent {
      */
     private readonly control: SessionControl;
 
-    constructor(private readonly runtimeReady: Promise<void> = Promise.resolve()) {
+    constructor(
+        private readonly runtimeReady: Promise<void> = Promise.resolve(),
+        options: SessionHostOptions = {},
+    ) {
+        this.startupCwd = options.startupCwd ?? process.cwd();
         const host: SessionControlHost = {
             title: (sessionId) => this.activeSessions.get(sessionId)?.session.title,
             isBusy: (sessionId) => this.isSessionBusy(sessionId),
@@ -154,7 +170,7 @@ export class LocalTuiAgent implements TuiAgent {
             accept: (message) => this.acceptPeerMessage(message),
             onOutbound: (from, message) => {
                 void this.recordPeerMessage(from, message, "out").catch((error) => {
-                    console.error("⚠️ [TUI] 会话间消息落盘失败:", error);
+                    console.error("⚠️ [host] 会话间消息落盘失败:", error);
                 });
             },
             onResult: (requester, message, result, resultOptions) => {
@@ -168,7 +184,7 @@ export class LocalTuiAgent implements TuiAgent {
                     createdAt: getShanghaiISOString(),
                 })
                     .catch((error) => {
-                        console.error("⚠️ [TUI] 会话间结果落盘失败:", error);
+                        console.error("⚠️ [host] 会话间结果落盘失败:", error);
                     })
                     // 结果落盘后再继续一轮，避免新回合的 user 消息插到结果卡之前
                     .finally(() => this.driveQueuedResults(requester));
@@ -216,7 +232,7 @@ export class LocalTuiAgent implements TuiAgent {
         payload: AgentEventPayloads[T],
     ): Promise<void> {
         if ((await this.eventLog.lastSeq(sessionId)) === 0) {
-            const cwd = this.activeSessions.get(sessionId)?.session.cwd ?? getTuiStartupCwd();
+            const cwd = this.activeSessions.get(sessionId)?.session.cwd ?? this.startupCwd;
             const created = await this.eventLog.append(sessionId, "session_created", { cwd });
             this.updateActiveSeq(sessionId, created.seq);
         }
@@ -229,8 +245,8 @@ export class LocalTuiAgent implements TuiAgent {
         return this.control;
     }
 
-    async claimSession(sessionId: string): Promise<ClaimResult> {
-        return this.control.claim(sessionId);
+    async claimSession(sessionId: string, options: { noNegotiate?: boolean } = {}): Promise<ClaimResult> {
+        return this.control.claim(sessionId, options);
     }
 
     /** 唤醒已归档会话并由当前实例认领，以便后续 session_send 继续工作。 */
@@ -371,7 +387,7 @@ export class LocalTuiAgent implements TuiAgent {
             try {
                 this.control.completeInbound(sessionId, message, result);
             } catch (error) {
-                console.error("⚠️ [TUI] 会话间结果回传失败:", error);
+                console.error("⚠️ [host] 会话间结果回传失败:", error);
             }
         }
     }
@@ -420,7 +436,7 @@ export class LocalTuiAgent implements TuiAgent {
                 text: `等待会话 ${target} 的结果失败：对方未在期限内回传（进程可能已退出）`,
                 createdAt: getShanghaiISOString(),
             }).catch((error) => {
-                console.error("⚠️ [TUI] 会话间结果落盘失败:", error);
+                console.error("⚠️ [host] 会话间结果落盘失败:", error);
             });
         }
     }
@@ -440,16 +456,16 @@ export class LocalTuiAgent implements TuiAgent {
 
     async createSession(cwd?: string): Promise<{ sessionId: string }> {
         const sessionId = createUlid();
-        // 缺省 cwd 固定为 TUI 启动目录；TUI_CWD 随会话切换变化，不能作为新建会话默认值。
-        const session = createEmptySession(sessionId, cwd ?? getTuiStartupCwd());
+        // 缺省 cwd 固定为宿主启动目录；会话 cwd 会随后续切换变化，不能作为新建会话默认值。
+        const session = createEmptySession(sessionId, cwd ?? this.startupCwd);
         this.activeSessions.set(sessionId, { session, lastSeq: 0 });
         return { sessionId };
     }
 
-    async listSessions(): Promise<TuiSessionSummary[]> {
+    async listSessions(): Promise<SessionSummary[]> {
         const ids = this.listSavedSessionIds();
         for (const sessionId of this.activeSessions.keys()) ids.add(sessionId);
-        const sessions: TuiSessionSummary[] = [];
+        const sessions: SessionSummary[] = [];
         for (const sessionId of ids) {
             const events = await this.eventLog.read(sessionId);
             if (events.length > 0) {
@@ -471,6 +487,15 @@ export class LocalTuiAgent implements TuiAgent {
 
     async readSessionEvents(sessionId: string): Promise<AgentEvent[]> {
         return this.eventLog.read(sessionId);
+    }
+
+    async readSessionEventsSince(sessionId: string, after: number): Promise<AgentEvent[]> {
+        // persistedOnly：对外只承诺带唯一 seq 的持久化事实，pending 流片段 seq 全等于末尾，不能作游标
+        return this.eventLog.read(sessionId, after + 1, undefined, { persistedOnly: true });
+    }
+
+    subscribeEvents(listener: (sessionId: string, event: AgentEvent | null) => void): () => void {
+        return this.eventLog.subscribe(listener);
     }
 
     /** 丢弃某会话的缓存事件（清理后调用，避免用旧缓存把它又列出来）。 */
@@ -876,7 +901,7 @@ export class LocalTuiAgent implements TuiAgent {
         };
         void this.trackTurn(sessionId, this.runtimeReady.then(() => runSessionTurn(this.turnHost, sessionId, spec, { alreadyReserved: true })))
             .catch((error) => {
-                console.error("⚠️ [TUI] 会话间结果驱动失败:", error);
+                console.error("⚠️ [host] 会话间结果驱动失败:", error);
             });
     }
 
@@ -918,7 +943,7 @@ export class LocalTuiAgent implements TuiAgent {
     }
 
     /** 重读磁盘技能和 MCP 工具：system prompt 与工具定义都在每次请求现构建，无需清理缓存。 */
-    async reloadRuntime(): Promise<TuiRuntimeReloadResult> {
+    async reloadRuntime(): Promise<RuntimeReloadResult> {
         const [{ skillRegistry }, mcp] = await Promise.all([
             import("../skills/skill-registry.js"),
             import("../mcp/client-manager.js"),
@@ -942,7 +967,7 @@ export class LocalTuiAgent implements TuiAgent {
         spec: TurnSpec,
     ): Promise<{ aborted?: boolean; contextTrimmed?: boolean }> {
         await this.runtimeReady;
-        if (this.isClosing) throw new Error("TUI 已关闭，无法开始回合");
+        if (this.isClosing) throw new Error("宿主已关闭，无法开始回合");
         return runSessionTurn(this.turnHost, sessionId, spec);
     }
 
@@ -981,12 +1006,12 @@ export class LocalTuiAgent implements TuiAgent {
 
         if (diskSeq === 0) {
             if (active) return active.session;
-            throw new Error(`会话不存在: ${sessionId}`);
+            throw new SessionNotFoundError(sessionId);
         }
 
         const tail = await this.eventLog.read(sessionId, diskSeq, 1);
         if (tail[0]?.type === "session_archived") {
-            throw new Error(`会话已归档，请先取消归档: ${sessionId}`);
+            throw new SessionArchivedError(sessionId);
         }
 
         // 磁盘有新事件（如被其他实例推进），增量/全量重放更新内存缓存
@@ -1008,10 +1033,10 @@ export class LocalTuiAgent implements TuiAgent {
 
     private beginSessionOperation(sessionId: string): void {
         if (this.cancellingSessions.has(sessionId)) {
-            throw new Error("busy: 会话正在取消，请稍后重试");
+            throw new SessionBusyError("会话正在取消，请稍后重试");
         }
         if (this.sessionOperations.has(sessionId) || this.activeSessions.get(sessionId)?.abortController !== undefined) {
-            throw new Error("busy: 有请求处理中，请先中止当前请求");
+            throw new SessionBusyError("有请求处理中，请先中止当前请求");
         }
         this.sessionOperations.add(sessionId);
     }
@@ -1031,7 +1056,7 @@ export class LocalTuiAgent implements TuiAgent {
         try {
             await lock.release();
         } catch (error) {
-            console.error(`⚠️ [TUI] 释放会话锁失败 (${lock.sessionId}):`, error);
+            console.error(`⚠️ [host] 释放会话锁失败 (${lock.sessionId}):`, error);
         }
     }
 

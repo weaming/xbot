@@ -1,11 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import {
-    abbreviatePath,
-    composeSessionRow,
-    planSessionRows,
-    type SessionRow,
-} from "./session-row.js";
+import { composeSessionRow, planSessionRows, type SessionRow } from "./session-row.js";
 
 const row = (partial: Partial<SessionRow> = {}): SessionRow => ({
     marker: "○",
@@ -29,31 +24,6 @@ function renderAll(rows: SessionRow[], width: number, selectedIndex = 0): string
         return head + detail;
     });
 }
-
-describe("abbreviatePath", () => {
-    test("home 前缀缩写为 ~，home 本体缩写为单个 ~", () => {
-        expect(abbreviatePath("/Users/garden/src/zbot", "/Users/garden")).toBe("~/src/zbot");
-        expect(abbreviatePath("/Users/garden", "/Users/garden")).toBe("~");
-    });
-
-    test("无 home 或非 home 路径原样返回，尾部分隔符被去掉", () => {
-        expect(abbreviatePath("/opt/work/", undefined)).toBe("/opt/work");
-        expect(abbreviatePath("/var/log", "/Users/garden")).toBe("/var/log");
-    });
-
-    test("超宽时保留尾部并在目录边界断开", () => {
-        const short = abbreviatePath("/Users/garden/src/very/deep/project", "/Users/garden", 18);
-
-        expect(visibleWidth(short)).toBeLessThanOrEqual(18);
-        expect(short.startsWith("…")).toBe(true);
-        expect(short.endsWith("project")).toBe(true);
-        expect(short).toContain("/");
-    });
-
-    test("空路径返回空串", () => {
-        expect(abbreviatePath("", "/Users/garden")).toBe("");
-    });
-});
 
 describe("planSessionRows", () => {
     test("标题列取本批自然宽度（不拉满），避免副列被推远", () => {

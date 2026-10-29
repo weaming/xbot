@@ -3,7 +3,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 
-import { redirectTuiLogsToFile } from "../../src/tui/runtime-context.js";
+import { redirectLogsToFile } from "../../src/host/runtime-context.js";
 import { getTuiStartupLogFile } from "../../src/utils/tui-state-paths.js";
 
 describe("TUI 日志重定向", () => {
@@ -28,7 +28,7 @@ describe("TUI 日志重定向", () => {
         previousStateDir = process.env.ZBOT_STATE_DIR;
         tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-tui-log-"));
         process.env.ZBOT_STATE_DIR = tmpDir;
-        restoreLogs = redirectTuiLogsToFile();
+        restoreLogs = redirectLogsToFile();
 
         console.debug("MCP stderr");
 

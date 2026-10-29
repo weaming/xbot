@@ -37,10 +37,38 @@ interface StreamState {
     chain: Promise<void>;
 }
 
+/**
+ * 持久化事件监听器：进程内前端（TUI / HTTP）各自订阅同一份事实源。
+ * event 为 null 表示该会话的时间轴被重置（truncate / delete），
+ * 订阅者必须丢弃已有游标，否则后续 seq 会小于旧游标而永久静默。
+ */
+export type EventLogListener = (sessionId: string, event: AgentEvent | null) => void;
+
 export class EventLog {
     private readonly seqCache = new Map<string, number>();
     private readonly appendLocks = new Map<string, Promise<void>>();
     private readonly streamStates = new Map<string, StreamState>();
+    /** 实时订阅者：只推持久化事件（新增即推），瞬态流式片段不在此列。 */
+    private readonly listeners = new Set<EventLogListener>();
+
+    /** 订阅持久化事件（append 成功后立即推送）；返回取消订阅函数。 */
+    subscribe(listener: EventLogListener): () => void {
+        this.listeners.add(listener);
+        return () => {
+            this.listeners.delete(listener);
+        };
+    }
+
+    /** 广播给所有订阅者；单个监听器抛错不影响其他监听器与写入流程。 */
+    private emit(sessionId: string, event: AgentEvent | null): void {
+        for (const listener of this.listeners) {
+            try {
+                listener(sessionId, event);
+            } catch (error) {
+                console.error("[EventLog] 事件监听器异常:", error);
+            }
+        }
+    }
 
     private eventFilePath(sessionId: string): string {
         return path.join(getSessionsDir("events"), `${sanitizeSessionId(sessionId)}.jsonl`);
@@ -230,24 +258,28 @@ export class EventLog {
         this.appendLocks.set(sessionId, queued);
         await previous;
 
+        let appended: AgentEvent | undefined;
         try {
             const seq = (await this.lastSeq(sessionId)) + 1;
             const event = {
-            seq,
-            ts: new Date().toISOString(),
-            sessionId,
-            type,
-            payload,
-        } as AgentEvent;
+                seq,
+                ts: new Date().toISOString(),
+                sessionId,
+                type,
+                payload,
+            } as AgentEvent;
 
-        const filePath = this.eventFilePath(sessionId);
-        await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-        await fs.promises.appendFile(filePath, JSON.stringify(event) + "\n", "utf8");
+            const filePath = this.eventFilePath(sessionId);
+            await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+            await fs.promises.appendFile(filePath, JSON.stringify(event) + "\n", "utf8");
             this.seqCache.set(sessionId, seq);
+            appended = event;
             return event;
         } finally {
             release();
             if (this.appendLocks.get(sessionId) === queued) this.appendLocks.delete(sessionId);
+            // 广播放到锁释放之后：订阅者若在回调里 await 同一会话的 append，不会与本次写入互锁
+            if (appended) this.emit(sessionId, appended);
         }
     }
 
@@ -256,8 +288,16 @@ export class EventLog {
      * 主日志之后并入 pending 流文件里的未闭合回合片段，使崩溃恢复与逐条落盘时行为一致。
      * 片段的 seq 统一取日志末尾值：它们只按 turnId 归组，不参与时间轴排序，
      * 这样 lastSeq 不会被逐 token 片段抬高。
+     *
+     * persistedOnly 跳过并入片段：对外接口（HTTP 事件流）只承诺带唯一 seq 的持久化事实，
+     * 片段 seq 全等于日志末尾，既无法做游标也会让客户端按 seq 去重时丢帧。
      */
-    async read(sessionId: string, fromSeq = 1, limit?: number): Promise<AgentEvent[]> {
+    async read(
+        sessionId: string,
+        fromSeq = 1,
+        limit?: number,
+        options: { persistedOnly?: boolean } = {},
+    ): Promise<AgentEvent[]> {
         const text = await readFileIfExists(this.eventFilePath(sessionId));
 
         const events: AgentEvent[] = [];
@@ -277,6 +317,8 @@ export class EventLog {
                 if (limit !== undefined && events.length >= limit) break;
             }
         }
+
+        if (options.persistedOnly) return events;
 
         // 已达 limit 或 fromSeq 越过日志末尾时，片段排在更后面，不必读盘
         if (limit !== undefined && events.length >= limit) return events;
@@ -308,6 +350,7 @@ export class EventLog {
         this.seqCache.set(sessionId, upToSeq);
         // 截断到过去：pending 里的流式片段属于被作废的未来回合
         await this.clearStream(sessionId);
+        this.emit(sessionId, null);
     }
 
     /** 删除会话的完整事件日志（/delete 彻底删除）。 */
@@ -319,6 +362,7 @@ export class EventLog {
         }
         this.seqCache.delete(sessionId);
         await this.clearStream(sessionId);
+        this.emit(sessionId, null);
     }
 
     /** 清掉某会话的 seq 缓存（日志已在外部删除时用）。 */

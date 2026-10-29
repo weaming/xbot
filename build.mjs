@@ -50,7 +50,9 @@ async function bunBuild(input, outDir) {
 // Clean and create output directory
 cleanDir(OUT_DIR);
 
-fs.copyFileSync('src/tui/AGENTS.md', `${COMPILED_DIR}/tui/AGENTS.md`);
+// 身份文本按源码位置跟随模块：runtime-context 编译到 dist/host/，资源必须落在同一目录
+fs.mkdirSync(`${COMPILED_DIR}/host`, { recursive: true });
+fs.copyFileSync('src/host/AGENTS.md', `${COMPILED_DIR}/host/AGENTS.md`);
 await bunBuild(`${COMPILED_DIR}/tui/main.js`, OUT_DIR);
 
 console.log('Build complete');

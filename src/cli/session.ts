@@ -16,9 +16,9 @@ import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { EventLog } from "../events/event-log.js";
 import { listSavedSessionIds } from "../events/session-files.js";
 import { SessionReplay } from "../events/session-replay.js";
-import { summarizeEvents } from "../tui/agent-summary.js";
-import { abbreviatePath } from "../tui/session-row.js";
-import { padColumns, truncatePlain } from "../tui/panel-text.js";
+import { summarizeEvents } from "../host/summary.js";
+import { abbreviatePath } from "../format/path.js";
+import { padColumns, truncatePlain } from "../format/text.js";
 import { sortSessions, type SessionOrderItem } from "../utils/session-order.js";
 import { formatRelativeTime } from "../utils/time.js";
 import { createUlid } from "../utils/ulid.js";
@@ -36,7 +36,7 @@ import {
 import { getSocketPath, removeSocketFile } from "../control/paths.js";
 import { PeerConnection } from "../control/client.js";
 import { createPeerMessage, isCancelledStopReason, type PeerResult } from "../control/protocol.js";
-import type { TuiSessionSummary } from "../tui/agent-types.js";
+import type { SessionSummary } from "../host/session-host-types.js";
 import { MAX_SESSION_TITLE_LENGTH, type StoredChatMessage } from "../types/session.js";
 import type { ChatModelSelection } from "../types/chat-model.js";
 import type { UserContent } from "../types/image.js";
@@ -71,7 +71,7 @@ const SESSION_CLI_USAGE = [
 
 /** 列表行：摘要 + 归属（socket 探测结果）；排序键与摘要同源，供 sortSessions 使用。 */
 export interface SessionListRow extends SessionOrderItem {
-    summary: TuiSessionSummary;
+    summary: SessionSummary;
     ownership?: PeerOwnership;
     /** 真实创建时间（首条事件 ts）。 */
     createdAt?: string;
@@ -627,7 +627,7 @@ async function runSend(
 /** 会话摘要 + 真实创建时间（取首条事件 ts；Session.createdAt 是重放时刻，不能代表创建时间）。 */
 async function readSessionMeta(
     sessionId: string,
-): Promise<{ summary: TuiSessionSummary; createdAt?: string } | null> {
+): Promise<{ summary: SessionSummary; createdAt?: string } | null> {
     const events = await eventLog.read(sessionId);
     if (events.length === 0) return null;
     return { summary: summarizeEvents(sessionId, events), ...(events[0] ? { createdAt: events[0].ts } : {}) };

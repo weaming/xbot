@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { AgentEvent } from "../events/agent-events.js";
 import type { UsageInfo } from "../types/chat.js";
 import { sortSessions } from "../utils/session-order.js";
-import { aggregateInstanceUsage, summarizeEvents } from "./agent-summary.js";
+import { aggregateInstanceUsage, summarizeEvents } from "./summary.js";
 
 const usageOf = (partial: Partial<UsageInfo> = {}): UsageInfo => ({
     model: "deepseek-v4-flash",

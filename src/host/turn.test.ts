@@ -4,8 +4,8 @@ import os from "os";
 import path from "path";
 import type { TurnOutcome } from "../services/run-turn.js";
 import { createEmptySession } from "../events/session-replay.js";
-import type { TurnHost } from "./agent-turn.js";
-import type { ActiveSession } from "./agent-types.js";
+import type { TurnHost } from "./turn.js";
+import type { ActiveSession } from "./session-host-types.js";
 
 /**
  * turn 执行器单测：只替换 runTurnCore（唯一的外部 LLM 骨架），
@@ -28,7 +28,7 @@ mock.module("../services/run-turn.js", () => ({
     runTurnCore: (spec: any, hooks: any) => runTurnCoreImpl(spec, hooks),
 }));
 
-const { runSessionTurn, compactSessionContext } = await import("./agent-turn.js");
+const { runSessionTurn, compactSessionContext } = await import("./turn.js");
 
 const SESSION_ID = "sess-1";
 

@@ -5,14 +5,14 @@ import os from "os";
 import path from "path";
 import { getTuiWheelLogFile } from "../../src/utils/tui-state-paths.js";
 import { SPINNER_FRAMES } from "../../src/tui/session-marker.js";
-import type { SessionReleaseCause } from "../../src/tui/agent-types.js";
+import type { SessionReleaseCause } from "../../src/host/session-host-types.js";
 
 /**
  * TUI Pending 队列测试：
  * - mock 掉 @earendil-works/pi-tui，只暴露 ChatApp 真正用到的 API；
  * - mock 掉 services/chat-runtime，只把 runChatQuery 换成返回固定文本的桩
  *   （这些测试不触发真实 LLM，只走 ChatApp 的本地状态机）。
- * - LocalTuiAgent 不直接使用；这里用极简 fake TuiAgent 测 ChatApp。
+ * - LocalSessionHost 不直接使用；这里用极简 fake SessionHost 测 ChatApp。
  */
 
 import { tuiStub } from "./tui-stub.js";
@@ -117,7 +117,7 @@ function makeFakeAgent(): FakeAgent {
             claimed.add(sessionId);
             return { ok: true as const };
         },
-        // 与真实 LocalTuiAgent 一致：释放持有会同步通知宿主（本实例主动关闭 / 被接管）
+        // 与真实 LocalSessionHost 一致：释放持有会同步通知宿主（本实例主动关闭 / 被接管）
         releaseSession: (sessionId: string, options?: { cause?: SessionReleaseCause }) => {
             claimed.delete(sessionId);
             agent.onSessionReleased?.(sessionId, options?.cause ?? "peer");

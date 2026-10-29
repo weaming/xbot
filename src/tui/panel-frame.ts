@@ -5,7 +5,7 @@
 
 import { visibleWidth } from "@earendil-works/pi-tui";
 import type { Component } from "@earendil-works/pi-tui";
-import { padColumns } from "./panel-text.js";
+import { padColumns } from "../format/text.js";
 import { theme } from "./theme.js";
 
 /** 各浮层的边框强调色。 */

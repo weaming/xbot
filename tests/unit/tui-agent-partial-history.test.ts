@@ -7,7 +7,7 @@ import { getSessionContextHistory } from "../../src/utils/conversation-history.j
 /**
  * 把 runChatQuery 替换为可注入 spy，同时透传 chat-runtime 的其余命名导出，
  * 避免影响 chat-runtime.test.ts 等其他测试套件对同一模块的依赖。
- * LocalTuiAgent 的 abort/错误/成功路径把用户消息与已产生的工具段物化为
+ * LocalSessionHost 的 abort/错误/成功路径把用户消息与已产生的工具段物化为
  * interrupted/failed turn，不需要真 LLM 调用也不需要真 buildConversationHistory。
  */
 
@@ -26,13 +26,13 @@ mock.module("../../src/services/chat-runtime.js", () => {
     };
 });
 
-const { LocalTuiAgent } = await import("../../src/tui/agent.js");
+const { LocalSessionHost } = await import("../../src/host/session-host.js");
 
 let tmpDir: string;
 let originalStateDir: string | undefined;
 let originalEnvAgents: string | undefined;
 let originalExtraAgents: string | undefined;
-let agent: InstanceType<typeof LocalTuiAgent>;
+let agent: InstanceType<typeof LocalSessionHost>;
 let sessionId: string;
 
 beforeEach(async () => {
@@ -44,7 +44,7 @@ beforeEach(async () => {
     delete process.env.ZBOT_IDENTITY_FILE;
     delete process.env.ZBOT_EXTRA_IDENTITY_FILE;
 
-    agent = new LocalTuiAgent();
+    agent = new LocalSessionHost();
     const { sessionId: id } = await agent.createSession();
     sessionId = id;
 });
@@ -84,7 +84,7 @@ const partialMessages = [
     { role: "assistant", content: "partial answer" },
 ];
 
-describe("LocalTuiAgent.sendMessage interrupted/failed turn materialization", () => {
+describe("LocalSessionHost.sendMessage interrupted/failed turn materialization", () => {
     test("abort path materializes an interrupted turn with user message and partial tool segments", async () => {
         runChatQueryImpl = async () => {
             throw makeAbortError(partialMessages);
@@ -217,7 +217,7 @@ describe("LocalTuiAgent.sendMessage interrupted/failed turn materialization", ()
         expect((agent as any).activeSessions.get(sessionId).session.lastPromptTokens).toBe(250);
 
         agent.close();
-        const freshAgent = new LocalTuiAgent();
+        const freshAgent = new LocalSessionHost();
         const replayed = await (freshAgent as any).requireActiveSession(sessionId);
         expect(replayed.lastPromptTokens).toBe(250);
     });
@@ -252,7 +252,7 @@ describe("LocalTuiAgent.sendMessage interrupted/failed turn materialization", ()
 
         // 模拟重启恢复：从事件日志重放重建会话
         agent.close();
-        const freshAgent = new LocalTuiAgent();
+        const freshAgent = new LocalSessionHost();
         const replayed = await (freshAgent as any).requireActiveSession(sessionId);
         expect(replayed.turns).toBeArrayOfSize(1);
         expect(replayed.turns[0].status).toBe("failed");
@@ -295,7 +295,7 @@ describe("LocalTuiAgent.sendMessage interrupted/failed turn materialization", ()
         await expect(agent.sendMessage(sessionId, "保留这个问题")).rejects.toThrow("Connection error.");
 
         await agent.close();
-        const freshAgent = new LocalTuiAgent();
+        const freshAgent = new LocalSessionHost();
         let capturedHistory: any[] = [];
         runChatQueryImpl = async options => {
             capturedHistory = options.history;
@@ -335,7 +335,7 @@ describe("LocalTuiAgent.sendMessage interrupted/failed turn materialization", ()
         // 流式片段只进 pending 缓冲，回合定稿后剔除，不落主日志
         expect(events.some((event: any) => event.type === "turn_stream_delta")).toBe(false);
         expect(fs.existsSync(path.join(tmpDir, "sessions", "events", `${sessionId}.stream.jsonl`))).toBe(false);
-        const freshAgent = new LocalTuiAgent();
+        const freshAgent = new LocalSessionHost();
         const replayed = await (freshAgent as any).requireActiveSession(sessionId);
         expect(getSessionContextHistory(replayed).map(message => message.content)).toEqual(["问题", "已显示的部分"]);
         await freshAgent.close();
@@ -349,7 +349,7 @@ describe("LocalTuiAgent.sendMessage interrupted/failed turn materialization", ()
         agent.close();
 
         // 模拟重启：新 agent 实例从事件日志全量重放重建会话
-        const freshAgent = new LocalTuiAgent();
+        const freshAgent = new LocalSessionHost();
         const replayed = await (freshAgent as any).requireActiveSession(sessionId);
         expect(replayed.turns).toBeArrayOfSize(1);
         expect(replayed.turns[0].status).toBe("interrupted");
@@ -397,7 +397,7 @@ describe("LocalTuiAgent.sendMessage interrupted/failed turn materialization", ()
         expect(commit?.payload.userMessages).toEqual(["退出前的消息"]);
 
         // 模拟重启：新 agent 从事件日志重放，用户消息与工具段仍在上下文
-        const freshAgent = new LocalTuiAgent();
+        const freshAgent = new LocalSessionHost();
         const replayed = await (freshAgent as any).requireActiveSession(sessionId);
         expect(replayed.turns).toBeArrayOfSize(1);
         expect(replayed.turns[0].status).toBe("interrupted");
@@ -514,7 +514,7 @@ describe("LocalTuiAgent.sendMessage interrupted/failed turn materialization", ()
         expect(commits[1].payload.turnId).not.toBe(commits[0].payload.turnId);
 
         // 重启重放：中断回合 + 无用户消息的续跑回合，工具消息紧跟 assistant
-        const freshAgent = new LocalTuiAgent();
+        const freshAgent = new LocalSessionHost();
         const replayed = await (freshAgent as any).requireActiveSession(sessionId);
         expect(replayed.turns).toBeArrayOfSize(2);
         expect(replayed.turns[0].status).toBe("interrupted");
