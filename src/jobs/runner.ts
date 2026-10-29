@@ -244,6 +244,12 @@ export class JobRunner {
 
             // 本任务勾选的 MCP 白名单只影响这次执行；回合结束就撤掉
             setSessionMcpScope(sessionId, job.input.mcpServers);
+            // 勾选同时意味着「这次要加载」：只允许而不加载，勾了等于没勾。
+            // 未勾选（undefined = 不限制）不动会话已有的懒加载清单，避免把全部的懒服务器
+            // 一次性拉起来（工具数会爆）。
+            if (job.input.mcpServers?.length) {
+                await this.host.setSessionLazyMcpServers(sessionId, job.input.mcpServers);
+            }
             this.store.transition(job.id, "running");
 
             heartbeat = setInterval(() => {
