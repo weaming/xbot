@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strconv"
+	"syscall"
 )
 
 // runApp 按清单把资源分派给子进程，然后执行入口 JS。
@@ -98,9 +100,45 @@ func runApp(m *Manifest, entries map[string][]byte) {
 	cmd.Env = env
 	cmd.ExtraFiles = extra
 
-	if err := cmd.Run(); err != nil {
-		die(m.Runtime+" 执行失败", err)
+	if err := cmd.Start(); err != nil {
+		die(m.Runtime+" 启动失败", err)
 	}
+
+	// 包装器必须活到子进程收尾完成，否则 shell 会提前拿回终端：
+	// Ctrl-C 时父进程按默认行为立刻死掉，子进程还在排空键盘协议/探针回包，
+	// 终端就先被 shell 读了 —— 屏幕上于是冒出一串 ^[[?62;22;52c。
+	//
+	// SIGTERM/SIGHUP 一律转发：systemd、docker stop 只发给主 pid，子进程收不到。
+	// SIGINT 只在"没有终端"时转发：终端里按下 Ctrl-C 时内核已经把信号发给整个
+	// 前台进程组，子进程本来就收到一份，再转发会让它把"第一次"当成"第二次"强制退出；
+	// 而 stdin 不是终端（容器、systemd）时 Ctrl-C 不会送到子进程，必须代为转发。
+	sigCh := make(chan os.Signal, len(handledSignals()))
+	signal.Notify(sigCh, handledSignals()...)
+	forwardInterrupt := !isCharDevice(os.Stdin)
+	go func() {
+		for sig := range sigCh {
+			if sig == os.Interrupt && !forwardInterrupt {
+				continue
+			}
+			_ = cmd.Process.Signal(sig)
+		}
+	}()
+
+	_ = cmd.Wait()
+	signal.Stop(sigCh)
+	close(sigCh)
+
+	// 退出码原样透传：子进程自己会解释失败原因，包装器再补一句
+	// "执行失败: exit status 1" 只会盖住真正有用的那行输出。
+	if state := cmd.ProcessState; state != nil {
+		if code := state.ExitCode(); code >= 0 {
+			os.Exit(code)
+		}
+		if status, ok := state.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+			os.Exit(128 + int(status.Signal()))
+		}
+	}
+	os.Exit(1)
 }
 
 // findExt 返回 payload 中匹配扩展名的条目名。
@@ -198,4 +236,14 @@ func findRuntime(name string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// isCharDevice 判断文件是不是字符设备（终端、/dev/null 等）。
+// 用来区分"有人按 Ctrl-C"与"容器/systemd 直接打 pid 发信号"两种情形。
+func isCharDevice(f *os.File) bool {
+	info, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
 }

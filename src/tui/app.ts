@@ -79,7 +79,7 @@ import {
 } from "../utils/user-question.js";
 
 import { getWheelLogFile } from "../utils/state-paths.js";
-import { installTerminalExitGuard } from "../utils/terminal-state.js";
+import { drainPendingInput, installTerminalExitGuard } from "../utils/terminal-state.js";
 import { ChatStore } from "./store.js";
 import { editorTheme, theme } from "./theme.js";
 import { setLogSession } from "../host/runtime-context.js";
@@ -3004,6 +3004,11 @@ export class ChatApp {
         process.exit(exitCode);
     }
 
+    /** 退出前排空 stdin 队列。抽成方法只为了让退出顺序可测（测试会替换掉它）。 */
+    async drainTerminalInput(): Promise<number> {
+        return await drainPendingInput({ maxMs: 400, idleMs: 60 });
+    }
+
     private async exit(exitCode = 0): Promise<void> {
         if (this.exiting) return;
         this.exiting = true;
@@ -3021,14 +3026,6 @@ export class ChatApp {
         } catch (error) {
             console.error("⚠️ [TUI] 退出前落盘失败:", error);
         }
-        // 先排空终端应答（kitty 协议 / DA1 / 背景色等查询的回包）：它们留在输入队列里
-        // 的话，会被下一个前台程序的 shell 回显成一串 ^[ 垃圾。排空期间的真实按键会被
-        // 丢弃，但退出只需几十毫秒，且退出键走信号不受影响。失败也要继续复位。
-        try {
-            await this.tui.terminal.drainInput(400, 40);
-        } catch (error) {
-            console.error("⚠️ [TUI] 退出前排空终端输入失败:", error);
-        }
         // preserveScreen：退出 alternate buffer（\x1b[?1049l）而不把 TUI 最后一帧
         // 重绘回主 buffer，避免终端残留 TUI 画面与滚动历史。
         try {
@@ -3037,6 +3034,14 @@ export class ChatApp {
             console.error("⚠️ [TUI] 退出时恢复终端失败:", error);
         } finally {
             this.terminalStarted = false;
+        }
+        // stop() 已经弹出 kitty 协议栈并复原 raw 模式，之后到达的应答（设备属性、背景色、
+        // 光标位置）不会再被解析，只能直接丢掉：留在队列里会被 shell 回显成一串 ^[ 垃圾。
+        // 先 stop 再排空，顺序不能反：协议栈没弹时后续按键还会生成新的 CSI 序列。
+        try {
+            await this.drainTerminalInput();
+        } catch (error) {
+            console.error("⚠️ [TUI] 退出前排空终端输入失败:", error);
         }
         this.printNetworkStats();
         process.exit(exitCode);

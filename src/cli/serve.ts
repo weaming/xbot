@@ -16,6 +16,7 @@ import { startHttpServer, type HttpServerHandle } from "../server/http-server.js
 import { joinInputs, takeInputs } from "../server/pending-inputs.js";
 import { setJobCommentWriter } from "../tools/job-context.js";
 import { getStateDir, setStartupToolCwd } from "../utils/runtime-paths.js";
+import { drainPendingInput } from "../utils/terminal-state.js";
 import { createUlid } from "../utils/ulid.js";
 
 const DEFAULT_PORT = 8787;
@@ -158,6 +159,12 @@ async function shutdown(
     } catch {
         // stdio 已断开（EPIPE 等）：不再尝试写，但必须继续退出，否则进程永远停不下来
     } finally {
+        // 排空 tty 输入队列：终端探针（背景色 / 设备属性 / 光标位置）的回包可能还躺在
+        // 队列里，serve 从不读 stdin，不排掉的话 shell 恢复后会把它当输入回显成一串 ^[。
+        const discarded = await drainPendingInput();
+        if (discarded > 0) {
+            process.stderr.write(`排空终端输入队列：丢弃 ${discarded} 字节残留应答\n`);
+        }
         clearTimeout(forceExit);
         // 收尾完成即退出：残留句柄（MCP stdio 等）不该让进程挂着
         process.exit(exitCode);

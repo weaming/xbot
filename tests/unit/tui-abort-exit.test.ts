@@ -77,7 +77,7 @@ function makeApp(agent = makeAgent()) {
 /** 拦截 process.exit，避免测试真的退出进程。 */
 async function runExit(app: any): Promise<{ order: string[] }> {
     const order: string[] = [];
-    app.tui.terminal.drainInput = async () => { order.push("drain"); };
+    app.drainTerminalInput = async () => { order.push("drain"); };
     app.tui.stop = () => { order.push("stop"); };
     const originalExit = process.exit;
     (process as any).exit = () => { order.push("exit"); };
@@ -175,8 +175,8 @@ describe("中断后立即退出", () => {
         };
 
         const result = await runExit(app);
-        // 先排空终端应答，再复位终端，最后退出
-        expect([...order, ...result.order]).toEqual(["close", "drain", "stop", "exit"]);
+        // 先复位终端的 stop()（顺带弹出 kitty 协议栈），再排空队列，最后退出
+        expect([...order, ...result.order]).toEqual(["close", "stop", "drain", "exit"]);
     });
 
     test("close 抛错也要继续退出，不能挂在异常上", async () => {
@@ -189,7 +189,7 @@ describe("中断后立即退出", () => {
         console.error = () => {};
         try {
             const { order } = await runExit(app);
-            expect(order).toEqual(["drain", "stop", "exit"]);
+            expect(order).toEqual(["stop", "drain", "exit"]);
         } finally {
             console.error = originalError;
         }
@@ -222,6 +222,6 @@ describe("中断后立即退出", () => {
         await app.exit(0).catch(() => {});
 
         expect(closeCount).toBe(1);
-        expect(order).toEqual(["drain", "stop", "exit"]);
+        expect(order).toEqual(["stop", "drain", "exit"]);
     });
 });
