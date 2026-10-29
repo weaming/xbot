@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { emptyUsage, mergeUsage } from "../events/ui-events.js";
 import type { UsageInfo } from "../types/chat.js";
-import { addTokenUsage, computeSessionRate, resetTokenUsage } from "./store-usage.js";
+import { addTokenUsage, computeSessionRate, recordEstimatedContextTokens, resetTokenUsage } from "./store-usage.js";
 import { createSessionUiState, type SessionUiState } from "./store-types.js";
 
 const usageOf = (partial: Partial<UsageInfo> = {}): UsageInfo => ({
@@ -17,7 +17,7 @@ const usageOf = (partial: Partial<UsageInfo> = {}): UsageInfo => ({
 });
 
 describe("addTokenUsage", () => {
-    test("累计各 token 明细与 latestPromptTokens", () => {
+    test("累计各 token 明细与上下文占用来源", () => {
         const state = createSessionUiState();
         addTokenUsage(state, usageOf({ latestPromptTokens: 80 }), 0);
         addTokenUsage(state, usageOf({ promptTokens: 10, completionTokens: 5, totalTokens: 15, latestPromptTokens: 20 }), 0);
@@ -25,14 +25,16 @@ describe("addTokenUsage", () => {
         expect(state.promptTokens).toBe(110);
         expect(state.completionTokens).toBe(55);
         expect(state.totalTokens).toBe(165);
-        expect(state.latestPromptTokens).toBe(20);
+        expect(state.contextTokens).toBe(20);
+        expect(state.contextSource).toBe("provider");
     });
 
     test("缺省 latestPromptTokens 时回落到 promptTokens", () => {
         const state = createSessionUiState();
         addTokenUsage(state, usageOf({ promptTokens: 42 }), 0);
 
-        expect(state.latestPromptTokens).toBe(42);
+        expect(state.contextTokens).toBe(42);
+        expect(state.contextSource).toBe("provider");
     });
 
     test("costFor 只累加有限正值", () => {
@@ -49,7 +51,28 @@ describe("addTokenUsage", () => {
         addTokenUsage(state, usageOf({ latestPromptTokens: 80 }), 0);
         addTokenUsage(state, usageOf({ promptTokens: 0, cacheMissTokens: 0 }), 0);
 
-        expect(state.latestPromptTokens).toBe(0);
+        expect(state.contextTokens).toBe(0);
+        expect(state.contextSource).toBeUndefined();
+    });
+
+    test("本地估算只有在超过实测值时才接管，并标记来源", () => {
+        const state = createSessionUiState();
+        addTokenUsage(state, usageOf({ latestPromptTokens: 199_001 }), 0);
+
+        // 估算与实测接近（分词口径差异）时不切换来源
+        recordEstimatedContextTokens(state, 205_000);
+        expect(state.contextTokens).toBe(199_001);
+        expect(state.contextSource).toBe("provider");
+
+        // 失败回合没有 usage，估算揭示真实占用（含思维链/媒体）
+        recordEstimatedContextTokens(state, 923_149);
+        expect(state.contextTokens).toBe(923_149);
+        expect(state.contextSource).toBe("local");
+
+        // 压缩后上下文变小：来源已是估算，直接跟随
+        recordEstimatedContextTokens(state, 120_000);
+        expect(state.contextTokens).toBe(120_000);
+        expect(state.contextSource).toBe("local");
     });
 });
 

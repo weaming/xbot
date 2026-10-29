@@ -31,7 +31,10 @@ export interface StatusBarInput {
     awaitingAnswer?: number;
     /** 当前会话仍在运行的后台 shell 任务数；0 或省略时不占位。 */
     backgroundRunning?: number;
-    latestPromptTokens: number;
+    /** 上下文占用（唯一事实来源，来自 store.contextTokens）。 */
+    contextTokens: number;
+    /** 上下文数值来源：provider = 上游实测；local = 本地估算（显示更淡）。 */
+    contextSource?: "provider" | "local";
     totalTokens: number;
     promptTokens: number;
     completionTokens: number;
@@ -93,11 +96,14 @@ export function formatRateTag(rate: RequestRate, isStale: boolean): string {
 /** Token 统计：上下文占用 / 累计 / 输入输出 / 思考 / 缓存命中率，逐项按需出现。 */
 function buildTokenStats(input: StatusBarInput): string {
     const parts: string[] = [];
-    const { latestPromptTokens, contextWindow } = input;
+    const { contextTokens, contextWindow, contextSource } = input;
 
-    if (latestPromptTokens > 0 && contextWindow > 0) {
-        const ctxRate = `${((latestPromptTokens / contextWindow) * 100).toFixed(1)}%`;
-        parts.push(`${formatCompactTokens(latestPromptTokens)}/${formatCompactTokens(contextWindow)}(${ctxRate})`);
+    // 上下文占用单独着色：来源为本地估算时更淡，避免把估算值当成上游实测
+    let contextPart = "";
+    if (contextTokens > 0 && contextWindow > 0) {
+        const ctxRate = `${((contextTokens / contextWindow) * 100).toFixed(1)}%`;
+        const text = `${formatCompactTokens(contextTokens)}/${formatCompactTokens(contextWindow)}(${ctxRate})`;
+        contextPart = contextSource === "local" ? theme.faint(text) : theme.dim(text);
     }
     if (input.totalTokens > 0) {
         parts.push(`Σ${formatCompactTokens(input.totalTokens)}`);
@@ -118,7 +124,8 @@ function buildTokenStats(input: StatusBarInput): string {
             `🎯${cacheRate}(${formatCompactTokens(input.cacheHitTokens)}/${formatCompactTokens(input.cacheMissTokens)})`,
         );
     }
-    return parts.length > 0 ? theme.dim(parts.join(" ")) : "";
+    const detailPart = parts.length > 0 ? theme.dim(parts.join(" ")) : "";
+    return [contextPart, detailPart].filter(Boolean).join(" ");
 }
 
 /** 组装两行状态栏文本。 */

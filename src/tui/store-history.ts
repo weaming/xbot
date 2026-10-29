@@ -25,7 +25,7 @@ import {
     INTERRUPT_LABEL,
     interruptLabel,
 } from "./store-message.js";
-import { addTokenUsage, resetTokenUsage } from "./store-usage.js";
+import { addTokenUsage, recordEstimatedContextTokens, resetTokenUsage } from "./store-usage.js";
 import type { ProjectionDeps } from "./store-projector.js";
 import type { PeerMeta } from "./store-types.js";
 
@@ -454,6 +454,7 @@ export function projectHistory(
                 handledTurnIds.add(turnId);
                 const terminal = commitsById.get(turnId) ?? event;
                 addTokenUsage(state, terminal.payload.usage, eventAt(terminal), deps.costFor);
+                recordEstimatedContextTokens(state, terminal.payload.contextTokens);
                 pushCommitTurn(terminal, eventAt(terminal));
                 break;
             }

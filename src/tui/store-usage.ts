@@ -13,7 +13,8 @@ export function resetTokenUsage(state: SessionUiState): void {
     state.reasoningTokens = 0;
     state.cacheHitTokens = 0;
     state.cacheMissTokens = 0;
-    state.latestPromptTokens = 0;
+    state.contextTokens = 0;
+    state.contextSource = undefined;
     state.costYuan = 0;
     state.lastRate = undefined;
     state.summedCompletionTokens = 0;
@@ -45,9 +46,32 @@ export function addTokenUsage(
             state.costYuan += cost;
         }
     }
-    state.latestPromptTokens = usage.latestPromptTokens ?? usage.promptTokens;
+    // 上游明确给了输入侧用量就以它为准（含 0：说明该请求确实没报输入），
+    // 本地估算只在回合收尾时通过 recordEstimatedContextTokens 兜底
+    state.contextTokens = usage.latestPromptTokens ?? usage.promptTokens;
+    state.contextSource = state.contextTokens > 0 ? "provider" : undefined;
     const rate = computeSessionRate(state, usage, atMs);
     if (rate) state.lastRate = rate;
+}
+
+/**
+ * 回合结束时的本地估算结果：只在它比当前值更大时接管。
+ * 失败回合拿不到 provider usage，靠这条把真实占用（含思维链/媒体）暴露到状态栏；
+ * 回合内压缩后 provider 值偏小的场景也由它纠正。
+ */
+export function recordEstimatedContextTokens(state: SessionUiState, tokens?: number): void {
+    if (!tokens || tokens <= 0) return;
+    // 已经以估算为准时跟随最新估算：压缩之后上下文会变小，状态栏要跟着收敛
+    if (state.contextSource === "local") {
+        state.contextTokens = tokens;
+        return;
+    }
+    // 实测值缺失（失败回合）或明显不反映当前历史（回合内压缩后偏小）才接管；
+    // 10% 容差用于吃掉分词口径差异，避免两路数值接近时逐回合来回切换来源
+    if (state.contextTokens === 0 || tokens > state.contextTokens * 1.1) {
+        state.contextTokens = tokens;
+        state.contextSource = "local";
+    }
 }
 
 /**

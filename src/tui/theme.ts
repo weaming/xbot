@@ -68,6 +68,8 @@ export const theme = {
     /** 提问浮层：与工具块同色系，和其它浮层区分开。 */
     question: (text: string): string => paint(BOLD + MAGENTA, text),
     dim: (text: string): string => paint(DIM, text),
+    /** 比 dim 更淡：本地估算等「非实测」数据的专属灰度，避免与上游实测值混淆。 */
+    faint: (text: string): string => paint(GRAY + DIM, text),
 };
 
 /** 消息正文的 Markdown 主题（标题/链接/代码/引用等）。 */

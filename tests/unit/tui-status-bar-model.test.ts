@@ -17,7 +17,7 @@ function input(overrides: Partial<StatusBarInput> = {}): StatusBarInput {
         sessionId: "sess-abcdef123456",
         spinnerIndex: 0,
         now: 1_000_000,
-        latestPromptTokens: 0,
+        contextTokens: 0,
         totalTokens: 0,
         promptTokens: 0,
         completionTokens: 0,
@@ -63,7 +63,8 @@ describe("状态栏模型", () => {
 
     test("Token 统计逐项出现：上下文占用 / 累计 / 输入输出 / 思考 / 缓存", () => {
         const model = buildStatusBarModel(input({
-            latestPromptTokens: 12_000,
+            contextTokens: 12_000,
+            contextSource: "provider",
             contextWindow: 64_000,
             totalTokens: 34_000,
             promptTokens: 20_000,

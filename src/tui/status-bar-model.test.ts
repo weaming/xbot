@@ -7,7 +7,7 @@ const inputOf = (partial: Partial<StatusBarInput> = {}): StatusBarInput => ({
     sessionId: "s1",
     spinnerIndex: 0,
     now: 0,
-    latestPromptTokens: 0,
+    contextTokens: 0,
     totalTokens: 0,
     promptTokens: 0,
     completionTokens: 0,
@@ -36,9 +36,31 @@ describe("buildStatusBarModel token 统计", () => {
         expect(model.line2.left).toContain("100=>50");
     });
 
-    test("最后一次响应的输入 token 参与上下文占用展示", () => {
-        const model = buildStatusBarModel(inputOf({ latestPromptTokens: 131_072, contextWindow: 1_310_720 }));
+    test("provider 实测值参与上下文占用展示", () => {
+        const model = buildStatusBarModel(inputOf({
+            contextTokens: 131_072,
+            contextSource: "provider",
+            contextWindow: 1_310_720,
+        }));
 
         expect(model.line2.left).toContain("131.1k/1.31M(10.0%)");
+    });
+
+    test("本地估算的上下文值用更淡的颜色，与实测区分", () => {
+        const local = buildStatusBarModel(inputOf({
+            contextTokens: 923_149,
+            contextSource: "local",
+            contextWindow: 1_000_000,
+        }));
+        const provider = buildStatusBarModel(inputOf({
+            contextTokens: 923_149,
+            contextSource: "provider",
+            contextWindow: 1_000_000,
+        }));
+
+        expect(local.line2.left).toContain("923.1k/1M(92.3%)");
+        // 本地估算走 faint（灰 + 暗），实测走 dim（仅暗）
+        expect(local.line2.left).toContain("\x1b[90m\x1b[2m923.1k");
+        expect(provider.line2.left).not.toContain("\x1b[90m\x1b[2m923.1k");
     });
 });

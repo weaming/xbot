@@ -103,8 +103,12 @@ export class ChatStore {
         return this.currentState.cacheMissTokens;
     }
 
-    get latestPromptTokens(): number {
-        return this.currentState.latestPromptTokens;
+    get contextTokens(): number {
+        return this.currentState.contextTokens;
+    }
+
+    get contextSource(): "provider" | "local" | undefined {
+        return this.currentState.contextSource;
     }
 
     get costYuan(): number {

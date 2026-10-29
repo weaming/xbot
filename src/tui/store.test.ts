@@ -511,13 +511,14 @@ describe("ChatStore 工具块", () => {
 
         expect(store.totalTokens).toBe(140);
         expect(store.promptTokens).toBe(100);
-        expect(store.latestPromptTokens).toBe(100);
+        expect(store.contextTokens).toBe(100);
+        expect(store.contextSource).toBe("provider");
         expect(store.completionTokens).toBe(40);
         expect(store.reasoningTokens).toBe(10);
         expect(store.cacheHitTokens).toBe(80);
         expect(store.cacheMissTokens).toBe(20);
 
-        // 第二轮更新 latestPromptTokens 为最新一轮的值
+        // 第二轮更新上下文占用为最新一轮的实测值
         apply(store, {
             type: "usage",
             usage: {
@@ -530,10 +531,10 @@ describe("ChatStore 工具块", () => {
         });
 
         expect(store.promptTokens).toBe(350);
-        expect(store.latestPromptTokens).toBe(250);
+        expect(store.contextTokens).toBe(250);
     });
 
-    test("重放聚合 usage 时保留累计 token 与最后一次 prompt token", () => {
+    test("重放聚合 usage 时保留累计 token 与最后一次实测上下文", () => {
         const store = new ChatStore();
         store.setCurrentSession("session-1");
 
@@ -560,7 +561,7 @@ describe("ChatStore 工具块", () => {
         expect(store.totalTokens).toBe(440);
         expect(store.promptTokens).toBe(350);
         expect(store.completionTokens).toBe(90);
-        expect(store.latestPromptTokens).toBe(250);
+        expect(store.contextTokens).toBe(250);
     });
 
     test("重放压缩 usage 时计入状态栏累计 token", () => {
@@ -585,7 +586,7 @@ describe("ChatStore 工具块", () => {
         }]);
 
         expect(store.totalTokens).toBe(130);
-        expect(store.latestPromptTokens).toBe(100);
+        expect(store.contextTokens).toBe(100);
     });
 
     test("message_end 用最终 content 校正被截断的时间线文本", () => {

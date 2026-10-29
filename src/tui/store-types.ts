@@ -123,7 +123,13 @@ export interface SessionUiState {
     reasoningTokens: number;
     cacheHitTokens: number;
     cacheMissTokens: number;
-    latestPromptTokens: number;
+    /**
+     * 上下文占用的唯一事实来源：provider 实测优先，失败回合/未请求时回落到本地估算。
+     * 两路数值只在这一处汇合，展示层不再自行取大。
+     */
+    contextTokens: number;
+    /** contextTokens 的来源：provider = 上游 usage 实测；local = 本地估算（展示更淡）。 */
+    contextSource?: "provider" | "local";
     /** DeepSeek 会话费用累计（元），由 costFor 注入计算：官方端点或开启 ENABLE_DS_COST_STAT 后按官方价格表估算。 */
     costYuan: number;
     /** 会话累计平均速率；请求进行中仍显示已完成请求的累计值（状态栏置灰）。 */
@@ -165,7 +171,7 @@ export function createSessionUiState(): SessionUiState {
         reasoningTokens: 0,
         cacheHitTokens: 0,
         cacheMissTokens: 0,
-        latestPromptTokens: 0,
+        contextTokens: 0,
         costYuan: 0,
         summedCompletionTokens: 0,
         summedReasoningTokens: 0,
