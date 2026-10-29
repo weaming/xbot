@@ -9,7 +9,7 @@ BUNPACK = $(CURDIR)/.cache/bunpack
 # UI 是独立工程（ui/），产物以文本内联进二进制；
 # 源码模式与两种打包方式都依赖它，缺了 bun 会直接报解析失败
 UI_SRC = $(shell find ui/src -type f 2>/dev/null) \
-	ui/index.html ui/package.json ui/vite.config.ts ui/tsconfig.json
+	ui/index.html ui/package.json ui/bun.lock ui/vite.config.ts ui/tsconfig.json
 UI_BUNDLE = src/server/.ui-dist/index.html
 
 # 瘦身版：7MB 单文件，运行时借用系统 bun
