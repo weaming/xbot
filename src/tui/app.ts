@@ -98,7 +98,13 @@ import { getReasoningEffortChoices, getReasoningProvider } from "../utils/reason
 import { readSessionTodos, type TodoItem } from "../tools/todo-tool.js";
 import { deepSeekPhaseInfo, endpointHost, normalizeDeepSeekModel, resolvePricingMode } from "../pricing/deepseek.js";
 import { getContextWindowForModel } from "../utils/token-budget.js";
-import { buildMcpStatusHelpText, getMcpServersStatus, setMcpNoticeHandler, type McpNotice } from "../mcp/client-manager.js";
+import {
+    buildMcpStatusHelpText,
+    defaultMcpSelection,
+    getMcpServersStatus,
+    setMcpNoticeHandler,
+    type McpNotice,
+} from "../mcp/client-manager.js";
 import { isToolSearchEnabled } from "../tools/orchestrator/turn-request.js";
 import { McpPanel } from "./mcp-panel.js";
 import { formatDisplayPath, resolveExistingDir, setSessionCwdHandler } from "../tools/cwd-tool.js";
@@ -1994,7 +2000,9 @@ export class ChatApp {
 
     /** 新建会话但不切换焦点：会话条由 setSessions 触发重绘。 */
     private async createSessionSilently(): Promise<string> {
-        const { sessionId } = await this.agent.createSession();
+        // 与 serve 同一口径：默认选中集（= 配置里没标 lazy 的服务）在建会话时一次写好，
+        // 之后 /mcp 的切换决定下发，执行期不再回头看 lazy 配置
+        const { sessionId } = await this.agent.createSession(undefined, { selectedServers: defaultMcpSelection() });
         // 新建即认领：自己的空会话不会与别的实例冲突，失败只可能是极端情况
         await this.agent.claimSession(sessionId);
         // 未落盘前 listSessions 看不到它，cwd 只能就地补上，否则面板目录列会缺一格

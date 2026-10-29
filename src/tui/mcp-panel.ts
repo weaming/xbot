@@ -1,9 +1,9 @@
 /**
- * MCP 浮层：列出服务、连接状态与选中项详情，并可对 lazy server 按「本会话」临时启用 / 停用。
+ * MCP 浮层：列出服务、连接状态与选中项详情，空格切换该服务在**本会话**是否选中。
  *
- * lazy server 的工具在接入端不支持 tool_search 时默认不下发；勾选状态按会话落盘
- * （lazy_mcp_changed），重启后仍生效。支持 tool_search 时 lazy 不拦下发，切换也就没有意义，
- * 面板会明确说明并忽略空格。
+ * 选中集就是下发的唯一判据（选中就下发、没选中就不下发），与 tool_search 无关；
+ * 配置里的 `lazy` 只决定新建会话时默认选不选它（lazy 默认不选）。
+ * 选中状态按会话落盘（lazy_mcp_changed），重启后仍生效。
  * 面板打开时独占键盘输入：↑↓ / jk 选择，空格切换，Esc / ⌃C 关闭。
  */
 
@@ -25,7 +25,7 @@ export interface McpPanelOptions {
     servers: McpServerStatus[];
     /** 本会话临时启用的 lazy server。 */
     enabled: string[];
-    /** 当前接入端是否支持 tool_search：支持时 lazy 工具按需加载，不必临时启用。 */
+    /** 当前接入端是否支持 tool_search：只影响说明文案，不再影响下发判定。 */
     toolSearch: boolean;
     /** 一次最多显示的内容行数（终端高度推算，含选中项详情）。 */
     visibleRows: number;
@@ -113,8 +113,7 @@ export class McpPanel implements Component {
 
     private toggleCurrent(): void {
         const server = this.options.servers[this.cursor];
-        // 支持 tool_search 时 lazy 不拦下发，切换不生效，也不该无谓落一条事件
-        if (!server?.lazy || this.options.toolSearch) return;
+        if (!server) return;
         if (this.enabled.has(server.name)) this.enabled.delete(server.name);
         else this.enabled.add(server.name);
         this.options.toggle(this.enabledServers());
@@ -132,8 +131,8 @@ export class McpPanel implements Component {
     /** 顶部提示：说明 lazy 在当前接入端的表现，避免「启用了却看不到工具」的困惑。 */
     private hintText(): string {
         return this.options.toolSearch
-            ? "当前模型支持 tool_search：lazy 工具按需加载，无需会话级启用"
-            : "当前模型不支持 tool_search：lazy 工具默认不下发，空格可为本会话临时启用";
+            ? "选中即下发；lazy 服务默认不选，空格切换本会话的选中状态"
+            : "选中即下发；不支持 tool_search 时 lazy 服务尤其需要手动选中";
     }
 
     /**
@@ -176,16 +175,14 @@ export class McpPanel implements Component {
         const statusMark = server.status === "connected"
             ? "●"
             : (server.status === "connecting" || server.status === "authorizing" ? "◌" : "✕");
-        const lazyLabel = !server.lazy
-            ? ""
-            : this.options.toolSearch
-                ? " · lazy 按需加载"
-                : this.enabled.has(server.name) ? " · lazy 已启用" : " · lazy 未启用";
-        const body = `${statusMark} ${server.name}  ${server.type} · ${server.toolNames.length} 工具${lazyLabel}`;
+        const picked = this.enabled.has(server.name);
+        const lazyHint = server.lazy ? " · lazy" : "";
+        const body = `${picked ? "☑" : "☐"} ${statusMark} ${server.name}  ${server.type} · ${server.toolNames.length} 工具${lazyHint}`;
         const prefix = selected ? "❯ " : "  ";
         const line = `${prefix}${truncatePlain(body, Math.max(8, usable - visibleWidth(prefix)))}`;
-        if (server.lazy && !this.options.toolSearch && this.enabled.has(server.name)) return theme.statusOk(line);
-        if (server.status === "connected") return selected ? theme.commandText(line) : line;
-        return theme.dim(line);
+        // 选中用绿色强调（这是"会不会下发"的唯一信号），未连接的服务整体压暗
+        if (server.status !== "connected" && !picked) return theme.dim(line);
+        if (picked) return theme.statusOk(line);
+        return selected ? theme.commandText(line) : line;
     }
 }

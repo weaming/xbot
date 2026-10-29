@@ -9,8 +9,7 @@
 import type { AgentEvent } from "../events/agent-events.js";
 import type { SessionHost } from "../host/session-host-types.js";
 import { withJobContext } from "../tools/job-context.js";
-import { clearSessionMcpScope, setSessionMcpScope } from "../tools/session-mcp-scope.js";
-import { listLazyServerNames } from "../mcp/client-manager.js";
+import { defaultMcpSelection } from "../mcp/client-manager.js";
 import { JobStore } from "./store.js";
 import {
     DEFAULT_LEASE_MS,
@@ -224,12 +223,8 @@ export class JobRunner {
     private async execute(job: JobRecord, entry: RunningJob, signal: AbortSignal): Promise<void> {
         let heartbeat: ReturnType<typeof setInterval> | undefined;
         let timeout: ReturnType<typeof setTimeout> | undefined;
-        /** 只用于 finally 清 scoped 状态：主流程用非空的局部变量。 */
-        let scopedSessionId: string | undefined;
-
         try {
             const sessionId = await this.ensureSession(job);
-            scopedSessionId = sessionId;
             entry.sessionId = sessionId;
             if (signal.aborted) {
                 // 取消发生在建会话期间：任务此时是 leased，必须落终态，否则永远僵尸
@@ -243,8 +238,6 @@ export class JobRunner {
                 return;
             }
 
-            // 本任务勾选的 MCP 白名单只影响这次执行；回合结束就撤掉
-            setSessionMcpScope(sessionId, job.input.mcpServers);
             this.store.transition(job.id, "running");
 
             heartbeat = setInterval(() => {
@@ -313,7 +306,6 @@ export class JobRunner {
         } finally {
             if (heartbeat) clearInterval(heartbeat);
             if (timeout) clearTimeout(timeout);
-            if (scopedSessionId) clearSessionMcpScope(scopedSessionId);
         }
     }
 
@@ -329,13 +321,10 @@ export class JobRunner {
             // 原会话被别人拿走：退化为新建，避免和 TUI 抢
         }
 
-        // 界面上的 MCP 勾选默认是"全选"，所以 undefined 不能当成"一个都不加载"：
-        // 显式勾了就按勾的加载，没勾（不限制）就把所有 lazy 服务也加载上，
-        // 否则网页里看着全选、实际工具缺失。init 在建会话时一次写好，不留空窗。
-        const created = await this.host.createSession(job.input.workspace, {
-            mcpServers: job.input.mcpServers,
-            lazyMcpServers: job.input.mcpServers ?? listLazyServerNames(),
-        });
+        // 勾选即选中：选中集决定这轮下发哪些 MCP 工具，lazy 只影响「默认选中」。
+        // 未勾选时用默认集合（= 配置里没标 lazy 的服务），在建会话时一次写好。
+        const selection = job.input.mcpServers ?? defaultMcpSelection();
+        const created = await this.host.createSession(job.input.workspace, { selectedServers: selection });
         const claim = await this.host.claimSession(created.sessionId, { noNegotiate: true });
         if (!claim.ok) throw new Error(`会话认领失败：${claim.reason}`);
         await this.host.renameSession(created.sessionId, titleOf(job.input.prompt));

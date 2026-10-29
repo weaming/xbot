@@ -78,6 +78,11 @@ export const api = {
     cancelJob: (id: string) => request<{ cancelled: boolean }>(`/api/jobs/${id}/cancel`, { method: "POST" }),
     archiveJob: (id: string) => request<Job>(`/api/jobs/${id}/archive`, { method: "POST" }),
     deleteJob: (id: string) => request<{ deleted: boolean }>(`/api/jobs/${id}`, { method: "DELETE" }),
+    /** 会话的 MCP 选中集：只影响下一个回合 */
+    getMcpSelection: (id: string) =>
+        request<{ servers: string[]; initialized: boolean }>(`/api/jobs/${id}/mcp-selection`),
+    setMcpSelection: (id: string, servers: string[]) =>
+        request<{ servers: string[] }>(`/api/jobs/${id}/mcp-selection`, jsonInit("POST", { servers })),
 
     listComments: (id: string) => request<JobComment[]>(`/api/jobs/${id}/comments`),
     addComment: (id: string, body: string, sessionId?: string) =>

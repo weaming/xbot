@@ -48,6 +48,10 @@ export function CardDetail({
     const [editingPrompt, setEditingPrompt] = useState(false);
     const [inputDraft, setInputDraft] = useState("");
     const [pending, setPending] = useState({ request: 0, turn: 0 });
+    /** 会话的 MCP 选中集（有执行会话时以它为准）；null = 还没拉/任务尚未开始 */
+    const [mcpSelection, setMcpSelection] = useState<string[] | null>(null);
+    /** 会话是否已落过选中集：false 时运行期等于"不限制"，界面回退成全选 */
+    const [selectionInitialized, setSelectionInitialized] = useState(false);
     const [attachments, setAttachments] = useState<ImageAsset[]>([]);
     const [uploading, setUploading] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -127,6 +131,28 @@ export function CardDetail({
             await api.patchJob(job.id, body);
             await onChanged();
         } catch (cause) {
+            setError(cause instanceof ApiError ? cause.message : String(cause));
+        }
+    };
+
+    /**
+     * 改 MCP 选中集：有执行会话时改会话的（落事件、下个回合生效），
+     * 还没跑过就改任务入参，作为首次建会话的初值。
+     */
+    const applyMcpSelection = async (next: string[]) => {
+        setError(null);
+        if (!job.sessionId) {
+            await patch({ mcpServers: next });
+            return;
+        }
+        const previous = mcpSelection;
+        setMcpSelection(next); // 乐观更新：网络往返期间不卡手感
+        try {
+            const saved = await api.setMcpSelection(job.id, next);
+            setMcpSelection(saved.servers);
+            setSelectionInitialized(true);
+        } catch (cause) {
+            setMcpSelection(previous);
             setError(cause instanceof ApiError ? cause.message : String(cause));
         }
     };
@@ -365,12 +391,14 @@ export function CardDetail({
                             />
                         </Field>
 
-                        <Field label="允许的 MCP">
+                        <Field label={job.sessionId ? "选中的 MCP（下个回合生效）" : "允许的 MCP"}>
                             <div className="flex flex-wrap gap-1.5">
                                 {servers.length === 0 && <span className="text-xs text-muted">（没有可选的 MCP）</span>}
                                 {servers.map(server => {
-                                    // 没存过 mcpServers 表示「不限制」，界面上等价于全选
-                                    const current = job.input.mcpServers ?? servers.map(item => item.name);
+                                    // 有执行会话时以会话选中集为准；未初始化（老会话）或还没跑过都等于全选
+                                    const current = mcpSelection !== null && selectionInitialized
+                                        ? mcpSelection
+                                        : (job.input.mcpServers ?? servers.map(item => item.name));
                                     const checked = current.includes(server.name);
                                     return (
                                         <button
@@ -379,7 +407,7 @@ export function CardDetail({
                                                 const next = checked
                                                     ? current.filter(item => item !== server.name)
                                                     : [...current, server.name];
-                                                void patch({ mcpServers: next });
+                                                void applyMcpSelection(next);
                                             }}
                                             className={cn(
                                                 "rounded-full border px-2.5 py-0.5 text-xs",
@@ -390,9 +418,9 @@ export function CardDetail({
                                         </button>
                                     );
                                 })}
-                                {servers.length > 0 && (job.input.mcpServers?.length ?? -1) !== 0 && (
+                                {servers.length > 0 && (mcpSelection ?? job.input.mcpServers)?.length !== 0 && (
                                     <button
-                                        onClick={() => void patch({ mcpServers: [] })}
+                                        onClick={() => void applyMcpSelection([])}
                                         className="ml-auto rounded-full px-2 py-0.5 text-xs text-muted underline-offset-2 hover:underline"
                                     >
                                         清空

@@ -6,7 +6,6 @@ import { loadIdentityContext } from "../skills/base-skill.js";
 import { executeWithChat, createChatClient, isAbortError } from "../tools/chat-orchestrator.js";
 import { executeMcpTool, getOpenAIToolDefinitions, type ToolDefinitionOptions } from "../tools/tool-registry.js";
 import { getJobContext } from "../tools/job-context.js";
-import { getSessionMcpScope } from "../tools/session-mcp-scope.js";
 import { createTodoReminderProvider } from "../tools/todo-tool.js";
 import { runWithToolCwd } from "../utils/tool-cwd-context.js";
 import {
@@ -91,9 +90,7 @@ function toolDefinitionOptions(options: {
     settings: ChatApiSettings;
     model: string;
 }): ToolDefinitionOptions {
-    const scope = getSessionMcpScope(options.sessionId);
     return {
-        ...(scope ? { mcpServers: scope } : {}),
         toolSearch: isToolSearchEnabled({
             protocol: options.settings.protocol ?? "chat_completions",
             model: options.model,

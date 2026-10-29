@@ -4,6 +4,7 @@
  */
 
 import { runTurnCore } from "../services/run-turn.js";
+import { readMcpSelection, runWithMcpSelectionSnapshot } from "../tools/session-mcp-selection.js";
 import {
     buildConversationHistory,
     getChatApiSettings,
@@ -83,7 +84,12 @@ export async function runSessionTurn(
         });
         const activeSession = session;
 
-        const outcome = await runTurnCore({
+        // 本回合的工具集快照：MCP 选中集在回合中途被改（/mcp 或网页）也不影响这一回合。
+        // 同一份快照会写进 turn_commit，事后能回答"这一回合到底带没带某个 MCP"。
+        const mcpSnapshot = readMcpSelection(sessionId);
+        const outcome = await runWithMcpSelectionSnapshot(
+            mcpSnapshot,
+            () => runTurnCore({
             session: activeSession,
             turnId,
             userMessages,
@@ -162,7 +168,10 @@ export async function runSessionTurn(
                 return appended.seq;
             },
             persistTurn: async payload => {
-                await host.replay.appendAgentEvent(activeSession, "turn_commit", payload, false);
+                await host.replay.appendAgentEvent(activeSession, "turn_commit", {
+                    ...payload,
+                    ...(mcpSnapshot ? { mcpServers: mcpSnapshot } : {}),
+                }, false);
                 // 回合已定稿：内容以 turn_message 为准，流式片段可以丢弃
                 await host.eventLog.dropStream(sessionId, payload.turnId);
                 host.updateActiveSeq(sessionId, await host.eventLog.lastSeq(sessionId, { forceRefresh: true }));
@@ -198,7 +207,7 @@ export async function runSessionTurn(
                 spec.onEvent?.(event);
                 host.notify(requestId, sessionId, event);
             },
-        });
+            }));
 
         turnUsage = outcome.usage;
         if (outcome.hasInvalidAssistantHistory) {

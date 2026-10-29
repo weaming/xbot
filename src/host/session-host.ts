@@ -22,8 +22,7 @@ import { appendInputHistory, loadInputHistory } from "./input-history.js";
 import { getSessionLogFile } from "../utils/state-paths.js";
 import { getSessionTodosFile, getStartupToolCwd, getToolCwd } from "../utils/runtime-paths.js";
 import { planResume } from "../services/resume-plan.js";
-import { clearLazyServersCache, updateLazyServersCache } from "../tools/session-lazy-cache.js";
-import { setSessionMcpScope } from "../tools/session-mcp-scope.js";
+import { clearMcpSelection, updateMcpSelection } from "../tools/session-mcp-selection.js";
 import {
     describeClaimFailure,
     formatInboundPrompt,
@@ -450,7 +449,7 @@ export class LocalSessionHost implements SessionHost {
         active?.abortController?.abort();
         this.activeSessions.delete(sessionId);
         this.pendingModelSelections.delete(sessionId);
-        clearLazyServersCache(sessionId);
+        clearMcpSelection(sessionId);
         try {
             this.onSessionReleased?.(sessionId, cause);
         } catch {
@@ -463,13 +462,10 @@ export class LocalSessionHost implements SessionHost {
         // 缺省 cwd 固定为宿主启动目录；会话 cwd 会随后续切换变化，不能作为新建会话默认值。
         const session = createEmptySession(sessionId, cwd ?? this.startupCwd);
         this.activeSessions.set(sessionId, { session, lastSeq: 0 });
-        // MCP 初值必须在会话交出去之前写好：先建后设会留下一个"工具还不全"的窗口，
+        // MCP 选中集必须在会话交出去之前写好：先建后设会留下一个"工具还不全"的窗口，
         // 无人的任务会话可能正好在这个窗口里发出第一轮请求。
-        if (mcp?.mcpServers !== undefined) {
-            setSessionMcpScope(sessionId, mcp.mcpServers);
-        }
-        if (mcp?.lazyMcpServers?.length) {
-            await this.setSessionLazyMcpServers(sessionId, mcp.lazyMcpServers);
+        if (mcp?.selectedServers !== undefined) {
+            await this.setSessionLazyMcpServers(sessionId, mcp.selectedServers);
         }
         return { sessionId };
     }
@@ -667,7 +663,7 @@ export class LocalSessionHost implements SessionHost {
             const event = await this.eventLog.append(sessionId, "lazy_mcp_changed", { servers: next });
             session.lazyMcpServers = next;
             this.updateActiveSeq(sessionId, event.seq);
-            updateLazyServersCache(sessionId, next);
+            updateMcpSelection(sessionId, next);
         } finally {
             try {
                 await this.releaseSessionLockSafely(lock);
@@ -1051,13 +1047,13 @@ export class LocalSessionHost implements SessionHost {
 
         // 内存缓存未落后磁盘 seq，直接复用
         if (active && active.lastSeq >= diskSeq) {
-            updateLazyServersCache(sessionId, active.session.lazyMcpServers ?? []);
+            updateMcpSelection(sessionId, active.session.lazyMcpServers ?? []);
             return active.session;
         }
 
         if (diskSeq === 0) {
             if (active) {
-                updateLazyServersCache(sessionId, active.session.lazyMcpServers ?? []);
+                updateMcpSelection(sessionId, active.session.lazyMcpServers ?? []);
                 return active.session;
             }
             throw new SessionNotFoundError(sessionId);
@@ -1075,7 +1071,7 @@ export class LocalSessionHost implements SessionHost {
             lastSeq: replayed.lastSeq,
             abortController: active?.abortController,
         });
-        updateLazyServersCache(sessionId, replayed.session.lazyMcpServers ?? []);
+        updateMcpSelection(sessionId, replayed.session.lazyMcpServers ?? []);
         return replayed.session;
     }
 

@@ -632,14 +632,14 @@ export function getMcpServersStatus(): McpServerStatus[] {
 }
 
 /**
- * 配置里标了 lazy 的服务名（不含 disabled）。
+ * 新建会话的默认 MCP 选中集：配置里没标 `lazy` 的服务。
  *
- * 任务会话默认就把它们加载上：网页上没有 /mcp 那样的开关，界面又把服务显示成"全选"，
- * 不加载等于"看着勾上了但用不了"。
+ * `lazy: true` 只影响"默认不选中"这一件事；选中与否才是下发的唯一判据（见 tool-registry）。
+ * 所以这里就是把 lazy 的服务从默认集合里去掉，其余全选。
  */
-export function listLazyServerNames(): string[] {
+export function defaultMcpSelection(): string[] {
     return getMcpServersStatus()
-        .filter(item => item.lazy === true)
+        .filter(item => item.lazy !== true)
         .map(item => item.name)
         .sort();
 }

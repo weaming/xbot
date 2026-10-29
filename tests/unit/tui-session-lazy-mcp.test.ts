@@ -3,7 +3,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { LocalSessionHost } from "../../src/host/session-host.js";
-import { readLazyServersCache, updateLazyServersCache, clearLazyServersCache } from "../../src/tools/session-lazy-cache.js";
+import { clearMcpSelection, readMcpSelection, updateMcpSelection } from "../../src/tools/session-mcp-selection.js";
 
 /**
  * 会话级 lazy MCP 启用集：/mcp 的切换要落盘成事件（重启/重开该会话仍生效），
@@ -62,9 +62,9 @@ describe("会话级 lazy MCP 启用集", () => {
         const { sessionId } = await agent.createSession();
         try {
             await agent.setSessionLazyMcpServers(sessionId, ["rea"]);
-            expect(readLazyServersCache(sessionId)).toEqual(["rea"]);
+            expect(readMcpSelection(sessionId)).toEqual(["rea"]);
             await agent.setSessionLazyMcpServers(sessionId, []);
-            expect(readLazyServersCache(sessionId)).toEqual([]);
+            expect(readMcpSelection(sessionId)).toEqual([]);
             expect(await agent.getSessionLazyMcpServers(sessionId)).toEqual([]);
         } finally {
             agent.close();
@@ -72,19 +72,20 @@ describe("会话级 lazy MCP 启用集", () => {
     });
 });
 
-describe("lazy 启用集内存缓存", () => {
-    test("去重后保存，清空与释放会摘掉条目", () => {
-        updateLazyServersCache("s1", ["rea", "rea", "mcp-hub"]);
-        expect(readLazyServersCache("s1")).toEqual(["rea", "mcp-hub"]);
+describe("会话 MCP 选中集内存缓存", () => {
+    test("去重后保存；空集算「已初始化但一个不选」，释放后回到未初始化", () => {
+        updateMcpSelection("s1", ["rea", "rea", "mcp-hub"]);
+        expect(readMcpSelection("s1")).toEqual(["rea", "mcp-hub"]);
 
-        updateLazyServersCache("s1", []);
-        expect(readLazyServersCache("s1")).toEqual([]);
+        // 空数组与 undefined 必须区分：前者是「明确一个都不选」，后者是「还没初始化」
+        updateMcpSelection("s1", []);
+        expect(readMcpSelection("s1")).toEqual([]);
 
-        updateLazyServersCache("s2", ["rea"]);
-        clearLazyServersCache("s2");
-        expect(readLazyServersCache("s2")).toEqual([]);
+        updateMcpSelection("s2", ["rea"]);
+        clearMcpSelection("s2");
+        expect(readMcpSelection("s2")).toBeUndefined();
 
-        // 没有会话上下文时按「全部默认不下发」处理
-        expect(readLazyServersCache(undefined)).toEqual([]);
+        // 没有会话上下文 = 不限制
+        expect(readMcpSelection(undefined)).toBeUndefined();
     });
 });

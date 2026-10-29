@@ -114,6 +114,11 @@ export interface AgentEventPayloads {
          * 也覆盖「回合内压缩后 provider 值偏小」的口径差。
          */
         contextTokens?: number;
+        /**
+         * 本回合实际生效的 MCP 选中集快照（回合开始时定下，中途增删不影响本回合）。
+         * 缺省表示该回合不做限制（老会话没有选中集）。
+         */
+        mcpServers?: string[];
         /** provider/orchestrator 抛错时填入，便于事后排查 429/502/length/error。 */
         error?: string;
     };

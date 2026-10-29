@@ -26,21 +26,27 @@ function names(options: Parameters<typeof getOpenAIToolDefinitions>[1]): string[
     return getOpenAIToolDefinitions([], options).map((tool: any) => tool.function.name);
 }
 
-describe("getOpenAIToolDefinitions 的 lazy 过滤", () => {
-    test("不支持 tool_search 时 lazy 工具默认不下发", () => {
-        const defined = names({ mcpServers: [SERVER], toolSearch: false });
+describe("getOpenAIToolDefinitions 按会话选中集下发", () => {
+    test("选中该 server → 全组工具下发，与 lazy 标记和 tool_search 都无关", () => {
+        for (const toolSearch of [true, false]) {
+            const defined = names({ mcpServers: [SERVER], toolSearch, selectedServers: [SERVER] });
+
+            expect(defined).toContain("lazy__on_demand");
+            expect(defined).toContain("lazy__always");
+        }
+    });
+
+    test("选中集里没有该 server → 整组不下发（含未标 lazy 的工具）", () => {
+        const defined = names({ mcpServers: [SERVER], selectedServers: [] });
 
         expect(defined).not.toContain("lazy__on_demand");
-        expect(defined).toContain("lazy__always");
+        expect(defined).not.toContain("lazy__always");
     });
 
-    test("支持 tool_search 时 lazy 工具照常下发（由 defer 决定是否延迟加载）", () => {
-        expect(names({ mcpServers: [SERVER], toolSearch: true })).toContain("lazy__on_demand");
-    });
-
-    test("会话临时启用的 server 即使不支持 tool_search 也下发", () => {
-        const defined = names({ mcpServers: [SERVER], toolSearch: false, lazyServers: [SERVER] });
+    test("会话没有初始化选中集（老会话）→ 不限制，全部下发", () => {
+        const defined = names({ mcpServers: [SERVER] });
 
         expect(defined).toContain("lazy__on_demand");
+        expect(defined).toContain("lazy__always");
     });
 });

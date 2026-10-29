@@ -10,7 +10,7 @@ import { readMediaFileTool } from "./read-media-file.js";
 import { toolResultToText } from "./tool-interface.js";
 import { toolCatalog } from "./tool-catalog.js";
 import { formatToolDef } from "./tool-schema.js";
-import { readLazyServersCache } from "./session-lazy-cache.js";
+import { readMcpSelection, readTurnMcpSelectionSnapshot } from "./session-mcp-selection.js";
 import { appendSessionToolLog } from "./session-log.js";
 
 import type { ExecutableTool, ToolExecutionResult } from "./tool-interface.js";
@@ -47,16 +47,18 @@ toolCatalog.registerLocalTools(localRegisteredTools);
 export interface ToolDefinitionOptions {
     /** 任务级 MCP 白名单：只保留这些 server 的工具（undefined 表示不限制）。 */
     mcpServers?: string[];
-    /** 接入端是否支持 tool_search：不支持时 lazy server 的工具默认不下发。 */
+    /** 接入端是否支持 tool_search：只影响 Responses 的 defer_loading，不影响这里筛工具。 */
     toolSearch?: boolean;
-    /** 本会话在 /mcp 临时启用的 lazy server；缺省按会话缓存取。 */
+    /** 会话的工具集来源（/mcp 或任务勾选）；缺省按会话缓存取。 */
     sessionId?: string;
-    lazyServers?: string[];
+    /** 本会话选中的 server：选中就下发，没选中就不下发。 */
+    selectedServers?: string[];
 }
 
 /**
  * 所有非会话工具始终下发；会话工具仅在对应会话显式启用时下发。
- * lazy 工具只在支持 tool_search、或该 server 被本会话临时启用时下发。
+ * MCP 工具按「会话选中集」下发：配置里的 lazy 只决定默认选中，执行期不再参与判断，
+ * 也不再看接入端是否支持 tool_search。
  */
 export const getOpenAIToolDefinitions = (
     extraToolNames: string[] = [],
@@ -64,13 +66,18 @@ export const getOpenAIToolDefinitions = (
 ) => {
     // 空数组 = 一个都不允许；undefined = 不限制。两者必须区分开
     const allowedServers = options.mcpServers ? new Set(options.mcpServers) : undefined;
-    const lazyServers = new Set(options.lazyServers ?? readLazyServersCache(options.sessionId));
+    // 优先级：调用方显式传入 → 本回合开始时的快照 → 会话实时选中集。
+    // 快照这一层保证"中途增删只影响下一个回合"：一回合内的多个请求工具集不变。
+    // undefined = 没初始化过（老会话 / 未指定会话）→ 不限制；空数组 = 一个都不选。
+    const selection = options.selectedServers
+        ?? readTurnMcpSelectionSnapshot()
+        ?? readMcpSelection(options.sessionId);
+    const selectedServers = selection ? new Set(selection) : undefined;
     const tools = toolCatalog.listAllTools().filter((tool) => {
         if (tool.sessionScoped && !extraToolNames.includes(tool.name)) return false;
-        // 任务勾选了 MCP 白名单时，未列出的 server 的工具一律不下发
-        if (allowedServers && tool.fromServer && !allowedServers.has(tool.fromServer)) return false;
-        // 模型不支持 tool_search 时，lazy server 的工具默认不进定义（/mcp 可临时启用）
-        if (tool.lazy && !options.toolSearch && !lazyServers.has(tool.fromServer ?? "")) return false;
+        // 选中集是唯一判据：任务勾选的白名单与它会话内选中集取交集
+        if (tool.fromServer && allowedServers && !allowedServers.has(tool.fromServer)) return false;
+        if (tool.fromServer && selectedServers && !selectedServers.has(tool.fromServer)) return false;
         return true;
     });
     return [getUseSkillToolDef(), ...tools].map(formatToolDef);

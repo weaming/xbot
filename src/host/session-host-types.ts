@@ -81,15 +81,13 @@ export interface InstanceNetworkStats {
 export type SessionReleaseCause = "peer" | "user" | "tool" | "auto" | "archive" | "delete";
 
 /**
- * 新建会话时的 MCP 初值。
+ * 新建会话时的 MCP 选中集：决定这次会话下发哪些 MCP 服务器的工具。
  *
- * 分开两个字段是因为它们是两件事：`mcpServers` 决定「允许用哪些」（白名单，undefined = 不限制），
- * `lazyMcpServers` 决定「现在就加载哪些」（不支持 tool_search 的模型只有列在这里的才下发）。
- * 由调用方决定要不要把两者对齐，宿主只负责在会话建好之前写进去。
+ * `undefined` = 没有初值（沿用会话已有的选中集，老会话等于"不限制"）；
+ * 空数组 = 明确一个都不选。配置里的 `lazy` 只影响调用方给的默认值，这里只认选中集。
  */
 export interface SessionMcpInit {
-    mcpServers?: string[];
-    lazyMcpServers?: string[];
+    selectedServers?: string[];
 }
 
 export interface SessionHost {

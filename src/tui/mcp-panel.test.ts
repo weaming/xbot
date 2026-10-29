@@ -35,12 +35,14 @@ function text(panel: McpPanel): string {
 }
 
 describe("McpPanel", () => {
-    test("不支持 tool_search 时提示默认不下发，并标出各 lazy server 的启用状态", () => {
-        const { panel } = makePanel({ enabled: ["mcp-hub"] });
+    test("选中项用 ☑ 标出，未选中用 ☐；lazy 服务单独标注", () => {
+        const { panel } = makePanel({ enabled: ["mcp-hub"], visibleRows: 20 });
 
         const rendered = text(panel);
-        expect(rendered).toContain("当前模型不支持 tool_search");
-        expect(rendered).toContain("lazy 已启用");
+        expect(rendered).toContain("☑");
+        expect(rendered).toContain("☐");
+        expect(rendered).toContain("· lazy");
+        expect(rendered).toContain("选中即下发");
     });
 
     test("空格切换 lazy server，把整份启用集回调出去", () => {
@@ -55,25 +57,24 @@ describe("McpPanel", () => {
         expect(panel.enabledServers()).toEqual([]);
     });
 
-    test("非 lazy server 上按空格不触发切换", () => {
-        const { panel, toggles } = makePanel();
+    test("非 lazy server 也能切换：选中集才是下发判据", () => {
+        const { panel, toggles } = makePanel({ enabled: ["browser-bridge", "mcp-hub"] });
 
         panel.handleInput(DOWN);
         panel.handleInput(SPACE);
 
-        expect(toggles).toEqual([]);
+        expect(toggles).toEqual([["mcp-hub"]]);
     });
 
-    test("支持 tool_search 时提示按需加载，空格不生效也不落盘", () => {
+    test("支持 tool_search 时照样可以按空格切换（与下发判定无关）", () => {
         const { panel, toggles } = makePanel({ toolSearch: true, enabled: ["mcp-hub"] });
 
         const rendered = text(panel);
-        expect(rendered).toContain("当前模型支持 tool_search");
-        expect(rendered).not.toContain("lazy 已启用");
+        expect(rendered).toContain("选中即下发");
 
         panel.handleInput(SPACE);
-        expect(panel.enabledServers()).toEqual(["mcp-hub"]);
-        expect(toggles).toEqual([]);
+        expect(panel.enabledServers()).toEqual([]);
+        expect(toggles).toEqual([[]]);
     });
 
     test("Esc 关闭面板", () => {

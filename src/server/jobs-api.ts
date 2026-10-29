@@ -22,7 +22,8 @@ import {
     type JobRecord,
     type JobState,
 } from "../jobs/types.js";
-import { listLazyServerNames } from "../mcp/client-manager.js";
+import { defaultMcpSelection } from "../mcp/client-manager.js";
+import { readMcpSelection } from "../tools/session-mcp-selection.js";
 import { toolCatalog } from "../tools/tool-catalog.js";
 import { fail, json, readJson } from "./respond.js";
 import { openSseStream, parseSseCursor, type SseSource } from "./sse.js";
@@ -390,10 +391,8 @@ export async function handleJobsRoute(
                 const prompt = typeof body?.prompt === "string" ? body.prompt.trim() : "";
 
                 // 与调度器建会话保持同一口径：勾选的 MCP 直接生效，没勾就把 lazy 服务全加载
-                const created = await ctx.host.createSession(job.input.workspace, {
-                    mcpServers: job.input.mcpServers,
-                    lazyMcpServers: job.input.mcpServers ?? listLazyServerNames(),
-                });
+                const selection = job.input.mcpServers ?? defaultMcpSelection();
+                const created = await ctx.host.createSession(job.input.workspace, { selectedServers: selection });
                 const claim = await ctx.host.claimSession(created.sessionId, { noNegotiate: true });
                 if (!claim.ok) return fail("会话认领失败，请稍后重试", 409);
 
@@ -410,6 +409,32 @@ export async function handleJobsRoute(
             }
 
             return fail("不支持的方法", 405);
+        }
+
+        // 会话的 MCP 选中集：只落事件、下一回合生效（本回合的工具集在回合开始时就快照了）
+        if (sub === "mcp-selection") {
+            const job = ctx.store.get(jobId);
+            if (!job) return fail("任务不存在", 404);
+            if (!job.sessionId) return fail("任务尚未开始，暂无执行会话", 409);
+            if (req.method === "GET") {
+                // initialized=false：该会话还没有选中集（老会话）→ 运行期等于"不限制"，
+                // 界面据此回退成"全选"，而不是显示"一个都没选"
+                const initialized = readMcpSelection(job.sessionId) !== undefined;
+                return json({
+                    servers: await ctx.host.getSessionLazyMcpServers(job.sessionId),
+                    initialized,
+                });
+            }
+            if (req.method === "POST") {
+                const body = await readJson(req);
+                if (!Array.isArray(body?.servers)) return fail("servers 必须是字符串数组", 400);
+                const servers = body.servers
+                    .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+                    .map(item => item.trim());
+                await ctx.host.setSessionLazyMcpServers(job.sessionId, [...new Set(servers)].sort());
+                return json({ servers: await ctx.host.getSessionLazyMcpServers(job.sessionId) });
+            }
+            return fail("方法不支持", 405);
         }
 
         if (sub === "cancel" && req.method === "POST") {
