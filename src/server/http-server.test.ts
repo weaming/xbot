@@ -16,6 +16,8 @@ interface StubCalls {
     cancelled: string[];
     /** readSessionEventsSince 收到的 after：断言游标真的被透传，而不是始终从头读。 */
     sinceCalls: number[];
+    /** 自动取消归档调用的会话 id。 */
+    unarchived: string[];
 }
 
 interface StubHost {
@@ -28,9 +30,9 @@ interface StubHost {
 }
 
 function createStubHost(
-    options: { busy?: boolean; history?: AgentEvent[]; claimed?: boolean; heldByOther?: boolean } = {},
+    options: { busy?: boolean; history?: AgentEvent[]; claimed?: boolean; heldByOther?: boolean; archived?: boolean } = {},
 ): StubHost {
-    const calls: StubCalls = { claimed: [], sent: [], cancelled: [], sinceCalls: [] };
+    const calls: StubCalls = { claimed: [], sent: [], cancelled: [], sinceCalls: [], unarchived: [] };
     const listeners = new Set<(sessionId: string, event: AgentEvent | null) => void>();
     const summary = (sessionId: string): SessionSummary => ({ sessionId, messageCount: 0 });
 
@@ -56,6 +58,10 @@ function createStubHost(
             };
         },
         isSessionBusy: () => options.busy ?? false,
+        isSessionArchived: async () => options.archived ?? false,
+        unarchiveSession: async (sessionId: string) => {
+            calls.unarchived.push(sessionId);
+        },
         sendMessage: async (sessionId: string, text: string) => {
             calls.sent.push({ sessionId, text });
             return {};
@@ -296,6 +302,27 @@ describe("http-server 会话接口", () => {
 
             expect(await res.json()).toMatchObject({ cancelled: true, sessionId: "s1" });
             expect(calls.cancelled).toEqual(["s1"]);
+        } finally {
+            await handle.stop();
+        }
+    });
+
+    test("归档会话发送消息时自动取消归档，再照常入队", async () => {
+        const stub = createStubHost({ archived: true });
+        const handle = serve(stub.host);
+        try {
+            const res = await call(handle, "/api/sessions/s-archived/inputs", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ text: "继续", mode: "request" }),
+            });
+            const body = await res.json() as { started: boolean; unarchived?: boolean };
+
+            expect(res.status).toBe(202);
+            expect(body.unarchived).toBe(true);
+            // 先取消归档再发，顺序不能反
+            expect(stub.calls.unarchived).toEqual(["s-archived"]);
+            expect(stub.calls.sent.map(item => item.text)).toEqual(["继续"]);
         } finally {
             await handle.stop();
         }

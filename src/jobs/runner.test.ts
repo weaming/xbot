@@ -68,7 +68,8 @@ function makeRunner(host: SessionHost, maxConcurrent = 2): { store: JobStore; ru
 }
 
 function createJob(store: JobStore, workspace = "/tmp/ws"): JobRecord {
-    return store.create({ source: "test", input: { prompt: "跑测试", workspace } }).job;
+    // 测试关注执行本身：显式授权（产品默认是 false，等用户点「开始」）
+    return store.create({ source: "test", input: { prompt: "跑测试", workspace, autoStart: true } }).job;
 }
 
 /** 轮询等待条件成立：调度是异步的，不依赖固定 sleep。 */

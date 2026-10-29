@@ -20,6 +20,15 @@ export type JobState =
 
 const TERMINAL_STATES: readonly JobState[] = ["succeeded", "failed", "cancelled", "lost", "interfered"];
 
+/** 看板列：卡片放在哪一列由用户拖拽决定，与任务状态无关。 */
+export const BOARD_COLUMNS = ["todo", "doing", "done", "cancelled"] as const;
+
+export type BoardColumn = (typeof BOARD_COLUMNS)[number];
+
+export function isBoardColumn(value: unknown): value is BoardColumn {
+    return typeof value === "string" && (BOARD_COLUMNS as readonly string[]).includes(value);
+}
+
 /** 全部状态的规范顺序：用于校验外部输入与前端分组。 */
 const JOB_STATES: readonly JobState[] = [
     "queued",
@@ -87,8 +96,16 @@ export interface JobInput {
     freshSession?: boolean;
     /** 最大尝试次数（含首次）。 */
     maxAttempts?: number;
-    /** 是否入队即自动执行（默认 true）；false 时停在待办，等人手动触发。 */
+    /**
+     * 是否已授权调度器执行：新建任务默认 false，用户点「开始」后才置 true。
+     * 与看板列无关——卡片放在哪一列不影响它跑不跑。
+     */
     autoStart?: boolean;
+    /**
+     * 卡片所在的看板列：纯粹是用户摆放位置，与任务状态无关。
+     * 缺省（老卡片）按状态兜底推导，见 columnOf。
+     */
+    column?: BoardColumn;
     /** 归档时间：归档后从看板隐藏，但状态与历史都保留。 */
     archivedAt?: string;
 }
@@ -188,8 +205,28 @@ export interface CreateJobOutcome {
 }
 
 export const DEFAULT_MAX_ATTEMPTS = 1;
-/** 缺省自动执行：新建任务直接进队列跑，只有显式关掉才需要人工触发。 */
-export const DEFAULT_AUTO_START = true;
+
+/**
+ * 卡片所在的列：以用户摆放的 column 为准；老卡片没有该字段时按状态兜底一次，
+ * 之后用户一拖就以拖拽结果为准（状态怎么变都不再挪动卡片）。
+ */
+export function columnOf(job: Pick<JobRecord, "state" | "input">): BoardColumn {
+    if (job.input.column) return job.input.column;
+    switch (job.state) {
+        case "queued":
+            return "todo";
+        case "leased":
+        case "running":
+            return "doing";
+        case "succeeded":
+            return "done";
+        case "cancelled":
+            return "cancelled";
+        default:
+            // failed / lost / interfered：已经没有「待处理」列，落到待办等人工处理
+            return "todo";
+    }
+}
 /** 单个回合的默认上限：超过这个时间基本是卡死，继续等没有价值。 */
 export const DEFAULT_TIMEOUT_SEC = 30 * 60;
 /** 租约时长：worker 每 1/3 续租，连续三次失败才判 lost。 */

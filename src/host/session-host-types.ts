@@ -111,6 +111,8 @@ export interface SessionHost {
      * 时间线首屏与上翻分页用它，避免为了最后一屏把整份日志都传到浏览器。
      */
     readSessionEventsBefore(sessionId: string, beforeSeq: number, count: number): Promise<AgentEvent[]>;
+    /** 会话是否已归档（只读尾部事件）。 */
+    isSessionArchived(sessionId: string): Promise<boolean>;
     /**
      * 订阅持久化事件流：新增一条即推送一次，返回取消函数。
      * TUI 与 HTTP 前端共用同一份事实源，不需要各自轮询日志文件。
@@ -163,6 +165,8 @@ export interface SessionHost {
     setSessionModelSelection(sessionId: string, selection: ChatModelSelection): Promise<void>;
     /** 本会话临时启用的 lazy MCP server（模型不支持 tool_search 时的显式放行名单）。 */
     getSessionLazyMcpServers(sessionId: string): Promise<string[]>;
+    /** 只读版：已归档的会话也能读（归档态下界面仍要展示选中集）。 */
+    readSessionLazyMcpServers(sessionId: string): Promise<string[]>;
     /** 覆盖本会话的 lazy MCP 启用集：落盘 lazy_mcp_changed 事件，重启后仍生效。 */
     setSessionLazyMcpServers(sessionId: string, servers: string[]): Promise<void>;
     /** 落盘一条会话间消息（时间线事实源；出入站各一条）。 */

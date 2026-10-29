@@ -14,9 +14,12 @@ import type { SessionHost } from "../host/session-host-types.js";
 import type { JobRunner } from "../jobs/runner.js";
 import type { JobStore } from "../jobs/store.js";
 import {
+    BOARD_COLUMNS,
+    isBoardColumn,
     isJobState,
     JobConflictError,
     JobNotFoundError,
+    type BoardColumn,
     type CreateJobRequest,
     type JobInput,
     type JobRecord,
@@ -45,9 +48,6 @@ const MAX_LIST_LIMIT = 500;
 const MAX_COMMENT_CHARS = 10_000;
 
 /** 看板列 → 语义动作。拖拽只表达「我要它去哪一列」，具体怎么变由这里决定。 */
-type BoardColumn = "todo" | "manual" | "doing" | "done" | "cancelled";
-
-const BOARD_COLUMNS: readonly BoardColumn[] = ["todo", "manual", "doing", "done", "cancelled"];
 
 /** Job 状态流：所有任务的状态变迁，作为列表页数据源。 */
 function jobListSource(store: JobStore): SseSource {
@@ -127,54 +127,11 @@ function isDirectory(target: string): boolean {
 }
 
 /**
- * 拖拽语义：前端只表达「拖到哪一列」，具体动作由这里决定。
- * 原则：不假装完成（运行中不能拖成 done），不隐式重跑（终态要重跑请新建卡片）。
+ * 拖拽：只记录卡片放在哪一列。
+ * 列与任务状态完全解耦——移动卡片不启动、不取消，任务跑完也不会自动跳列。
  */
 async function moveJob(ctx: JobsApiContext, job: JobRecord, column: BoardColumn): Promise<Response> {
-    const isActive = job.state === "running" || job.state === "leased";
-
-    switch (column) {
-        case "todo":
-            if (job.state !== "queued") {
-                return fail(`任务当前是 ${job.state}，只有排队中的任务能回到待办`, 409);
-            }
-            // 回到待办 = 打开自动执行，交给调度器领走
-            {
-                const updated = ctx.store.startJob(job.id);
-                ctx.runner.kick();
-                return json(updated);
-            }
-
-        case "manual":
-            if (job.state !== "queued") {
-                return fail(`任务当前是 ${job.state}，只有排队中的任务能转成手动`, 409);
-            }
-            // 手动 = 关掉自动执行，停在「手动」列等人点开始
-            return json(ctx.store.updateInput(job.id, { autoStart: false }));
-
-        case "doing":
-            if (job.state === "queued") {
-                const started = ctx.store.startJob(job.id);
-                ctx.runner.kick();
-                return json(started);
-            }
-            // 已经在跑就是幂等
-            if (isActive) return json(job);
-            return fail(`任务已结束（${job.state}），要重跑请新建卡片`, 409);
-
-        case "done":
-            if (job.state === "succeeded") return json(job);
-            if (isActive) return fail("任务还在执行，先取消再改状态", 409);
-            return fail(`任务已结束（${job.state}），不能直接标成完成`, 409);
-
-        case "cancelled":
-            if (job.state === "cancelled") return json(job);
-            if (job.state !== "queued" && !isActive) {
-                return fail(`任务已结束（${job.state}），无需取消`, 409);
-            }
-            if (!(await ctx.runner.cancel(job.id))) return fail("取消失败", 409);
-            return json(ctx.store.get(job.id));
-    }
+    return json(ctx.store.updateInput(job.id, { column }));
 }
 
 function positiveInt(value: unknown): number | undefined {
@@ -193,6 +150,15 @@ function applyInputFields(target: JobInput, body: Record<string, unknown>): { ok
     }
     if (typeof body.title === "string") target.title = body.title.trim().slice(0, 200);
     if (typeof body.description === "string") target.description = body.description.slice(0, 20_000);
+
+    // 工作目录：只影响之后新建的执行会话，已有会话的 cwd 不跟着变
+    if (typeof body.workspace === "string") {
+        const raw = body.workspace.trim();
+        if (!raw) return { error: "workspace 不能为空" };
+        const resolved = path.resolve(expandHome(raw));
+        if (!isDirectory(resolved)) return { error: `工作目录不存在或不是目录: ${resolved}` };
+        target.workspace = resolved;
+    }
 
     if (body.labels !== undefined) {
         if (!Array.isArray(body.labels)) return { error: "labels 必须是字符串数组" };
@@ -239,7 +205,6 @@ function applyInputFields(target: JobInput, body: Record<string, unknown>): { ok
     const maxAttempts = positiveInt(body.maxAttempts);
     if (maxAttempts) target.maxAttempts = maxAttempts;
     if (body.freshSession === true) target.freshSession = true;
-    if (body.autoStart === true || body.autoStart === false) target.autoStart = body.autoStart;
 
     return { ok: true };
 }
@@ -370,17 +335,6 @@ export async function handleJobsRoute(
             return json(ctx.store.updateInput(jobId, merged));
         }
 
-        if (sub === "start" && req.method === "POST") {
-            const job = ctx.store.get(jobId);
-            if (!job) return fail("任务不存在", 404);
-            if (job.state !== "queued") {
-                return fail(`任务当前是 ${job.state}，只有排队中的任务能手动开始`, 409);
-            }
-            const started = ctx.store.startJob(jobId);
-            ctx.runner.kick();
-            return json(started);
-        }
-
         if (sub === "archive" && req.method === "POST") {
             const job = ctx.store.archiveJob(jobId);
             // 归档卡片连带归档会话：会话是资产，只归档不删除
@@ -407,12 +361,24 @@ export async function handleJobsRoute(
         if (sub === "move" && req.method === "POST") {
             const body = await readJson(req);
             const column = typeof body?.column === "string" ? body.column : "";
-            if (!BOARD_COLUMNS.includes(column as BoardColumn)) {
+            if (!isBoardColumn(column)) {
                 return fail(`column 必须是 ${BOARD_COLUMNS.join(" / ")}`, 400);
             }
             const job = ctx.store.get(jobId);
             if (!job) return fail("任务不存在", 404);
-            return moveJob(ctx, job, column as BoardColumn);
+            return moveJob(ctx, job, column);
+        }
+
+        // 开始执行：授权调度器领走（新建任务默认停在这里，等用户显式点开始）
+        if (sub === "start" && req.method === "POST") {
+            const job = ctx.store.get(jobId);
+            if (!job) return fail("任务不存在", 404);
+            if (job.state !== "queued") {
+                return fail(`任务当前是 ${job.state}，只有排队中的任务能开始`, 409);
+            }
+            const started = ctx.store.updateInput(jobId, { autoStart: true });
+            ctx.runner.kick();
+            return json(started);
         }
 
         if (sub === "comments") {
@@ -449,7 +415,15 @@ export async function handleJobsRoute(
             const job = ctx.store.get(jobId);
             if (!job) return fail("任务不存在", 404);
 
-            if (req.method === "GET") return json(ctx.store.listSessions(jobId));
+            if (req.method === "GET") {
+                // 带上归档态：界面要在列表里区分已归档会话，并提供取消归档
+                const archived = new Map(
+                    (await ctx.host.listSessions()).map(item => [item.sessionId, item.archived === true]),
+                );
+                return json(
+                    ctx.store.listSessions(jobId).map(item => ({ ...item, archived: archived.get(item.sessionId) === true })),
+                );
+            }
 
             if (req.method === "POST") {
                 // 手动开一个新会话：同一张卡片下换思路继续，不新建卡片
@@ -490,7 +464,8 @@ export async function handleJobsRoute(
                 // 界面据此回退成"全选"，而不是显示"一个都没选"
                 const initialized = readMcpSelection(job.sessionId) !== undefined;
                 return json({
-                    servers: await ctx.host.getSessionLazyMcpServers(job.sessionId),
+                    // 只读接口：已归档的会话也要能查，否则归档后界面连当前选中集都显示不出来
+                    servers: await ctx.host.readSessionLazyMcpServers(job.sessionId),
                     initialized,
                 });
             }
@@ -500,8 +475,19 @@ export async function handleJobsRoute(
                 const servers = body.servers
                     .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
                     .map(item => item.trim());
-                await ctx.host.setSessionLazyMcpServers(job.sessionId, [...new Set(servers)].sort());
-                return json({ servers: await ctx.host.getSessionLazyMcpServers(job.sessionId) });
+                const next = [...new Set(servers)].sort();
+                // 归档会话不可写：临时取消归档，改完按原状归档回去（用户看到的仍是归档态）
+                const archived = await ctx.host.isSessionArchived(job.sessionId);
+                if (archived) {
+                    if (ctx.host.isSessionBusy(job.sessionId)) return fail("会话执行中，暂不能修改", 409);
+                    await ctx.host.unarchiveSession(job.sessionId);
+                }
+                try {
+                    await ctx.host.setSessionLazyMcpServers(job.sessionId, next);
+                } finally {
+                    if (archived) await ctx.host.closeSession(job.sessionId);
+                }
+                return json({ servers: next });
             }
             return fail("方法不支持", 405);
         }
@@ -509,6 +495,7 @@ export async function handleJobsRoute(
         if (sub === "cancel" && req.method === "POST") {
             const cancelled = await ctx.runner.cancel(jobId);
             if (!cancelled) return fail("任务不存在或已结束", 409);
+            // 只改任务状态：卡片放在哪一列由用户自己拖，取消不再联动列归属
             return json({ cancelled: true, job: ctx.store.get(jobId) });
         }
 

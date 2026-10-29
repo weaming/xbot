@@ -14,7 +14,10 @@ function makeStore(): { store: JobStore; advance: (ms: number) => void } {
     };
 }
 
-function createJob(store: JobStore, overrides: { workspace?: string; priority?: number; key?: string } = {}) {
+function createJob(
+    store: JobStore,
+    overrides: { workspace?: string; priority?: number; key?: string; autoStart?: boolean } = {},
+) {
     return store.create({
         source: "test",
         ...(overrides.key ? { idempotencyKey: overrides.key } : {}),
@@ -22,6 +25,8 @@ function createJob(store: JobStore, overrides: { workspace?: string; priority?: 
             prompt: "跑测试",
             workspace: overrides.workspace ?? "/tmp/ws",
             ...(overrides.priority !== undefined ? { priority: overrides.priority } : {}),
+            // 测试关注调度本身：显式授权执行（产品默认是 false，等用户点「开始」）
+            autoStart: overrides.autoStart ?? true,
         },
     });
 }
@@ -211,14 +216,13 @@ describe("JobStore 事件流", () => {
 });
 
 describe("JobStore 卡片扩展", () => {
-    test("autoStart=false 的任务不被领走，手动触发后才进队列执行", () => {
+    test("新建任务默认不执行：授权（autoStart）后才会被领走", () => {
         const { store } = makeStore();
-        const job = createJob(store).job;
-        store.updateInput(job.id, { autoStart: false });
+        const job = createJob(store, { autoStart: false }).job;
 
         expect(store.claimNext("w1", 30_000, new Set())).toBeUndefined();
 
-        store.startJob(job.id);
+        store.updateInput(job.id, { autoStart: true });
         expect(store.claimNext("w1", 30_000, new Set())?.id).toBe(job.id);
     });
 
@@ -234,6 +238,18 @@ describe("JobStore 卡片扩展", () => {
         expect(updated.input.mcpServers).toEqual(["mcp-hub"]);
         expect(updated.input.prompt).toBe("跑测试");
         expect(updated.input.workspace).toBe("/tmp/ws");
+    });
+
+    test("改 workspace 同步独立列：同目录串行按新目录判断", () => {
+        const { store } = makeStore();
+        const job = createJob(store, { workspace: "/tmp/a" }).job;
+
+        store.updateInput(job.id, { workspace: "/tmp/b" });
+
+        expect(store.get(job.id)?.input.workspace).toBe("/tmp/b");
+        // 新目录被占用时领不走；旧目录不再挡它
+        expect(store.claimNext("w1", 30_000, new Set(["/tmp/b"]))).toBeUndefined();
+        expect(store.claimNext("w1", 30_000, new Set(["/tmp/a"]))?.id).toBe(job.id);
     });
 
     test("会话留档：同一卡片可记录多个执行会话", () => {

@@ -62,7 +62,7 @@ zbot serve [--port 8787] [--bind 127.0.0.1] [--cwd <目录>] [--token <令牌>]
 
 | 方法与路径 | 说明 |
 | --- | --- |
-| `PATCH /api/jobs/:id` | 改属性：`title / description / labels / dueAt / meta / mcpServers / priority / timeoutSec / autoStart`；执行中拒绝（409） |
+| `PATCH /api/jobs/:id` | 改属性：`title / description / workspace / labels / dueAt / meta / mcpServers / priority / timeoutSec`；执行中拒绝（409） |
 | `GET /api/jobs/:id/comments` | 评论列表（软删除的默认不返回） |
 | `POST /api/jobs/:id/comments` | `{body, sessionId?}`，作者记 `user` |
 | `PATCH /api/jobs/:id/comments/:cid` | 改正文（已删除的拒绝） |
@@ -70,8 +70,8 @@ zbot serve [--port 8787] [--bind 127.0.0.1] [--cwd <目录>] [--token <令牌>]
 | `GET /api/jobs/:id/sessions` | 该卡片的执行会话列表（每次 attempt 一条，人工新建为 `branch`） |
 | `POST /api/jobs/:id/sessions` | `{prompt?}` 手动开一个新会话（同卡片下换思路继续） |
 | `GET /api/jobs/:id/events?sessionId=` | 指定看哪个会话的事件；不填看最近一个 |
-| `POST /api/jobs/:id/start` | 手动触发排队中的任务 |
-| `POST /api/jobs/:id/move` | `{column}` 看板拖拽：`todo / doing / done / cancelled` |
+| `POST /api/jobs/:id/move` | `{column}` 卡片放哪一列：`todo / doing / done / cancelled`；只改摆放位置，不改任务状态 |
+| `POST /api/jobs/:id/start` | 开始执行：排队中的任务 → `autoStart: true` 并 kick 调度器 |
 | `POST /api/jobs/:id/archive` | 归档：从看板隐藏，状态与历史保留（运行中拒绝） |
 | `POST /api/jobs/:id/unarchive` | 取消归档 |
 | `DELETE /api/jobs/:id` | 彻底删除任务单：评论、执行会话记录、状态事件一并删除（对话本身保留） |
@@ -79,15 +79,11 @@ zbot serve [--port 8787] [--bind 127.0.0.1] [--cwd <目录>] [--token <令牌>]
 
 列表默认不返回已归档任务；`GET /api/jobs?archived=1` 才带上。
 
-**触发方式**：`autoStart` 默认 `true`（入队即跑）；置 `false` 时任务停在「手动」列，等 `start` 或拖到「进行中」。
+**触发方式**：创建只入队不执行。卡片落到「待办」并标「未开始」，用户在卡片详情点「开始」（`POST /api/jobs/:id/start`）后 `autoStart` 置 true，调度器才会领走；拖拽卡片本身不触发执行。
 
-**拖拽语义**（刻意保守，不假装成功）：
+**看板列**：卡片放在哪一列由拖拽决定（`input.column`），与任务状态完全解耦——任务跑完不会自动跳列，拖动也不会启动、取消或移动任务。「已取消」只是一列，不代表任务状态。
 
-- 拖到「待办」：排队中的任务 → 打开自动执行，交给调度器领走
-- 拖到「手动」：排队中的任务 → 关掉自动执行，停在「手动」列等人点开始
-- 拖到「进行中」：排队中 → 触发执行；已在跑幂等；**终态拒绝**（要重跑请新建）
-- 拖到「已完成」：只接受本来就成功的任务；运行中拒绝
-- 拖到「已取消」：排队中或运行中 → 取消
+老卡片没有 `column` 字段时按状态兜底推导一次：queued → 待办、leased/running → 进行中、succeeded → 已完成、cancelled → 已取消、失败类 → 待办。
 
 **卡片属性**（`JobInput`）：
 
@@ -99,8 +95,7 @@ zbot serve [--port 8787] [--bind 127.0.0.1] [--cwd <目录>] [--token <令牌>]
 | `dueAt` | 截止时间（ISO8601） |
 | `meta` | 自定义键值对，纯展示 |
 | `mcpServers` | 本任务允许的 MCP server；**不填 = 全部，空数组 = 不用任何 MCP** |
-| `timeoutSec` | 回合超时（秒），超时即取消并判 failed |
-| `autoStart` | 是否入队即执行 |
+| `timeoutSec` | 回合超时（秒），超时即取消并判 failed；界面不再提供输入，缺省 30 分钟 |
 
 **AI 评论**：agent 在任务执行期间会拿到 `job_comment` 工具，写进同一张卡片的评论流（作者记 `agent`，绑定当时执行的会话），人机评论是同一条时间线。
 

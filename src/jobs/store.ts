@@ -13,7 +13,6 @@ import { Database } from "bun:sqlite";
 import { createUlid } from "../utils/ulid.js";
 import {
     canTransition,
-    DEFAULT_AUTO_START,
     DEFAULT_MAX_ATTEMPTS,
     isTerminalState,
     type CommentAuthor,
@@ -253,8 +252,12 @@ export class JobStore {
 
         const id = createUlid();
         const maxAttempts = request.input.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
-        // autoStart 显式落库：存储里不留「字段缺失」的歧义，SQL 的 COALESCE 只兜旧数据
-        const input: JobInput = { ...request.input, autoStart: request.input.autoStart ?? DEFAULT_AUTO_START };
+        // 新卡片默认落在待办列，且默认不执行：等用户点「开始」授权（autoStart）
+        const input: JobInput = {
+            ...request.input,
+            column: request.input.column ?? "todo",
+            autoStart: request.input.autoStart ?? false,
+        };
         try {
             this.db.run(
                 `INSERT INTO jobs (id, source, idempotency_key, workspace, input, state, priority,
@@ -448,18 +451,16 @@ export class JobStore {
     updateInput(id: string, patch: Partial<JobInput>): JobRecord {
         const job = this.getOrThrow(id);
         const input = { ...job.input, ...patch };
-        this.db.run("UPDATE jobs SET input = ?, priority = ? WHERE id = ?", [
+        // workspace 是独立列：调度器按它做「同目录串行」，改了输入必须同步，否则
+        // 会话会建在新目录、串行判断还停在旧目录
+        this.db.run("UPDATE jobs SET input = ?, priority = ?, workspace = ? WHERE id = ?", [
             JSON.stringify(input),
             input.priority ?? 0,
+            input.workspace,
             id,
         ]);
         this.appendEvent(id, "job_updated", { fields: Object.keys(patch) });
         return this.getOrThrow(id);
-    }
-
-    /** 手动触发：把任务标记为自动执行并留在队列里，由调度器下一轮领走。 */
-    startJob(id: string): JobRecord {
-        return this.updateInput(id, { autoStart: true });
     }
 
     /** 归档：从看板隐藏，状态与历史都保留；运行中不允许（先取消）。 */

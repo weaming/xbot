@@ -506,6 +506,14 @@ export class LocalSessionHost implements SessionHost {
         return this.eventLog.readBefore(sessionId, beforeSeq, count);
     }
 
+    /** 会话是否处于归档态：只读尾部一条事件，比列一遍全部会话便宜得多。 */
+    async isSessionArchived(sessionId: string): Promise<boolean> {
+        const diskSeq = await this.eventLog.lastSeq(sessionId, { forceRefresh: true });
+        if (diskSeq === 0) return false;
+        const tail = await this.eventLog.read(sessionId, diskSeq, 1);
+        return tail[0]?.type === "session_archived";
+    }
+
     subscribeEvents(listener: (sessionId: string, event: AgentEvent | null) => void): () => void {
         return this.eventLog.subscribe(listener);
     }
@@ -643,6 +651,19 @@ export class LocalSessionHost implements SessionHost {
     async getSessionLazyMcpServers(sessionId: string): Promise<string[]> {
         const session = await this.requireActiveSession(sessionId);
         return [...(session.lazyMcpServers ?? [])];
+    }
+
+    /**
+     * 读会话的 MCP 选中集，不要求会话可写：已归档的会话也要能查（界面要在归档态下展示它）。
+     * 与 getSessionLazyMcpServers 的区别只在"归档也能读"，不更新内存缓存。
+     */
+    async readSessionLazyMcpServers(sessionId: string): Promise<string[]> {
+        const diskSeq = await this.eventLog.lastSeq(sessionId, { forceRefresh: true });
+        const active = this.activeSessions.get(sessionId);
+        if (active && active.lastSeq >= diskSeq) return [...(active.session.lazyMcpServers ?? [])];
+        if (diskSeq === 0) throw new SessionNotFoundError(sessionId);
+        const replayed = await this.replay.replayTo(sessionId);
+        return [...(replayed.session.lazyMcpServers ?? [])];
     }
 
     /**

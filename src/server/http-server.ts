@@ -201,6 +201,9 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
                     headers: {
                         "content-type": "text/html; charset=utf-8",
                         "x-content-type-options": "nosniff",
+                        // 界面随 serve 一起分发，重启即换新；没有这个头时浏览器会按启发式
+                        // 缓存整页 HTML，重启 serve 后仍显示旧界面，排查时极易误判
+                        "cache-control": "no-cache",
                     },
                 });
             }
@@ -415,6 +418,15 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
                         const mode = body?.mode === "turn" ? "turn" : "request";
                         const images = Array.isArray(body?.images) ? (body.images as ImageAssetRef[]) : undefined;
 
+                        // 已归档的会话写不进去：用户既然要发消息，就等于要激活它——
+                        // 自动取消归档再发送，别让他先去点一次「取消归档」
+                        let unarchived = false;
+                        if (await host.isSessionArchived(sessionId)) {
+                            if (host.isSessionBusy(sessionId)) return fail("会话执行中，暂不能取消归档", 409);
+                            await host.unarchiveSession(sessionId);
+                            unarchived = true;
+                        }
+
                         if (!host.isSessionBusy(sessionId)) {
                             const turn = host.sendMessage(sessionId, text, {
                                 ...(images && images.length > 0 ? { images } : {}),
@@ -423,7 +435,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
                             turn.catch(error =>
                                 console.error(`[serve] 会话 ${sessionId} 回合失败:`, error),
                             );
-                            return json({ started: true, queued: false, mode, pending: pendingStats(sessionId) }, 202);
+                            return json({ started: true, queued: false, mode, unarchived, pending: pendingStats(sessionId) }, 202);
                         }
 
                         // 排队只存文本：图片引用要跟着具体请求走，混进队列会跨回合串味
@@ -431,7 +443,7 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
                             return fail("当前回合进行中，带图片的消息请等它结束后再发", 409);
                         }
                         enqueueInput(sessionId, text, mode);
-                        return json({ started: false, queued: true, mode, pending: pendingStats(sessionId) }, 202);
+                        return json({ started: false, queued: true, mode, unarchived, pending: pendingStats(sessionId) }, 202);
                     }
                     return fail("不支持的方法", 405);
                 }
