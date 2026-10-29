@@ -303,7 +303,7 @@ export function CardDetail({
             {/* 外层只负责给高度：各 tab 自己决定滚动，会话历史才能吃满剩余空间 */}
             <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-3">
                 {tab === "props" && (
-                    <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto text-sm">
+                    <div className="stable-scroll flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto text-sm">
                         {/* 上下结构：长内容（描述、MCP、结果）能用满面板宽度 */}
                         <Field label="工作目录">
                             <span className="break-all">{abbreviateHome(job.input.workspace, home)}</span>
@@ -429,7 +429,7 @@ export function CardDetail({
                             )}
                             <Button onClick={() => void openBranch()}>+ 新会话</Button>
                         </div>
-                        <div ref={timelineRef} className="flex min-h-0 flex-1 flex-col overflow-y-auto pr-1">
+                        <div ref={timelineRef} className="stable-scroll flex min-h-0 flex-1 flex-col overflow-y-auto pr-1">
                             <Timeline events={events} />
                         </div>
                         {activeSessionId && (
@@ -512,7 +512,7 @@ export function CardDetail({
                 )}
 
                 {tab === "comments" && (
-                    <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
+                    <div className="stable-scroll flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
                         {comments.length === 0 && <p className="text-xs text-muted">还没有评论</p>}
                         {comments.map(comment => (
                             <div key={comment.id} className="flex flex-col gap-1.5">

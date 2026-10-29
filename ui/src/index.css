@@ -65,6 +65,39 @@ body {
     opacity: 0.4;
 }
 
+/* 滚动条：统一成细条 + 语义色。Linux/Windows 的默认滚动条又粗又灰，
+   在暗色面板上像贴了一张纸条；Firefox 用 scrollbar-* 两个属性，WebKit 用伪元素。
+   thumb 用透明边框做内缩，视觉上比 10px 更细，同时保留足够点击区域。 */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklch, var(--color-muted) 45%, transparent) transparent;
+}
+
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+::-webkit-scrollbar-thumb {
+    background-color: color-mix(in oklch, var(--color-muted) 40%, transparent);
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in oklch, var(--color-muted) 70%, transparent);
+}
+::-webkit-scrollbar-corner {
+    background: transparent;
+}
+
+/* 会一直有内容的滚动区加这条：滚动条出现/消失时内容不会横向跳一下 */
+.stable-scroll {
+    scrollbar-gutter: stable;
+}
+
 /* AI 输出的 markdown：只给必要样式，不引 typography 插件 */
 .markdown > :first-child {
     margin-top: 0;

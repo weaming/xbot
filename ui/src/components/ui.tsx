@@ -85,7 +85,7 @@ export function Dialog({
         <dialog
             ref={ref}
             onClose={onClose}
-            className="max-h-[85dvh] w-[min(560px,94vw)] overflow-y-auto rounded-xl border border-border bg-panel p-4 text-fg backdrop:bg-black/40"
+            className="stable-scroll max-h-[85dvh] w-[min(560px,94vw)] overflow-y-auto rounded-xl border border-border bg-panel p-4 text-fg backdrop:bg-black/40"
         >
             <h2 className="mb-3 text-base font-semibold">{title}</h2>
             {children}

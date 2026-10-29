@@ -147,7 +147,7 @@ function Column({
                 <h3 className="text-sm font-semibold">{column.title}</h3>
                 <span className="text-xs text-muted">{jobs.length}</span>
             </header>
-            <div className="flex min-h-[40px] flex-1 flex-col gap-2 overflow-y-auto">
+            <div className="stable-scroll flex min-h-[40px] flex-1 flex-col gap-2 overflow-y-auto">
                 {jobs.map(job => (
                     <DraggableCard
                         key={job.id}
