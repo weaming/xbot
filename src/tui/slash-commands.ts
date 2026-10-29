@@ -35,9 +35,10 @@ export const SLASH_COMMANDS: SlashCommand[] = [
 
 /** /review 发送的固定指令：dev-review → 修复循环，通过后再暂存并提交。 */
 export const REVIEW_PROMPT = [
-    "做 dev-review → fix 循环，直到 review 通过再 commit。",
-    "每轮 review 都交给同一个 subagent：跨轮复用，循环结束后 close 它。",
-    "被 review 的改动在 review 期间保持 unstaged，每轮 review 完就 stage；review 通过后 commit。",
+    "Do dev-review-fix loop，until review pass, then commit.",
+    "Reuse same subagent, close(archive) it after review pass.",
+    "Keep content to be reviewed unstaged, stage them after each review, then fix, next review; so each review can read less diff.",
+    "Don't auto start this loop after your commit."
 ].join("\n");
 
 export const SESSION_SHORTCUTS = [
