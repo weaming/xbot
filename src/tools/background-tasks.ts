@@ -3,6 +3,8 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { Duration, Effect, Fiber } from "effect";
+import { abortError, interruptOnAbort, runPromiseOrAbort, sleepUnref, whenAborted } from "../utils/effect.js";
 
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
 const MAX_OUTPUT_PREVIEW_CHARS = 8_000;
@@ -65,7 +67,8 @@ interface BackgroundTaskRecord {
     stderrBytes: number;
     outputTruncated: boolean;
     stopRequested: boolean;
-    timeoutTimer?: ReturnType<typeof setTimeout>;
+    /** 超时 watchdog：任务结束即中断（= 清定时器），不占进程退出。 */
+    watchdog?: Fiber.Fiber<void>;
     resolveDone: (summary: BackgroundTaskSummary) => void;
     done: Promise<BackgroundTaskSummary>;
 }
@@ -87,6 +90,11 @@ function trimOutput(value: string): string {
 
 function nowISO(): string {
     return new Date().toISOString();
+}
+
+/** 起一个 watchdog fiber，或停掉它（中断 fiber 即清掉它持有的定时器）。 */
+function stopWatchdog(fiber?: Fiber.Fiber<void>): void {
+    if (fiber) Effect.runFork(Fiber.interrupt(fiber));
 }
 
 function killProcessGroup(pgid: number | undefined, child: ChildProcess, signal: NodeJS.Signals = "SIGKILL"): void {
@@ -140,7 +148,7 @@ class BackgroundTaskManager {
         let detached = false;
         let timedOut = false;
         let backgroundTask: BackgroundTaskRecord | undefined;
-        let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
+        let watchdog: Fiber.Fiber<void> | undefined;
         let resolveForeground!: (result: ShellForegroundResult) => void;
         let rejectForeground!: (error: Error) => void;
 
@@ -164,8 +172,8 @@ class BackgroundTaskManager {
         const collectOutput = (chunks: Buffer[]): string => Buffer.concat(chunks).toString("utf8");
         const clearForeground = (): void => {
             this.foregroundRuns.delete(foregroundRun);
-            if (timeoutTimer) clearTimeout(timeoutTimer);
-            if (options.signal) options.signal.removeEventListener("abort", onAbort);
+            stopWatchdog(watchdog);
+            watchdog = undefined;
         };
 
         const resolveDetached = (reason: "manual" | "timeout"): boolean => {
@@ -179,15 +187,11 @@ class BackgroundTaskManager {
         foregroundRun.detach = resolveDetached;
         this.foregroundRuns.add(foregroundRun);
 
-        const onAbort = (): void => {
-            if (detached) return;
-            killProcessGroup(pgid, child);
-        };
-
         const finishBackground = (code: number | null, signalName: NodeJS.Signals | null): void => {
             if (!backgroundTask) return;
             if (backgroundTask.summary.status !== "running") return;
-            if (backgroundTask.timeoutTimer) clearTimeout(backgroundTask.timeoutTimer);
+            stopWatchdog(backgroundTask.watchdog);
+            backgroundTask.watchdog = undefined;
             const stdout = collectOutput(backgroundTask.stdoutChunks).trim();
             const stderr = collectOutput(backgroundTask.stderrChunks).trim();
             const status = backgroundTask.stopRequested
@@ -257,21 +261,28 @@ class BackgroundTaskManager {
             });
         });
 
-        if (options.signal) options.signal.addEventListener("abort", onAbort, { once: true });
-        const timeoutMs = options.timeoutSeconds * 1_000;
-        timeoutTimer = setTimeout(() => {
-            timedOut = true;
-            if (options.autoBackgroundOnTimeout) {
-                resolveDetached("timeout");
-                return;
-            }
-            killProcessGroup(pgid, child);
-        }, timeoutMs);
-
         const promise = new Promise<ShellForegroundResult>((resolve, reject) => {
             resolveForeground = resolve;
             rejectForeground = reject;
         });
+
+        // 前台等待的两条出口：到点（转后台或杀掉）与调用方 abort；先到者胜，另一条随之撤销
+        const onTimeout = Effect.sleep(Duration.millis(options.timeoutSeconds * 1_000)).pipe(
+            Effect.andThen(Effect.sync(() => {
+                timedOut = true;
+                if (options.autoBackgroundOnTimeout) {
+                    resolveDetached("timeout");
+                    return;
+                }
+                killProcessGroup(pgid, child);
+            })),
+        );
+        const onAbortSignal = whenAborted(options.signal, () => {
+            if (detached) return;
+            killProcessGroup(pgid, child);
+        });
+        watchdog = Effect.runFork(Effect.raceFirst(onTimeout, onAbortSignal));
+
         return { promise, detach: reason => foregroundRun.detach(reason) };
     }
 
@@ -297,33 +308,22 @@ class BackgroundTaskManager {
         return this.toSummary(task, true);
     }
 
+    /** 等任务结束或超时返回快照；signal 中断时抛 AbortError，定时器与监听器由 Effect 托管。 */
     async wait(taskId: string, timeoutMs: number, sessionId?: string, signal?: AbortSignal): Promise<BackgroundTaskSummary | undefined> {
         const task = this.tasks.get(taskId);
         if (!task || (sessionId !== undefined && task.summary.sessionId !== sessionId)) return undefined;
         if (task.summary.status !== "running") return this.toSummary(task, true);
-        if (signal?.aborted) throw new DOMException("The operation was aborted", "AbortError");
+        if (signal?.aborted) throw abortError();
 
-        return new Promise<BackgroundTaskSummary>((resolve, reject) => {
-            let timer: ReturnType<typeof setTimeout> | undefined;
-            const cleanup = (): void => {
-                if (timer) clearTimeout(timer);
-                signal?.removeEventListener("abort", onAbort);
-            };
-            const onAbort = (): void => {
-                cleanup();
-                reject(new DOMException("The operation was aborted", "AbortError"));
-            };
-            task.done.then(summary => {
-                cleanup();
-                resolve(this.toSummary(task, true));
-            });
-            timer = setTimeout(() => {
-                cleanup();
-                resolve(this.toSummary(task, true));
-            }, timeoutMs);
-            timer.unref?.();
-            signal?.addEventListener("abort", onAbort, { once: true });
-        });
+        const snapshot = (): BackgroundTaskSummary => this.toSummary(task, true);
+        const finished = Effect.callback<void>(resume => {
+            void task.done.then(() => resume(Effect.void));
+        }).pipe(Effect.andThen(Effect.sync(snapshot)));
+        const expired = sleepUnref(timeoutMs).pipe(Effect.andThen(Effect.sync(snapshot)));
+
+        return runPromiseOrAbort(
+            Effect.raceFirst(finished, expired).pipe(Effect.raceFirst(interruptOnAbort(signal))),
+        );
     }
 
     stop(taskId: string, sessionId?: string): boolean {
@@ -388,12 +388,14 @@ class BackgroundTaskManager {
             MAX_BACKGROUND_TIMEOUT_SECONDS,
             Math.max(1, Math.round(options.backgroundTimeoutSeconds ?? 30 * 60)),
         );
-        task.timeoutTimer = setTimeout(() => {
-            if (task.summary.status !== "running") return;
-            task.summary.reason = "timeout";
-            killProcessGroup(task.pgid, task.child);
-        }, timeoutSeconds * 1_000);
-        task.timeoutTimer.unref?.();
+        // 后台任务的超时也走 watchdog：结束时中断即可，且不阻止进程退出（与原来的 unref 一致）
+        task.watchdog = Effect.runFork(sleepUnref(timeoutSeconds * 1_000).pipe(
+            Effect.andThen(Effect.sync(() => {
+                if (task.summary.status !== "running") return;
+                task.summary.reason = "timeout";
+                killProcessGroup(task.pgid, task.child);
+            })),
+        ));
         return task;
     }
 
@@ -455,4 +457,3 @@ function collectTaskOutput(chunks: Buffer[]): string {
 }
 
 export const backgroundTaskManager = new BackgroundTaskManager();
-
