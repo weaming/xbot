@@ -199,7 +199,8 @@ export async function runServe(argv: string[]): Promise<void> {
     await runtimeReady;
 
     // Job 存储与调度与宿主同进程：租约负责崩溃后判定 lost，队列本身持久化在 SQLite
-    const store = new JobStore({ path: getStateDir("jobs.sqlite") });
+    const jobsDbPath = getStateDir("serve", "db", "jobs.sqlite");
+    const store = new JobStore({ path: jobsDbPath });
     // agent 在任务里用 job_comment 工具写评论：装配层把工具层的写入意图接到存储上
     setJobCommentWriter(({ jobId, sessionId, body }) => {
         store.addComment({ jobId, ...(sessionId ? { sessionId } : {}), author: "agent", body });
@@ -245,7 +246,7 @@ export async function runServe(argv: string[]): Promise<void> {
     }
     const resources: ServeResources = { server, runner, host, store };
     process.stderr.write(`zbot serve 已就绪 ${server.url}\n`);
-    process.stderr.write(`任务队列：${getStateDir("jobs.sqlite")}（并发上限 ${resolveMaxConcurrent()}）\n`);
+    process.stderr.write(`任务队列：${jobsDbPath}（并发上限 ${resolveMaxConcurrent()}）\n`);
     process.stderr.write(`访问令牌：${token}\n`);
     // 把宿主的事件流接到实时信号：只有界面要渲染的两类——正在生成的正文、是否在思考。
     // 推理正文与工具参数增量都不推（前者不渲染，后者等消息定稿后随工具块一次给）。

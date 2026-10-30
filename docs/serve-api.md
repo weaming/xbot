@@ -11,6 +11,7 @@ zbot serve [--port 8787] [--bind 127.0.0.1] [--cwd <目录>] [--token <令牌>]
 - 默认只绑 `127.0.0.1`。
 - `--cwd` 是新建会话与工具的默认基准。
 - 令牌优先级：`--token` > `ZBOT_SERVE_TOKEN` > `~/.zbot/serve/token`（首次启动自动生成，权限 0600）。
+- 任务库位于 `~/.zbot/serve/db/jobs.sqlite`。
 - 所有 `/api` 请求带 `Authorization: Bearer <token>`；不再接受 `?token=`（URL 会被缓存、写进历史与反代日志）。
   页面首次进入在输入框里粘贴令牌，存在 localStorage；SSE 与图片都由前端 fetch 带 header 取回。
 - **界面壳不需要令牌**（否则没法在页面里输入令牌）：`GET /` 与 `GET /ui` 公开，页面里输入一次后存 localStorage；
