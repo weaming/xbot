@@ -14,7 +14,7 @@ import { materializeImageMessages } from "../../utils/image-assets.js";
 import { isApplyPatchTool } from "../tool-kinds.js";
 import { patchArgumentsJson, patchFromArguments } from "../../utils/patch-args.js";
 import type { ApplyPatchToolMode } from "./apply-patch-tool.js";
-import { repairResponsesFunctionCallItemIds } from "./responses-input-repair.js";
+import { repairResponsesFunctionCallItemIds } from "./responses-input.js";
 
 /** function_call → custom_tool_call：同一个补丁从 JSON 参数挪到裸文本 input。 */
 function toCustomToolCallItem(item: any): any {

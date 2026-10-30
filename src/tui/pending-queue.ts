@@ -101,6 +101,12 @@ export class PendingQueue {
         return true;
     }
 
+    /** 按对象身份移除已被上游接受 steering 的消息。 */
+    removeMessage(sessionId: string | null, message: PendingMessage): boolean {
+        const index = this.stateOf(sessionId).messages.indexOf(message);
+        return index >= 0 && this.removeAt(sessionId, index);
+    }
+
     /** 清空某会话队列（清空会话、新建、关闭、删除、退出时使用）。 */
     clear(sessionId: string | null): void {
         this.queues.delete(sessionId ?? ROOT_KEY);

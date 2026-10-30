@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "b
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { getResponsesBaselineFile } from "../../src/utils/state-paths.js";
 
 /**
  * 多 TUI 实例协同测试：
@@ -198,12 +199,18 @@ describe("LocalSessionHost 多实例并发协同", () => {
         await agent.sendMessage(sessionId, "创建会话");
 
         const first = await createToolImageAsset(Buffer.from("first"), "first.png", "image/png", sessionId);
+        const baselineFile = getResponsesBaselineFile(sessionId);
+        fs.mkdirSync(path.dirname(baselineFile), { recursive: true });
+        fs.writeFileSync(baselineFile, "{}");
         await agent.clearSession(sessionId);
         expect(fs.existsSync(first.path)).toBe(false);
+        expect(fs.existsSync(baselineFile)).toBe(false);
 
         const second = await createToolImageAsset(Buffer.from("second"), "second.png", "image/png", sessionId);
+        fs.writeFileSync(baselineFile, "{}");
         await agent.deleteSession(sessionId);
         expect(fs.existsSync(second.path)).toBe(false);
+        expect(fs.existsSync(baselineFile)).toBe(false);
     });
 });
 

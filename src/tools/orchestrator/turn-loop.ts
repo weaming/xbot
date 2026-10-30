@@ -14,7 +14,7 @@ import type { ToolCall } from "../../types/tool-call.js";
 import { fromOpenAIToolCalls } from "../../types/tool-call.js";
 import { normalizeToolDefinitionsForDeepSeek } from "../tool-schema.js";
 import { toUserContent, type UserMessageInput } from "../../types/image.js";
-import { normalizeResponsesResponse } from "./responses-shape.js";
+import { normalizeResponsesResponse } from "./responses-output.js";
 import { decideNext, nextCounters, EMPTY_RESPONSE_RETRY_PROMPT } from "./decide.js";
 import { buildUsageStats, toUsageInfo } from "./usage.js";
 import { isDeepSeekEndpoint, prepareRequest } from "./turn-request.js";

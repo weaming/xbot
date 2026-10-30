@@ -5,49 +5,23 @@
  */
 
 import OpenAI from "openai";
-import { createHash } from "node:crypto";
-import { recordLLMExchange, type LLMRequestKind, type LLMUsageLogEntry } from "../utils/logger.js";
-import { normalizeToolDefinitionsForDeepSeek } from "./tool-schema.js";
-import { patchArgumentsJson } from "../utils/patch-args.js";
-import {
-  compactJsonToolOutput,
-  type ToolExecutionOutput,
-  type ToolExecutionResponse,
-} from "./tool-interface.js";
-import { getOpenAIProxyFetch } from "../utils/proxy.js";
-import { DEEPSEEK_OFFICIAL_HOST, endpointHost } from "../pricing/deepseek.js";
 import type { UIEvent } from "../events/ui-events.js";
-import type { StreamDelta, UsageInfo } from "../types/chat.js";
-import type { ChatMessage } from "../types/session.js";
-import { partialAssistantMessage } from "../utils/stream-recovery.js";
-import { fromOpenAIToolCalls, type ToolCall } from "../types/tool-call.js";
+import type { StreamDelta } from "../types/chat.js";
 import { toUserContent, type UserContent, type UserMessageInput } from "../types/image.js";
-import {
-  materializeDeepSeekImageMessages,
-  materializeImageMessages,
-  uploadDeepSeekFile,
-  uploadDeepSeekFileData,
-  resolveDeepSeekFilesAPI,
-} from "../utils/image-assets.js";
-import {
-  decideNext,
-  EMPTY_RESPONSE_RETRY_PROMPT,
-  nextCounters,
-} from "./orchestrator/decide.js";
-import {
-  buildUsageStats,
-  isAccumulatedUsage,
-  toUsageInfo,
-} from "./orchestrator/usage.js";
-import {
-  isDeepSeekEndpoint,
-  prepareRequest,
-} from "./orchestrator/turn-request.js";
+import type { ChatMessage } from "../types/session.js";
+import { type ToolCall } from "../types/tool-call.js";
+import { resolveDeepSeekFilesAPI, uploadDeepSeekFile, uploadDeepSeekFileData } from "../utils/image-assets.js";
+import { type LLMRequestKind } from "../utils/logger.js";
+import { getOpenAIProxyFetch } from "../utils/proxy.js";
+import { isResponsesWebSocketEnabled } from "../utils/responses-transport.js";
+import { resolveProtocol } from "./orchestrator/request-builder.js";
+import { collectChatStream } from "./orchestrator/chat-stream.js";
+import { collectResponsesStream } from "./orchestrator/responses-stream.js";
+import { acquireResponsesSession } from "./orchestrator/responses-session.js";
 import { runToolBatch, type ToolBatchOutcome } from "./orchestrator/tool-loop.js";
 import { truncateAssistantToolCalls } from "./orchestrator/tool-order.js";
 import { runTurnLoop, type TurnContext } from "./orchestrator/turn-loop.js";
-import { resolveProtocol } from "./orchestrator/request-builder.js";
-import { normalizeResponsesResponse } from "./orchestrator/responses-shape.js";
+import { type ToolExecutionResponse } from "./tool-interface.js";
 
 /** 差分基准的会话上限，超出后按插入序淘汰最老的一条。 */
 const ACCUMULATED_USAGE_BASELINE_MAX = 512;
@@ -91,6 +65,8 @@ export interface ChatClient {
   protocol?: "responses" | "chat_completions";
   create(params: any, options?: any): Promise<any>;
   createResponse?(params: any, options?: any): Promise<any>;
+  preconnect?(): void;
+  close?(): void;
   uploadFile?(imagePath: string): Promise<{ id: string }>;
   uploadFileData?(data: string, filename: string, mimeType: string): Promise<{ id: string }>;
 }
@@ -100,6 +76,8 @@ export function createChatClient(
   apiKey: string,
   baseURL?: string,
   protocol?: "responses" | "chat_completions",
+  sessionId?: string,
+  model?: string,
 ): ChatClient {
   const finalURL = baseURL || "https://api.openai.com/v1";
   const normalizedApiKey = apiKey.trim();
@@ -113,6 +91,8 @@ export function createChatClient(
     },
     fetch: getOpenAIProxyFetch(),
   });
+  const cacheSessionId = protocol === "responses" ? sessionId : undefined;
+  const responsesSession = acquireResponsesSession(client, !!normalizedApiKey, cacheSessionId);
   return {
     baseURL: finalURL,
     protocol,
@@ -123,7 +103,12 @@ export function createChatClient(
       return response;
     },
     async createResponse(params, options) {
-      return client.responses.create(params, options);
+      const useWebSocket = isResponsesWebSocketEnabled(undefined, params.model);
+      return responsesSession.session.create(params, options?.signal, options?.onSteerAccepted, useWebSocket);
+    },
+    close() { responsesSession.release(); },
+    preconnect() {
+      if (protocol === "responses" && isResponsesWebSocketEnabled(undefined, model)) responsesSession.session.preconnect();
     },
     async uploadFile(imagePath: string) {
       const fileID = await uploadDeepSeekFile(imagePath, {
@@ -344,6 +329,11 @@ export async function executeWithChat(
       signal,
       emit,
       ...(onStreamDelta ? { persistDelta: (delta: StreamDelta) => onStreamDelta(delta, ctx.iteration) } : {}),
+      onSteerAccepted: async (text: string) => {
+        const input = { text, trigger: "pending" as const };
+        appendTurnMessage({ role: "user", content: toUserContent(input) });
+        await onConsumePending?.(text, [input]);
+      },
     }),
   };
 
@@ -377,11 +367,12 @@ async function sendProtocolRequest(input: {
   signal: AbortSignal | undefined;
   emit: (event: UIEvent) => void;
   persistDelta?: (delta: StreamDelta) => Promise<void>;
+  onSteerAccepted?: (input: string) => Promise<void>;
 }): Promise<any> {
-  const { client, protocol, requestBody, stream, signal, emit, persistDelta } = input;
+  const { client, protocol, requestBody, stream, signal, emit, persistDelta, onSteerAccepted } = input;
   if (protocol === "responses") {
     return stream
-      ? collectResponsesResponse(client, requestBody, signal, emit, persistDelta)
+      ? collectResponsesResponse(client, requestBody, signal, emit, persistDelta, onSteerAccepted)
       : client.createResponse?.(requestBody, { signal });
   }
   return stream
@@ -400,18 +391,12 @@ async function collectStreamResponse(
   persistDelta?: (delta: StreamDelta) => Promise<void>,
 ): Promise<any> {
   const stream = await client.create(requestBody, { signal });
-  const { assistantMsg, usage, model, finishReason } = await collectStream(stream, emit, persistDelta);
+  const { assistantMsg, usage, model, finishReason } = await collectChatStream(stream, emit, persistDelta);
   return {
     model,
     choices: [{ message: assistantMsg, finish_reason: finishReason }],
     usage,
   };
-}
-
-/** 托管搜索的事件族：web_search_call（联网）与 tool_search_call（工具发现）。 */
-function isManagedSearchEvent(type: unknown): boolean {
-  return typeof type === "string"
-    && (type.startsWith("response.web_search_call.") || type.startsWith("response.tool_search_call."));
 }
 
 async function collectResponsesResponse(
@@ -420,314 +405,9 @@ async function collectResponsesResponse(
   signal: AbortSignal | undefined,
   emit: (event: UIEvent) => void,
   persistDelta?: (delta: StreamDelta) => Promise<void>,
+  onSteerAccepted?: (input: string) => Promise<void>,
 ): Promise<any> {
-  const stream = await client.createResponse?.(requestBody, { signal });
-  if (!stream || typeof stream[Symbol.asyncIterator] !== "function") {
-    return stream;
-  }
-
-  let completedResponse: any;
-  const outputItems: any[] = [];
-  const functionCalls = new Map<string, {
-    index: number;
-    id: string;
-    name: string;
-    arguments: string;
-    /** custom 是自由文本工具（apply_patch）：arguments 存的是裸补丁文本，不是 JSON。 */
-    kind: "function" | "custom";
-  }>();
-  let model = "";
-  let usage: any;
-  let partialText = "";
-  let partialReasoning = "";
-  // 托管搜索的进度按 item_id 跟踪：同一轮可能连续搜多次，且会并行开多个
-  const activeSearches = new Set<string>();
-  let finishedSearches = 0;
-
-  try {
-    for await (const event of stream) {
-      if (event.type === "response.output_text.delta") {
-        await persistDelta?.({ text: event.delta });
-        partialText += event.delta;
-        emit({ type: "text_delta", delta: event.delta });
-      } else if (event.type === "response.reasoning_summary_text.delta" || event.type === "response.reasoning_text.delta") {
-        await persistDelta?.({ reasoning: event.delta });
-        partialReasoning += event.delta;
-        emit({ type: "reasoning_delta", delta: event.delta });
-      } else if (event.type === "response.output_item.added") {
-        const item = event.item;
-        if (item?.type === "function_call" || item?.type === "custom_tool_call") {
-          const isCustom = item.type === "custom_tool_call";
-          const call = {
-            index: event.output_index ?? functionCalls.size,
-            id: item.call_id ?? item.id ?? `call_${crypto.randomUUID().slice(0, 8)}`,
-            name: item.name ?? "",
-            arguments: (isCustom ? item.input : item.arguments) ?? "",
-            kind: isCustom ? "custom" as const : "function" as const,
-          };
-          await persistDelta?.({ toolCalls: [{
-            index: call.index,
-            id: call.id,
-            name: call.name,
-            arguments: call.arguments,
-          }] });
-          functionCalls.set(item.id ?? call.id, call);
-          emit({ type: "toolcall_start", index: call.index, id: call.id, name: call.name });
-        }
-      } else if (event.type === "response.function_call_arguments.delta"
-        || event.type === "response.custom_tool_call_input.delta") {
-        const key = event.item_id;
-        const call = functionCalls.get(key) ?? {
-          index: event.output_index ?? functionCalls.size,
-          id: key,
-          name: "",
-          arguments: "",
-          kind: event.type === "response.custom_tool_call_input.delta" ? "custom" as const : "function" as const,
-        };
-        const delta = typeof event.delta === "string" ? event.delta : "";
-        await persistDelta?.({ toolCalls: [{ index: call.index, arguments: delta }] });
-        call.arguments += delta;
-        functionCalls.set(key, call);
-        emit({ type: "toolcall_args_delta", index: call.index, delta });
-      } else if (event.type === "response.custom_tool_call_input.done") {
-        // 网关可能只在 done 里给完整文本；已有增量时不重复追加
-        const key = event.item_id;
-        const input = typeof event.input === "string" ? event.input : "";
-        const call = functionCalls.get(key);
-        if (call && call.arguments.length === 0 && input) {
-          await persistDelta?.({ toolCalls: [{ index: call.index, arguments: input }] });
-          call.arguments = input;
-          emit({ type: "toolcall_args_delta", index: call.index, delta: input });
-        }
-      } else if (event.type === "response.output_text.done") {
-        // 网关把增量合并成单个 done 事件时补上正文，已有 delta 时不重复追加
-        const text = typeof event.text === "string" ? event.text : "";
-        if (partialText.length === 0 && text) {
-          await persistDelta?.({ text });
-          partialText = text;
-          emit({ type: "text_delta", delta: text });
-        }
-      } else if (event.type === "response.reasoning_text.done") {
-        const text = typeof event.text === "string" ? event.text : "";
-        if (partialReasoning.length === 0 && text) {
-          await persistDelta?.({ reasoning: text });
-          partialReasoning = text;
-          emit({ type: "reasoning_delta", delta: text });
-        }
-      } else if (event.type === "response.function_call_arguments.done") {
-        const key = event.item_id;
-        const args = typeof event.arguments === "string" ? event.arguments : "";
-        const call = functionCalls.get(key);
-        if (call && call.arguments.length === 0 && args) {
-          await persistDelta?.({ toolCalls: [{ index: call.index, arguments: args }] });
-          call.arguments = args;
-          emit({ type: "toolcall_args_delta", index: call.index, delta: args });
-        }
-      } else if (event.type === "response.output_item.done") {
-        if (event.item && event.output_index !== undefined) {
-          outputItems[event.output_index] = event.item;
-        }
-      } else if (isManagedSearchEvent(event.type)) {
-        // 托管搜索由上游执行：in_progress / searching / completed 三个阶段都只转成进度提示，
-        // 事件本身不带查询词与来源，action 只在 output_item.done 的 item 里出现
-        const label = event.type.startsWith("response.tool_search_call.") ? "找工具" : "搜索";
-        const key = typeof event.item_id === "string"
-          ? event.item_id
-          : `search_${event.output_index ?? activeSearches.size}`;
-        if (event.type.endsWith(".completed")) {
-          if (activeSearches.delete(key)) finishedSearches += 1;
-          if (activeSearches.size === 0 && finishedSearches > 0) {
-            emit({ type: "progress", message: `🌐 ${label}完成 ${finishedSearches}` });
-          }
-        } else if (!activeSearches.has(key)) {
-          activeSearches.add(key);
-          emit({ type: "progress", message: `🌐 ${label}中 ${activeSearches.size + finishedSearches}...` });
-        }
-      } else if (event.type === "response.completed") {
-        completedResponse = event.response;
-        model = event.response?.model ?? model;
-        usage = event.response?.usage ?? usage;
-      } else if (event.type === "response.failed" || event.type === "response.incomplete") {
-        completedResponse = { ...(event.response ?? {}), status: event.type === "response.failed" ? "failed" : "incomplete" };
-        model = event.response?.model ?? model;
-        usage = event.response?.usage ?? usage;
-      }
-    }
-  } catch (error) {
-    throw withPartialMessage(error, partialAssistantMessage(partialText, partialReasoning, [...functionCalls.values()]));
-  }
-
-  for (const call of functionCalls.values()) {
-    emit({
-      type: "toolcall_end",
-      index: call.index,
-      id: call.id,
-      name: call.name,
-      argsJson: toolCallArgsJson(call.kind, call.arguments),
-    });
-  }
-
-  const hasFailed = completedResponse?.status === "failed" || completedResponse?.status === "incomplete";
-  const recovered = hasFailed
-    ? partialAssistantMessage(partialText, partialReasoning, [...functionCalls.values()])
-    : undefined;
-  const fallbackText = typeof recovered?.content === "string" ? recovered.content : partialText;
-  const streamedItems = outputItems.filter(Boolean);
-  const suppliedItems = Array.isArray(completedResponse?.output) && completedResponse.output.length > 0
-    ? completedResponse.output
-    : streamedItems;
-  const hasOutputText = suppliedItems.some((item: any) => item?.type === "message"
-    && item.content?.some((part: any) => part?.type === "output_text"));
-  const output = fallbackText && !hasOutputText
-    ? [...suppliedItems, { type: "message", content: [{ type: "output_text", text: fallbackText }] }]
-    : suppliedItems;
-  // 流里出现过、但 output_item.done 与 completed.output 都缺的调用：用累积的名字与参数补齐
-  const knownCallIds = new Set(output.map((item: any) => item?.call_id ?? item?.id).filter(Boolean));
-  const missingCalls = [...functionCalls.values()]
-    .filter(call => call.name && !knownCallIds.has(call.id))
-    .map(call => (call.kind === "custom"
-      ? { type: "custom_tool_call", id: call.id, call_id: call.id, name: call.name, input: call.arguments, status: "completed" }
-      : { type: "function_call", id: call.id, call_id: call.id, name: call.name, arguments: call.arguments }));
-  const mergedOutput = missingCalls.length > 0 ? [...output, ...missingCalls] : output;
-  if (completedResponse) completedResponse.output = mergedOutput;
-  if (completedResponse && partialReasoning) completedResponse.reasoning_content = partialReasoning;
-  return completedResponse ?? {
-    model,
-    output: mergedOutput,
-    ...(partialReasoning ? { reasoning_content: partialReasoning } : {}),
-    usage,
-  };
-}
-
-/** 工具调用的展示/落盘参数：custom 工具把裸文本重新包成 {"patch": ...}，与历史消息同形。 */
-function toolCallArgsJson(kind: "function" | "custom", argumentsText: string): string {
-  return kind === "custom" ? patchArgumentsJson(argumentsText) : argumentsText;
-}
-
-function withPartialMessage(error: unknown, message: ChatMessage | undefined): unknown {
-  if (!message) return error;
-  const wrapped = error && typeof error === "object" ? error : new Error(String(error));
-  (wrapped as { partialMessage?: ChatMessage }).partialMessage = message;
-  return wrapped;
-}
-
-async function collectStream(
-  stream: AsyncIterable<any>,
-  emit: (event: UIEvent) => void,
-  persistDelta?: (delta: StreamDelta) => Promise<void>,
-): Promise<{ assistantMsg: any; usage: any; model: string; finishReason: string }> {
-  let content = "";
-  let reasoningContent = "";
-  const toolCalls = new Map<number, {
-    id: string;
-    name: string;
-    arguments: string;
-    kind: "function" | "custom";
-    thoughtSignature?: string;
-  }>();
-  let usage: any;
-  let model = "";
-  let finishReason = "";
-  // 无 index 的 tool_call（非标准流或 mock）按出现顺序分配
-  let toolCallCursor = 0;
-
-  try {
-    for await (const chunk of stream) {
-      if (chunk.model) model = chunk.model;
-      // usage 与 x_usage_source 同帧下发（网关收尾帧），一起留住以便判定口径
-      if (chunk.usage) usage = chunk.usage;
-      if (chunk.x_usage_source) usage = { ...(usage ?? {}), x_usage_source: chunk.x_usage_source };
-
-      const choice = chunk.choices?.[0];
-      const delta = choice?.delta ?? {};
-      const toolDeltas = (delta.tool_calls ?? []).map((call: any) => ({
-        ...call,
-        index: call.index ?? toolCallCursor++,
-      }));
-      // custom 的增量续片不一定重复带 type：按字段存在与否取值，才能拼出完整补丁
-      const toolDeltaName = (call: any) => call?.custom?.name ?? call?.function?.name;
-      const toolDeltaArgs = (call: any) => call?.custom?.input ?? call?.function?.arguments;
-      const streamDelta: StreamDelta = {
-        ...(delta.content ? { text: delta.content } : {}),
-        ...(delta.reasoning_content ? { reasoning: delta.reasoning_content } : {}),
-        ...(toolDeltas.length > 0 ? { toolCalls: toolDeltas.map((call: any) => ({
-          index: call.index,
-          ...(call.id ? { id: call.id } : {}),
-          ...(toolDeltaName(call) ? { name: toolDeltaName(call) } : {}),
-          ...(toolDeltaArgs(call) ? { arguments: toolDeltaArgs(call) } : {}),
-          ...((call.thought_signature ?? call.thoughtSignature)
-            ? { thoughtSignature: call.thought_signature ?? call.thoughtSignature }
-            : {}),
-        })) } : {}),
-      };
-      if (streamDelta.text || streamDelta.reasoning || streamDelta.toolCalls?.length) {
-        await persistDelta?.(streamDelta);
-      }
-
-      if (delta.content) {
-        content += delta.content;
-        emit({ type: "text_delta", delta: delta.content });
-      }
-      if (delta.reasoning_content) {
-        reasoningContent += delta.reasoning_content;
-        emit({ type: "reasoning_delta", delta: delta.reasoning_content });
-      }
-      if (toolDeltas.length > 0) {
-        for (const tc of toolDeltas) {
-          const index = tc.index;
-          let slot = toolCalls.get(index);
-          if (!slot) {
-            slot = {
-              id: "",
-              name: "",
-              arguments: "",
-              kind: tc.type === "custom" || tc.custom ? "custom" : "function",
-            };
-            toolCalls.set(index, slot);
-          }
-          if (tc.id) slot.id = tc.id;
-          const thoughtSignature = tc.thought_signature ?? tc.thoughtSignature;
-          if (thoughtSignature) slot.thoughtSignature = thoughtSignature;
-          const name = toolDeltaName(tc);
-          const argsDelta = toolDeltaArgs(tc);
-          if (name) {
-            slot.name = name;
-            emit({ type: "toolcall_start", index, id: slot.id, name: slot.name });
-          }
-          if (argsDelta) {
-            slot.arguments += argsDelta;
-            emit({ type: "toolcall_args_delta", index, delta: argsDelta });
-          }
-        }
-      }
-      if (choice?.finish_reason) finishReason = choice.finish_reason;
-    }
-  } catch (error) {
-    throw withPartialMessage(error, partialAssistantMessage(content, reasoningContent, [...toolCalls.values()]));
-  }
-
-  for (const [index, slot] of toolCalls) {
-    emit({
-      type: "toolcall_end",
-      index,
-      id: slot.id,
-      name: slot.name,
-      argsJson: toolCallArgsJson(slot.kind, slot.arguments),
-    });
-  }
-
-  const assistantMsg: any = { role: "assistant", content: content || null };
-  if (reasoningContent) assistantMsg.reasoning_content = reasoningContent;
-  if (toolCalls.size > 0) {
-    assistantMsg.tool_calls = [...toolCalls.entries()]
-      .sort(([left], [right]) => left - right)
-      .map(([, slot]) => ({
-        id: slot.id || `call_${crypto.randomUUID().slice(0, 8)}`,
-        ...(slot.kind === "custom"
-          ? { type: "custom", custom: { name: slot.name, input: slot.arguments } }
-          : { type: "function", function: { name: slot.name, arguments: slot.arguments } }),
-        ...(slot.thoughtSignature ? { thought_signature: slot.thoughtSignature } : {}),
-      }));
-  }
-  return { assistantMsg, usage, model, finishReason };
+  const stream = await client.createResponse?.(requestBody, { signal, onSteerAccepted });
+  if (!stream || typeof stream[Symbol.asyncIterator] !== "function") return stream;
+  return collectResponsesStream(stream, emit, persistDelta);
 }

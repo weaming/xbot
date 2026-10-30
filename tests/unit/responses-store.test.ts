@@ -1,0 +1,336 @@
+import { afterEach, expect, test } from "bun:test";
+import { mkdtemp, rm, stat } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { createChatClient } from "../../src/tools/chat-orchestrator.js";
+import { closeResponsesSession } from "../../src/tools/orchestrator/responses-session.js";
+import { deleteResponsesBaseline } from "../../src/tools/orchestrator/responses-baseline.js";
+import { getResponsesBaselineFile } from "../../src/utils/state-paths.js";
+import { prepareRequest } from "../../src/tools/orchestrator/turn-request.js";
+
+const previousStateDir = process.env.ZBOT_STATE_DIR;
+const previousWebSocket = process.env.OPENAI_RESPONSES_WEBSOCKET;
+const previousStore = process.env.OPENAI_RESPONSES_STORE;
+
+afterEach(() => {
+  if (previousStateDir === undefined) delete process.env.ZBOT_STATE_DIR;
+  else process.env.ZBOT_STATE_DIR = previousStateDir;
+  if (previousWebSocket === undefined) delete process.env.OPENAI_RESPONSES_WEBSOCKET;
+  else process.env.OPENAI_RESPONSES_WEBSOCKET = previousWebSocket;
+  if (previousStore === undefined) delete process.env.OPENAI_RESPONSES_STORE;
+  else process.env.OPENAI_RESPONSES_STORE = previousStore;
+});
+
+test("GPT Responses 默认通过 WebSocket 发送且不请求上游存储", async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "zbot-responses-default-"));
+  process.env.ZBOT_STATE_DIR = stateDir;
+  delete process.env.OPENAI_RESPONSES_WEBSOCKET;
+  delete process.env.OPENAI_RESPONSES_STORE;
+  const sessionId = crypto.randomUUID();
+  const requests: any[] = [];
+  const server = Bun.serve({
+    port: 0,
+    fetch(request, server) {
+      if (server.upgrade(request)) return;
+      return new Response("upgrade required", { status: 400 });
+    },
+    websocket: {
+      message(socket, raw) {
+        const body = JSON.parse(raw.toString());
+        requests.push(body);
+        const id = body.generate === false ? "warmup" : "resp_default";
+        socket.send(JSON.stringify({ type: "response.completed", response: { id, output: [] } }));
+      },
+    },
+  });
+  const client = createChatClient("key", `http://127.0.0.1:${server.port}/v1`, "responses", sessionId, "gpt-5");
+  try {
+    const prepared = await prepareRequest({
+      client,
+      model: "gpt-5",
+      messages: [{ role: "user", content: "hello" }],
+      tools: [],
+      normalizedTools: tools => tools,
+      isFirstIteration: true,
+      stream: true,
+    });
+    expect(prepared.requestBody.store).toBe(false);
+    expect(prepared.requestBody.include).toBeUndefined();
+    const events = await client.createResponse!(prepared.requestBody);
+    for await (const _event of events) { /* 消费完整响应。 */ }
+    expect(requests).toHaveLength(2);
+    expect(requests[0].generate).toBe(false);
+    expect(requests[1].store).toBe(false);
+    expect(requests[1].previous_response_id).toBe("warmup");
+  } finally {
+    client.close?.();
+    closeResponsesSession(sessionId);
+    await deleteResponsesBaseline(sessionId);
+    server.stop(true);
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("store=true 跨连接及 HTTP/WS 切换续接，失效时重发完整输入", async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "zbot-responses-"));
+  process.env.ZBOT_STATE_DIR = stateDir;
+  process.env.OPENAI_RESPONSES_WEBSOCKET = "true";
+  const sessionId = crypto.randomUUID();
+  const requests: Array<{ transport: string; body: any }> = [];
+  const input = { role: "user", content: "hello" };
+  const output = { type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: "hi", annotations: [] }] };
+  const next = { role: "user", content: "next" };
+  const third = { role: "user", content: "third" };
+  const fourth = { role: "user", content: "fourth" };
+  let rejectPrevious = true;
+  let rejectWsPrevious = false;
+  let resultIndex = 0;
+  const server = Bun.serve({
+    port: 0,
+    async fetch(request, server) {
+      if (request.method === "GET" && server.upgrade(request)) return;
+      const body = await request.json() as any;
+      requests.push({ transport: "http", body });
+      if (body.previous_response_id && rejectPrevious) {
+        rejectPrevious = false;
+        return Response.json({ error: { type: "invalid_request_error", code: "previous_response_not_found", message: "missing" } }, { status: 400 });
+      }
+      resultIndex++;
+      const response = { id: `resp_${resultIndex}`, status: "completed", output: [output] };
+      if (!body.stream) return Response.json(response);
+      return new Response(`data: ${JSON.stringify({ type: "response.completed", response })}\n\n`, {
+        headers: { "content-type": "text/event-stream" },
+      });
+    },
+    websocket: {
+      message(socket, raw) {
+        const body = JSON.parse(raw.toString());
+        requests.push({ transport: "ws", body });
+        if (body.previous_response_id && rejectWsPrevious) {
+          rejectWsPrevious = false;
+          socket.send(JSON.stringify({ type: "error", status: 400, error: { type: "invalid_request_error", code: "previous_response_not_found", message: "missing", param: "previous_response_id" } }));
+          return;
+        }
+        const response = body.generate === false
+          ? { id: "warmup", status: "completed", output: [] }
+          : { id: `resp_${++resultIndex}`, status: "completed", output: [output] };
+        socket.send(JSON.stringify({ type: "response.completed", response }));
+      },
+    },
+  });
+  const baseURL = `http://127.0.0.1:${server.port}/v1`;
+  try {
+    const first = createChatClient("key", baseURL, "responses", sessionId);
+    await first.createResponse!({ model: "test", store: true, input: [input], stream: false });
+    first.close?.();
+    closeResponsesSession(sessionId);
+
+    process.env.OPENAI_RESPONSES_WEBSOCKET = "false";
+    const second = createChatClient("key", baseURL, "responses", sessionId);
+    await second.createResponse!({ model: "test", store: true, input: [input, output, next], stream: false });
+    second.close?.();
+    closeResponsesSession(sessionId);
+
+    const httpRequests = requests.filter(request => request.transport === "http");
+    expect(httpRequests).toHaveLength(2);
+    expect(httpRequests[0]!.body.previous_response_id).toBe("resp_1");
+    expect(httpRequests[0]!.body.input).toEqual([next]);
+    expect(httpRequests[1]!.body.previous_response_id).toBeUndefined();
+    expect(httpRequests[1]!.body.input).toEqual([input, output, next]);
+
+    process.env.OPENAI_RESPONSES_WEBSOCKET = "true";
+    const last = createChatClient("key", baseURL, "responses", sessionId);
+    await last.createResponse!({ model: "test", store: true, input: [input, output, next, output, third], stream: false });
+    last.close?.();
+    closeResponsesSession(sessionId);
+    const lastRequest = requests.at(-1)!.body;
+    expect(lastRequest.previous_response_id).toBe("resp_2");
+    expect(lastRequest.input).toEqual([third]);
+    expect(lastRequest.generate).toBeUndefined();
+
+    rejectWsPrevious = true;
+    const resumed = createChatClient("key", baseURL, "responses", sessionId);
+    const fullInput = [input, output, next, output, third, output, fourth];
+    await resumed.createResponse!({ model: "test", store: true, input: fullInput, stream: false });
+    resumed.close?.();
+    closeResponsesSession(sessionId);
+    const [incremental, replay] = requests.slice(-2).map(request => request.body);
+    expect(incremental.previous_response_id).toBe("resp_3");
+    expect(incremental.input).toEqual([fourth]);
+    expect(replay.previous_response_id).toBeUndefined();
+    expect(replay.input).toEqual(fullInput);
+
+    const otherAccount = createChatClient("other-key", baseURL, "responses", sessionId);
+    await otherAccount.createResponse!({ model: "test", store: true, input: fullInput, stream: false });
+    otherAccount.close?.();
+    closeResponsesSession(sessionId);
+    expect(requests.at(-2)!.body.generate).toBe(false);
+    expect(requests.at(-1)!.body.previous_response_id).toBe("warmup");
+
+    process.env.OPENAI_RESPONSES_WEBSOCKET = "false";
+    const unstored = createChatClient("key", baseURL, "responses", sessionId);
+    await unstored.createResponse!({ model: "test", store: false, input: fullInput, stream: false });
+    unstored.close?.();
+    closeResponsesSession(sessionId);
+    expect(requests.at(-1)!.body.previous_response_id).toBeUndefined();
+    await expect(stat(getResponsesBaselineFile(sessionId))).rejects.toMatchObject({ code: "ENOENT" });
+  } finally {
+    closeResponsesSession(sessionId);
+    await deleteResponsesBaseline(sessionId);
+    server.stop(true);
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("HTTP SSE 保存输出项并在旧响应不存在时回退", async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "zbot-responses-sse-"));
+  process.env.ZBOT_STATE_DIR = stateDir;
+  process.env.OPENAI_RESPONSES_WEBSOCKET = "false";
+  const sessionId = crypto.randomUUID();
+  const input = { role: "user", content: "hello" };
+  const output = { type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: "hi", annotations: [] }] };
+  const next = { role: "user", content: "next" };
+  const requests: any[] = [];
+  const server = Bun.serve({
+    port: 0,
+    async fetch(request) {
+      const body = await request.json() as any;
+      requests.push(body);
+      const events = body.previous_response_id
+        ? [
+          { type: "codex.rate_limits", rate_limits: {} },
+          { type: "error", error: { code: "previous_response_not_found", message: "missing", type: "invalid_request_error" } },
+        ]
+        : [
+          { type: "response.output_item.done", output_index: 0, item: output },
+          { type: "response.completed", response: { id: `resp_${requests.length}`, status: "completed", output: [] } },
+        ];
+      return new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join("") + "data: [DONE]\n\n", {
+        headers: { "content-type": "text/event-stream" },
+      });
+    },
+  });
+  const baseURL = `http://127.0.0.1:${server.port}/v1`;
+  try {
+    const first = createChatClient("key", baseURL, "responses", sessionId);
+    const firstStream = await first.createResponse!({ model: "test", store: true, input: [input], stream: true });
+    for await (const _event of firstStream) { /* 消费流以完成基准保存。 */ }
+    first.close?.();
+    closeResponsesSession(sessionId);
+
+    const second = createChatClient("key", baseURL, "responses", sessionId);
+    const secondStream = await second.createResponse!({ model: "test", store: true, input: [input, output, next], stream: true });
+    const events: any[] = [];
+    for await (const event of secondStream) events.push(event);
+    second.close?.();
+    expect(requests).toHaveLength(3);
+    expect(requests[1].previous_response_id).toBe("resp_1");
+    expect(requests[1].input).toEqual([next]);
+    expect(requests[2].previous_response_id).toBeUndefined();
+    expect(requests[2].input).toEqual([input, output, next]);
+    expect(events.at(-1).type).toBe("response.completed");
+  } finally {
+    closeResponsesSession(sessionId);
+    await deleteResponsesBaseline(sessionId);
+    server.stop(true);
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("WebSocket 达到连接时限后重连并使用已存储响应续接", async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "zbot-responses-reconnect-"));
+  process.env.ZBOT_STATE_DIR = stateDir;
+  process.env.OPENAI_RESPONSES_WEBSOCKET = "true";
+  const sessionId = crypto.randomUUID();
+  const input = { role: "user", content: "hello" };
+  const output = { type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: "hi", annotations: [] }] };
+  const next = { role: "user", content: "next" };
+  const requests: any[] = [];
+  let connections = 0;
+  const server = Bun.serve({
+    port: 0,
+    fetch(request, server) {
+      if (server.upgrade(request)) return;
+      return new Response("upgrade required", { status: 400 });
+    },
+    websocket: {
+      open() { connections++; },
+      message(socket, raw) {
+        const body = JSON.parse(raw.toString());
+        if (body.generate === false) {
+          socket.send(JSON.stringify({ type: "response.completed", response: { id: "warmup", output: [] } }));
+          return;
+        }
+        requests.push(body);
+        if (requests.length === 2) {
+          socket.send(JSON.stringify({ type: "error", status: 400, error: { type: "invalid_request_error", code: "websocket_connection_limit_reached", message: "expired" } }));
+          return;
+        }
+        socket.send(JSON.stringify({ type: "response.completed", response: { id: `resp_${requests.length}`, output: [output] } }));
+      },
+    },
+  });
+  const client = createChatClient("key", `http://127.0.0.1:${server.port}/v1`, "responses", sessionId);
+  try {
+    await client.createResponse!({ model: "test", store: true, input: [input], stream: false });
+    await client.createResponse!({ model: "test", store: true, input: [input, output, next], stream: false });
+    expect(connections).toBe(2);
+    expect(requests).toHaveLength(3);
+    expect(requests[1].previous_response_id).toBe("resp_1");
+    expect(requests[2].previous_response_id).toBe("resp_1");
+    expect(requests[2].input).toEqual([next]);
+  } finally {
+    client.close?.();
+    closeResponsesSession(sessionId);
+    await deleteResponsesBaseline(sessionId);
+    server.stop(true);
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("WebSocket 已输出内容时连接错误不会自动重放请求", async () => {
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "zbot-responses-partial-"));
+  process.env.ZBOT_STATE_DIR = stateDir;
+  process.env.OPENAI_RESPONSES_WEBSOCKET = "true";
+  const sessionId = crypto.randomUUID();
+  let generations = 0;
+  const server = Bun.serve({
+    port: 0,
+    fetch(request, server) {
+      if (server.upgrade(request)) return;
+      return new Response("upgrade required", { status: 400 });
+    },
+    websocket: {
+      message(socket, raw) {
+        const body = JSON.parse(raw.toString());
+        if (body.generate === false) {
+          socket.send(JSON.stringify({ type: "response.completed", response: { id: "warmup", output: [] } }));
+          return;
+        }
+        generations++;
+        socket.send(JSON.stringify({ type: "response.output_text.delta", delta: "partial" }));
+        socket.send(JSON.stringify({ type: "error", status: 400, error: { type: "invalid_request_error", code: "websocket_connection_limit_reached", message: "expired" } }));
+      },
+    },
+  });
+  const client = createChatClient("key", `http://127.0.0.1:${server.port}/v1`, "responses", sessionId);
+  try {
+    const stream = await client.createResponse!({ model: "test", store: true, input: [{ role: "user", content: "hi" }], stream: true });
+    const events: any[] = [];
+    let failure: unknown;
+    try {
+      for await (const event of stream) events.push(event);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeDefined();
+    expect(events.map(event => event.type)).toEqual(["response.output_text.delta"]);
+    expect(generations).toBe(1);
+  } finally {
+    client.close?.();
+    closeResponsesSession(sessionId);
+    await deleteResponsesBaseline(sessionId);
+    server.stop(true);
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});

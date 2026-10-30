@@ -150,6 +150,8 @@ export interface SessionHost {
         options?: { consumePendingMessages?: () => Array<string | UserMessageInput> | undefined },
     ): Promise<{ resumed: boolean; reason?: string; aborted?: boolean }>;
     abortSession(sessionId: string): Promise<boolean>;
+    /** 向会话当前活跃的 Responses WS 响应追加 steering 输入；不支持时返回 false。 */
+    steerResponse?(sessionId: string, input: string, onAccepted?: () => void): Promise<boolean>;
     compactSession(sessionId: string, instruction?: string): Promise<void>;
     /** 本实例内发起过网络请求的会话用量统计（退出时展示用）。 */
     getInstanceNetworkStats(): InstanceNetworkStats;

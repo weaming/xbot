@@ -13,7 +13,7 @@
 
 import fs from "fs";
 import path from "node:path";
-import { buildSystemPrompt } from "../services/chat-runtime.js";
+import { buildSystemPrompt, closeChatSessionTransport, deleteResponsesBaseline, steerChatSession } from "../services/chat-runtime.js";
 import { createEmptySession, eventCwd, SessionReplay } from "../events/session-replay.js";
 import { EventLog } from "../events/event-log.js";
 import { listSavedSessionIds } from "../events/session-files.js";
@@ -447,6 +447,7 @@ export class LocalSessionHost implements SessionHost {
     private unloadSession(sessionId: string, cause: SessionReleaseCause = "peer"): void {
         const active = this.activeSessions.get(sessionId);
         active?.abortController?.abort();
+        closeChatSessionTransport(sessionId);
         this.activeSessions.delete(sessionId);
         this.pendingModelSelections.delete(sessionId);
         clearMcpSelection(sessionId);
@@ -598,6 +599,8 @@ export class LocalSessionHost implements SessionHost {
             await this.eventLog.truncate(sessionId, 0);
             await this.replay.deleteSnapshot(sessionId);
             await deleteSessionImageAssets(sessionId);
+            closeChatSessionTransport(sessionId);
+            await deleteResponsesBaseline(sessionId);
             await this.eventLog.append(sessionId, "session_created", { cwd: getToolCwd() });
             if (session.modelSelection) {
                 await this.eventLog.append(sessionId, "model_selected", session.modelSelection);
@@ -726,6 +729,8 @@ export class LocalSessionHost implements SessionHost {
             await this.eventLog.delete(sessionId);
             await this.replay.deleteSnapshot(sessionId);
             await deleteSessionImageAssets(sessionId);
+            closeChatSessionTransport(sessionId);
+            await deleteResponsesBaseline(sessionId);
             this.activeSessions.delete(sessionId);
             // 同步清理该会话的 console 日志。
             try {
@@ -881,6 +886,11 @@ export class LocalSessionHost implements SessionHost {
         return true;
     }
 
+    steerResponse(sessionId: string, input: string, onAccepted?: () => void): Promise<boolean> {
+        if (!this.isSessionBusy(sessionId)) return Promise.resolve(false);
+        return steerChatSession(sessionId, input, onAccepted);
+    }
+
     private async cancelSpawnedSession(sessionId: string, closeAfterCancel: boolean): Promise<boolean> {
         if (this.cancellingSessions.has(sessionId)) return false;
         this.cancellingSessions.add(sessionId);
@@ -1002,6 +1012,7 @@ export class LocalSessionHost implements SessionHost {
         for (const active of this.activeSessions.values()) {
             active.abortController?.abort();
         }
+        for (const sessionId of this.activeSessions.keys()) closeChatSessionTransport(sessionId);
         backgroundTaskManager.stopAll();
         // 释放全部 socket 与连接：让等待接管的实例能立刻认领
         this.control.close();

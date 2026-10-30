@@ -1,7 +1,7 @@
 export const PROXY_URL = process.env.NETWORK_PROXY || "http://host.docker.internal:7890";
 
 /** 判断是否为容器内地址（单段主机名），此类请求不经过外部代理。 */
-function isInternalHostname(hostname: string): boolean {
+export function isInternalHostname(hostname: string): boolean {
     return hostname === "localhost" || hostname === "127.0.0.1" || !hostname.includes(".");
 }
 

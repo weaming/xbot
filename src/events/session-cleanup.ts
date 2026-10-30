@@ -8,6 +8,7 @@
 import fs from "fs";
 import path from "path";
 import { getSessionsDir } from "../utils/runtime-paths.js";
+import { getResponsesBaselineFile } from "../utils/state-paths.js";
 import { sanitizeSessionId } from "../utils/session-id.js";
 import { isInjectedContext, type AgentEvent } from "./agent-events.js";
 
@@ -31,6 +32,7 @@ export function sessionArtifactPaths(sessionId: string): string[] {
         getSessionsDir("log", `${safeId}.log`),
         getSessionsDir("todos", `${safeId}.json`),
         getSessionsDir("chat", `${safeId}.json`),
+        getResponsesBaselineFile(sessionId),
         getSessionsDir("locks", `${safeId}.lock`),
         getSessionsDir("assets", safeId),
     ];

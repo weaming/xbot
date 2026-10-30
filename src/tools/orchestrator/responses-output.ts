@@ -24,8 +24,8 @@ export function normalizeResponsesResponse(response: any): any {
   const output = Array.isArray(response?.output) ? response.output : [];
   const textParts = output.flatMap((item: any) => item?.type === "message"
     ? (item.content ?? [])
-      .filter((part: any) => part?.type === "output_text")
-      .map((part: any) => part.text ?? "")
+      .filter((part: any) => part?.type === "output_text" || part?.type === "refusal")
+      .map((part: any) => part.type === "refusal" ? (part.refusal ?? "") : (part.text ?? ""))
     : []);
   const content = textParts.join("") || response?.output_text || null;
   const toolCalls = output.flatMap((item: any) => {

@@ -5,7 +5,7 @@ import {
     resolveApplyPatchToolMode,
 } from "../../src/tools/orchestrator/apply-patch-tool.js";
 import { toResponsesToolDefinitions } from "../../src/tools/orchestrator/request-builder.js";
-import { normalizeResponsesResponse } from "../../src/tools/orchestrator/responses-shape.js";
+import { normalizeResponsesResponse } from "../../src/tools/orchestrator/responses-output.js";
 import { materializeResponsesInput, normalizeToolCallShapes } from "../../src/tools/orchestrator/messages.js";
 import { prepareRequest } from "../../src/tools/orchestrator/turn-request.js";
 import { fromOpenAIToolCalls } from "../../src/types/tool-call.js";

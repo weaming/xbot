@@ -1,0 +1,611 @@
+import type OpenAI from "openai";
+import { ResponsesWS } from "openai/resources/responses/ws";
+import { HttpsProxyAgent } from "https-proxy-agent";
+import { createHash } from "node:crypto";
+import { isInternalHostname } from "../../utils/proxy.js";
+import { buildResponsesContinuation, ResponsesBaselineStore, responsesIdentity, type ResponseBaseline } from "./responses-baseline.js";
+
+class WebSocketConnectError extends Error {}
+class WebSocketReconnectError extends Error {}
+
+function isPreviousResponseNotFound(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const details = error as { code?: string; error?: { code?: string } };
+  return (details.code ?? details.error?.code) === "previous_response_not_found";
+}
+
+function isWebSocketConnectionLimit(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const details = error as { code?: string; error?: { code?: string } };
+  return (details.code ?? details.error?.code) === "websocket_connection_limit_reached";
+}
+
+const MAX_CACHED_SESSIONS = 16;
+const IDLE_TIMEOUT_MS = 60_000;
+const MAX_BASELINE_BYTES = 2_000_000;
+const STEER_TIMEOUT_MS = 120_000;
+
+interface CachedSession {
+  identity: string;
+  session: ResponsesSession;
+  isLeased: boolean;
+  timer?: ReturnType<typeof setTimeout>;
+}
+
+interface PendingSteer {
+  input: string;
+  onAccepted?: () => void;
+  responseId?: string;
+  resolve(accepted: boolean): void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+const sessions = new Map<string, CachedSession>();
+
+/** 会话关闭或转交时释放其连接。 */
+export function closeResponsesSession(sessionId: string): void {
+  const entry = sessions.get(sessionId);
+  if (!entry) return;
+  sessions.delete(sessionId);
+  if (entry.timer) clearTimeout(entry.timer);
+  entry.session.close();
+}
+
+/** 将活跃会话中的新文本作为 Responses steering 输入提交。 */
+export function steerResponsesSession(
+  sessionId: string,
+  input: string,
+  onAccepted?: () => void,
+): Promise<boolean> {
+  return sessions.get(sessionId)?.session.steer(input, onAccepted) ?? Promise.resolve(false);
+}
+
+/** 按会话和连接配置复用空闲连接，并限制缓存数量及寿命。 */
+export function acquireResponsesSession(
+  client: OpenAI,
+  hasApiKey: boolean,
+  sessionId?: string,
+): { session: ResponsesSession; release(): void } {
+  const identity = createHash("sha256")
+    .update(JSON.stringify([client.baseURL, client.apiKey, client.organization, client.project, process.env.OPENAI_PROXY ?? ""]))
+    .digest("hex");
+  let entry = sessionId ? sessions.get(sessionId) : undefined;
+  if (entry?.isLeased) entry = undefined;
+  else if (entry && entry.identity !== identity) {
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.session.close();
+    sessions.delete(sessionId!);
+    entry = undefined;
+  }
+  if (entry) {
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.timer = undefined;
+    entry.isLeased = true;
+    entry.session.setIdle(false);
+  } else {
+    const baselineSessionId = sessionId && !sessions.has(sessionId) ? sessionId : undefined;
+    entry = { identity, session: new ResponsesSession(client, hasApiKey, baselineSessionId), isLeased: true };
+    if (sessionId && !sessions.has(sessionId)) {
+      if (sessions.size >= MAX_CACHED_SESSIONS) {
+        const oldest = [...sessions].find(([, cached]) => !cached.isLeased);
+        if (oldest) {
+          if (oldest[1].timer) clearTimeout(oldest[1].timer);
+          oldest[1].session.close();
+          sessions.delete(oldest[0]);
+        }
+      }
+      if (sessions.size < MAX_CACHED_SESSIONS) sessions.set(sessionId, entry);
+    }
+  }
+  const leased = entry;
+  let isReleased = false;
+  return {
+    session: leased.session,
+    release() {
+      if (isReleased) return;
+      isReleased = true;
+      if (!sessionId || sessions.get(sessionId) !== leased) {
+        leased.session.close();
+        return;
+      }
+      leased.isLeased = false;
+      leased.session.setIdle(true);
+      leased.timer = setTimeout(() => {
+        if (sessions.get(sessionId) !== leased || leased.isLeased) return;
+        sessions.delete(sessionId);
+        leased.session.close();
+      }, IDLE_TIMEOUT_MS);
+      leased.timer.unref?.();
+    },
+  };
+}
+
+/** 管理 Responses 会话的 HTTP、WebSocket 与增量续接。 */
+export class ResponsesSession {
+  private socket?: ResponsesWS;
+  private baseline?: ResponseBaseline;
+  private isBusy = false;
+  private useHttp = false;
+  private activeResponseId?: string;
+  private pendingSteers: PendingSteer[] = [];
+  private readonly baselineStore: ResponsesBaselineStore;
+
+  constructor(private readonly client: OpenAI, private readonly hasApiKey: boolean, sessionId?: string) {
+    this.baselineStore = new ResponsesBaselineStore(sessionId, responsesIdentity(client.baseURL, client.apiKey ?? "", client.organization, client.project));
+  }
+
+  private async loadBaseline(request: Record<string, any>): Promise<void> {
+    if (request.store !== true) {
+      if (this.baseline?.request.store === true) this.baseline = undefined;
+      try {
+        await this.baselineStore.clear();
+      } catch (error) {
+        console.warn("清理 Responses 续接基准失败:", error);
+      }
+      return;
+    }
+    if (!this.baseline && request.store === true) this.baseline = await this.baselineStore.load();
+  }
+
+  private makeBaseline(request: Record<string, any>, responseId: unknown, output: any[]): ResponseBaseline | undefined {
+    if (request.previous_response_id !== undefined || typeof responseId !== "string" || !Array.isArray(request.input)) return undefined;
+    if (Buffer.byteLength(JSON.stringify([request, output])) > MAX_BASELINE_BYTES) return undefined;
+    return { request: structuredClone(request), responseId, output: structuredClone(output) };
+  }
+
+  private async saveBaseline(baseline: ResponseBaseline | undefined, request: Record<string, any>): Promise<void> {
+    this.baseline = baseline;
+    if (request.store !== true) return;
+    try {
+      if (baseline) await this.baselineStore.save(baseline);
+      else await this.baselineStore.clear();
+    } catch (error) {
+      console.warn("保存 Responses 续接基准失败:", error);
+    }
+  }
+
+  preconnect(): void {
+    if (!this.useHttp) this.connect();
+  }
+
+  /** 在底层支持时释放空闲连接的进程引用。 */
+  setIdle(isIdle: boolean): void {
+    const platformSocket = this.socket?.socket.platformSocket as unknown as {
+      _socket?: { ref(): void; unref(): void } | null;
+    } | undefined;
+    const stream = platformSocket?._socket;
+    if (!stream) return;
+    if (isIdle) stream.unref();
+    else stream.ref();
+  }
+
+  close(): void {
+    const socket = this.socket;
+    this.socket = undefined;
+    this.baseline = undefined;
+    this.activeResponseId = undefined;
+    this.resolvePendingSteers(false);
+    socket?.close();
+  }
+
+  steer(input: string, onAccepted?: () => void): Promise<boolean> {
+    const text = input.trim();
+    if (!text || !this.isBusy || this.useHttp || !this.socket) return Promise.resolve(false);
+
+    return new Promise(resolve => {
+      const steer: PendingSteer = {
+        input: text,
+        onAccepted,
+        resolve,
+        timer: setTimeout(() => this.finishSteer(steer, false), STEER_TIMEOUT_MS),
+      };
+      steer.timer.unref?.();
+      this.pendingSteers.push(steer);
+      if (this.activeResponseId) this.sendSteer(steer, this.activeResponseId);
+    });
+  }
+
+  private sendSteer(steer: PendingSteer, responseId: string): void {
+    if (steer.responseId || !this.socket) return;
+    steer.responseId = responseId;
+    this.socket.send({
+      type: "response.steer",
+      previous_response_id: responseId,
+      input: steer.input,
+    } as any);
+  }
+
+  private finishSteer(steer: PendingSteer, accepted: boolean): void {
+    const index = this.pendingSteers.indexOf(steer);
+    if (index < 0) return;
+    this.pendingSteers.splice(index, 1);
+    clearTimeout(steer.timer);
+    if (accepted) steer.onAccepted?.();
+    steer.resolve(accepted);
+  }
+
+  private resolvePendingSteers(accepted: boolean): void {
+    for (const steer of [...this.pendingSteers]) this.finishSteer(steer, accepted);
+  }
+
+  private connect(): ResponsesWS {
+    if (this.socket) return this.socket;
+    const proxyUrl = process.env.OPENAI_PROXY;
+    const hostname = new URL(this.client.baseURL).hostname;
+    const agent = proxyUrl && !isInternalHostname(hostname) ? new HttpsProxyAgent(proxyUrl) : undefined;
+    const socket = new ResponsesWS(this.client, {
+      headers: this.hasApiKey ? { "x-llm-caller": "zbot" } : { Authorization: "", "x-llm-caller": "zbot" },
+      agent,
+    });
+    socket.on("error", error => {
+      if (this.socket === socket && !this.isBusy) {
+        console.warn(`Responses WebSocket 预连接失败: ${error.message}`);
+        this.close();
+      }
+    });
+    socket.on("close", () => {
+      if (this.socket === socket) {
+        this.socket = undefined;
+        if (this.baseline?.request.store !== true) this.baseline = undefined;
+      }
+    });
+    this.socket = socket;
+    return socket;
+  }
+
+  private async warmup(socket: ResponsesWS, request: Record<string, any>, signal?: AbortSignal): Promise<string | undefined> {
+    if (this.baseline || request.previous_response_id !== undefined || !Array.isArray(request.input)) return;
+
+    const events = socket.stream();
+    socket.send({ ...request, type: "response.create", generate: false } as any);
+    let isOpen = socket.socket.readyState === 1;
+    const abort = () => socket.close();
+    signal?.addEventListener("abort", abort, { once: true });
+
+    try {
+      if (signal?.aborted) throw new DOMException("请求已取消", "AbortError");
+      for await (const event of events) {
+        if (signal?.aborted) throw new DOMException("请求已取消", "AbortError");
+        if (event.type === "open") {
+          isOpen = true;
+          continue;
+        }
+        if (event.type === "error") {
+          if (!isOpen && !event.error.error) {
+            throw new WebSocketConnectError("Responses WebSocket 握手失败", { cause: event.error });
+          }
+          if (isWebSocketConnectionLimit(event.error.error)) {
+            throw new WebSocketReconnectError("Responses WebSocket 已达到连接时限", { cause: event.error });
+          }
+          throw event.error;
+        }
+        if (event.type === "close") {
+          if (!isOpen) throw new WebSocketConnectError(`Responses WebSocket 握手失败: ${event.code} ${event.reason}`);
+          throw new WebSocketReconnectError(`Responses WebSocket 预热时连接提前关闭: ${event.code} ${event.reason}`);
+        }
+        if (event.type !== "message") continue;
+
+        const message: any = event.message;
+        if (message.type === "response.completed") {
+          const responseId = message.response?.id;
+          if (typeof responseId !== "string") throw new Error("Responses WebSocket 预热未返回 response ID");
+          return responseId;
+        }
+        if (message.type === "response.failed" || message.type === "response.incomplete" || message.type === "error") {
+          throw new Error(`Responses WebSocket 预热失败: ${JSON.stringify(message)}`);
+        }
+      }
+
+      if (signal?.aborted) throw new DOMException("请求已取消", "AbortError");
+      throw new Error("Responses WebSocket 预热未收到完整响应");
+    } finally {
+      signal?.removeEventListener("abort", abort);
+    }
+  }
+
+  private buildRequest(params: Record<string, any>): Record<string, any> {
+    const request = { ...params };
+    delete request.stream;
+    delete request.background;
+    return buildResponsesContinuation(request, this.baseline);
+  }
+
+  async *stream(
+    params: Record<string, any>,
+    signal?: AbortSignal,
+    onSteerAccepted?: (input: string) => Promise<void>,
+  ): AsyncGenerator<any> {
+    if (signal?.aborted) throw new DOMException("请求已取消", "AbortError");
+    if (this.isBusy) throw new Error("Responses WebSocket 正在处理另一请求");
+    const fullRequest = { ...params };
+    delete fullRequest.stream;
+    delete fullRequest.background;
+    const socket = this.connect();
+    this.isBusy = true;
+    this.activeResponseId = undefined;
+    let responseId: string | undefined;
+    let terminalResponseId: string | undefined;
+    let expectedContinuation = false;
+    let hasSteered = false;
+    const steeredParentIds = new Set<string>();
+    let interruptSent = false;
+    let interruptAccepted = false;
+    let isTerminal = false;
+    let keepSocket = false;
+    const sendInterrupt = () => {
+      if (!responseId || interruptSent || isTerminal) return;
+      interruptSent = true;
+      socket.send({
+        type: "response.interrupt",
+        response_id: responseId,
+        mode: "discard_partial_items",
+      } as any);
+    };
+    const abort = () => sendInterrupt();
+    signal?.addEventListener("abort", abort, { once: true });
+    let isCompleted = false;
+    let isOpen = socket.socket.readyState === 1;
+    let isStarted = false;
+    let canRetryFull = false;
+    const outputItems: any[] = [];
+
+    try {
+      await this.loadBaseline(fullRequest);
+      const warmupId = await this.warmup(socket, fullRequest, signal);
+      if (signal?.aborted) throw new DOMException("请求已取消", "AbortError");
+      let request = this.buildRequest(params);
+      if (warmupId) request = { ...request, previous_response_id: warmupId, input: [] };
+      canRetryFull = request.previous_response_id !== undefined && params.previous_response_id === undefined;
+      const events = socket.stream();
+      socket.send({ ...request, type: "response.create" } as any);
+      for await (const event of events) {
+        if (event.type === "open") { isOpen = true; continue; }
+        if (event.type === "error") {
+          const details = event.error.error as any;
+          const code = details?.code ?? details?.error?.code;
+          if (canRetryFull && !isStarted && code === "previous_response_not_found") {
+            canRetryFull = false;
+            await this.saveBaseline(undefined, fullRequest);
+            socket.send({ ...fullRequest, type: "response.create" } as any);
+            continue;
+          }
+          if (!isOpen && !details) throw new WebSocketConnectError("Responses WebSocket 握手失败", { cause: event.error });
+          if (!isStarted && (isWebSocketConnectionLimit(details) || (isOpen && !details))) {
+            throw new WebSocketReconnectError("Responses WebSocket 连接中断", { cause: event.error });
+          }
+          throw event.error;
+        }
+        if (event.type === "close") {
+          if (!isOpen) throw new WebSocketConnectError(`Responses WebSocket 握手失败: ${event.code} ${event.reason}`);
+          if (!isStarted && !signal?.aborted) throw new WebSocketReconnectError(`Responses WebSocket 连接提前关闭: ${event.code} ${event.reason}`);
+          throw new Error(`Responses WebSocket 提前关闭: ${event.code} ${event.reason}`);
+        }
+        if (event.type !== "message") continue;
+        const message: any = event.message;
+        if (message.type === "response.created" && typeof message.response?.id === "string") {
+          if (expectedContinuation && message.response.id !== responseId) {
+            expectedContinuation = false;
+            isTerminal = false;
+          }
+          responseId = message.response.id;
+          this.activeResponseId = message.response.id;
+          for (const steer of this.pendingSteers) this.sendSteer(steer, message.response.id);
+          if (signal?.aborted) sendInterrupt();
+        }
+        if (message.type === "response.steer.accepted") {
+          const targetId = message.steer?.previous_response_id;
+          const steer = this.pendingSteers.find(item => item.responseId === targetId);
+          if (steer) {
+            hasSteered = true;
+            expectedContinuation = true;
+            steeredParentIds.add(targetId);
+            if (terminalResponseId === targetId) {
+              isTerminal = false;
+              isCompleted = false;
+            }
+            await onSteerAccepted?.(steer.input);
+            this.finishSteer(steer, true);
+          }
+        }
+        if (message.type === "response.steer.failed") {
+          const targetId = message.steer?.previous_response_id;
+          const steer = this.pendingSteers.find(item => item.responseId === targetId);
+          if (steer) this.finishSteer(steer, false);
+          if (terminalResponseId === targetId && !this.pendingSteers.some(item => item.responseId === targetId)) {
+            isTerminal = true;
+          }
+        }
+        if (message.type === "response.interrupt.accepted" && message.response_id === responseId) {
+          interruptAccepted = true;
+        }
+        if (message.type === "response.interrupt.failed" && message.response_id === responseId) {
+          throw new Error(`Responses WebSocket 中断失败: ${JSON.stringify(message)}`);
+        }
+        if (typeof message.type === "string" && message.type.startsWith("response.")) isStarted = true;
+        if (message.type === "response.output_item.done") outputItems[message.output_index] = message.item;
+        if (message.type === "response.completed") {
+          const response = message.response;
+          terminalResponseId = response?.id;
+          if (hasSteered && steeredParentIds.has(response?.id)) {
+            await this.saveBaseline(undefined, fullRequest);
+          } else {
+            if (hasSteered) {
+              await this.saveBaseline(undefined, fullRequest);
+            } else {
+              const output = Array.isArray(response?.output) && response.output.length ? response.output : outputItems.filter(Boolean);
+              const baseline = this.makeBaseline(fullRequest, response?.id, output);
+              await this.saveBaseline(baseline, fullRequest);
+            }
+            isCompleted = true;
+          }
+        }
+        if (message.type === "response.completed" || message.type === "response.failed" || message.type === "response.incomplete") {
+          const eventResponseId = message.response?.id;
+          terminalResponseId = eventResponseId ?? terminalResponseId;
+          const isSteeredParent = message.type !== "response.failed"
+            && typeof eventResponseId === "string"
+            && (steeredParentIds.has(eventResponseId)
+              || this.pendingSteers.some(item => item.responseId === eventResponseId));
+          isTerminal = !isSteeredParent;
+        }
+        if (message.type === "response.steer.pending") {
+          await this.saveBaseline(undefined, fullRequest);
+          isTerminal = true;
+        }
+        yield message;
+        if (isTerminal && (!interruptSent || interruptAccepted)) {
+          if (interruptAccepted) {
+            await this.saveBaseline(undefined, fullRequest);
+            keepSocket = true;
+            throw new DOMException("请求已取消", "AbortError");
+          }
+          if (signal?.aborted) throw new DOMException("请求已取消", "AbortError");
+          return;
+        }
+      }
+      if (signal?.aborted) throw new DOMException("请求已取消", "AbortError");
+      throw new Error("Responses WebSocket 未收到终态事件");
+    } finally {
+      signal?.removeEventListener("abort", abort);
+      this.isBusy = false;
+      this.activeResponseId = undefined;
+      this.resolvePendingSteers(false);
+      if (!isCompleted && !keepSocket) {
+        const storedBaseline = fullRequest.store === true ? this.baseline : undefined;
+        this.close();
+        this.baseline = storedBaseline;
+      }
+    }
+  }
+
+  async create(
+    params: Record<string, any>,
+    signal?: AbortSignal,
+    onSteerAccepted?: (input: string) => Promise<void>,
+    useWebSocket = true,
+  ): Promise<any> {
+    const events = this.streamWithFallback(params, signal, onSteerAccepted, useWebSocket);
+    if (params.stream) return events;
+    for await (const event of events) {
+      if (event.type === "response.completed") return event.response;
+      if (event.type === "response.failed" || event.type === "response.incomplete") {
+        throw new Error(`Responses 请求失败: ${event.type}`);
+      }
+    }
+    throw new Error("Responses WebSocket 未收到完整响应");
+  }
+
+  private async *streamWithFallback(
+    params: Record<string, any>,
+    signal?: AbortSignal,
+    onSteerAccepted?: (input: string) => Promise<void>,
+    useWebSocket = true,
+  ): AsyncGenerator<any> {
+    if (useWebSocket && !this.useHttp) {
+      let canReconnect = true;
+      while (true) {
+        try {
+          yield* this.stream(params, signal, onSteerAccepted);
+          return;
+        } catch (error) {
+          if (signal?.aborted) throw error;
+          if (error instanceof WebSocketReconnectError && canReconnect) {
+            canReconnect = false;
+            continue;
+          }
+          if (!(error instanceof WebSocketConnectError)) throw error;
+          this.useHttp = true;
+          break;
+        }
+      }
+    }
+    if (params.stream) {
+      yield* this.streamHttp(params, signal);
+    } else {
+      yield { type: "response.completed", response: await this.createHttp(params, signal) };
+    }
+  }
+
+  private async createHttp(params: Record<string, any>, signal?: AbortSignal): Promise<any> {
+    if (this.isBusy) throw new Error("Responses 会话正在处理另一请求");
+    this.isBusy = true;
+    try {
+      return await this.requestHttp(params, signal);
+    } finally {
+      this.isBusy = false;
+    }
+  }
+
+  private async requestHttp(params: Record<string, any>, signal?: AbortSignal): Promise<any> {
+    const fullRequest = { ...params };
+    delete fullRequest.stream;
+    await this.loadBaseline(fullRequest);
+    let request = fullRequest.store === true ? buildResponsesContinuation(fullRequest, this.baseline) : fullRequest;
+    const canRetry = request.previous_response_id !== undefined && params.previous_response_id === undefined;
+    let response: any;
+    try {
+      response = await this.client.responses.create({ ...request, stream: false } as any, { signal });
+    } catch (error) {
+      if (!canRetry || !isPreviousResponseNotFound(error)) throw error;
+      await this.saveBaseline(undefined, fullRequest);
+      request = fullRequest;
+      response = await this.client.responses.create({ ...request, stream: false } as any, { signal });
+    }
+    if (response?.status === "completed" || response?.status === undefined) {
+      const baseline = Array.isArray(response?.output) ? this.makeBaseline(fullRequest, response?.id, response.output) : undefined;
+      await this.saveBaseline(baseline, fullRequest);
+    }
+    return response;
+  }
+
+  private async *streamHttp(params: Record<string, any>, signal?: AbortSignal): AsyncGenerator<any> {
+    if (this.isBusy) throw new Error("Responses 会话正在处理另一请求");
+    this.isBusy = true;
+    try {
+      yield* this.streamHttpRequest(params, signal);
+    } finally {
+      this.isBusy = false;
+    }
+  }
+
+  private async *streamHttpRequest(params: Record<string, any>, signal?: AbortSignal): AsyncGenerator<any> {
+    const fullRequest = { ...params };
+    delete fullRequest.stream;
+    await this.loadBaseline(fullRequest);
+    let request = fullRequest.store === true ? buildResponsesContinuation(fullRequest, this.baseline) : fullRequest;
+    let canRetry = request.previous_response_id !== undefined && params.previous_response_id === undefined;
+
+    while (true) {
+      let hasEmitted = false;
+      let shouldRetry = false;
+      const outputItems: any[] = [];
+      try {
+        const stream = await this.client.responses.create({ ...request, stream: true } as any, { signal });
+        for await (const event of stream as any) {
+          if (canRetry && !hasEmitted && event.type === "error" && isPreviousResponseNotFound(event)) {
+            shouldRetry = true;
+            break;
+          }
+          if (event.type === "response.output_item.done" && event.item && event.output_index !== undefined) {
+            outputItems[event.output_index] = event.item;
+          }
+          if (event.type === "response.completed") {
+            const response = event.response;
+            const output = Array.isArray(response?.output) && response.output.length ? response.output : outputItems.filter(Boolean);
+            const baseline = this.makeBaseline(fullRequest, response?.id, output);
+            await this.saveBaseline(baseline, fullRequest);
+          }
+          if (typeof event.type !== "string" || !event.type.startsWith("codex.")) hasEmitted = true;
+          yield event;
+        }
+      } catch (error) {
+        if (!canRetry || hasEmitted || !isPreviousResponseNotFound(error)) throw error;
+        shouldRetry = true;
+      }
+      if (!shouldRetry) return;
+      canRetry = false;
+      await this.saveBaseline(undefined, fullRequest);
+      request = fullRequest;
+    }
+  }
+}

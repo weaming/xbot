@@ -65,11 +65,17 @@ OPENAI_RESPONSES_EFFORTS=low,high,max
 | --- | --- |
 | `OPENAI_CHAT_EFFORTS` | Chat Completions 可选思考强度，逗号分隔 |
 | `OPENAI_RESPONSES_EFFORTS` | Responses API 可选思考强度，逗号分隔 |
+| `OPENAI_RESPONSES_WEBSOCKET` | `true` 或 `1` 启用 WebSocket，`false` 或 `0` 使用 HTTP；未设置时 GPT 模型默认启用，其他模型默认使用 HTTP。生成中追加的文本会尝试通过 steering 交给当前响应 |
+| `OPENAI_RESPONSES_STORE` | `true` 或 `1` 请求上游保存 Responses，`false` 或 `0` 禁用；未设置时所有模型默认关闭。Codex Responses 代理要求 `store=false` |
 | `OPENAI_RESPONSES_HOSTED_TOOLS` | Responses 可选托管工具（如 `web_search,tool_search`），上游执行；Chat Completions 无托管工具 |
 | `APPLY_PATCH_MODE` | `apply_patch`（MCP codex 等）的下发形态：`custom` 自由文本（模型直接输出补丁原文）、`off` 原样下发（`function` 为历史值，等价 `off`）。默认 `gpt-*` 用 `custom`，其余（含 DeepSeek）原样 |
 | `ZBOT_MEMORY_USER_ID` | 记忆用户标识，默认 `0` |
 | `NETWORK_PROXY` | 网络和命令行工具使用的代理；TUI 会将容器默认代理地址调整为 `http://localhost:7890` |
 | `OPENAI_PROXY` | 模型 API 请求使用的代理 |
+
+启用 Responses 存储后，HTTP 与 WebSocket 都会在请求选项和上下文前缀一致时使用 `previous_response_id` 增量续接；旧响应不可用时会重发完整上下文。每个会话的续接基准保存在状态目录 `sessions/responses/`，文件权限为 0600，最大 2 MB，超过 29 天不再使用；清空或删除会话时同时删除。WS 回合经过 steering 后，下一次请求使用完整上下文建立新基准。GPT 的存储请求包含 `reasoning.encrypted_content`，以便回退时重放思考项。
+
+`store=false` 时，WS 在当前连接的缓存有效期间仍可用 `previous_response_id` 增量续接；重连后会重新发送完整上下文。显式设置 `OPENAI_RESPONSES_STORE=true` 时，上游若不支持存储会直接报错。
 
 TUI 的 MCP 服务列表由 `~/.zbot/mcp-servers.yaml` 管理。详见 [MCP 服务配置](mcp.md)。
 

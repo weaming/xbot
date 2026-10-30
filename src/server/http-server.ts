@@ -18,7 +18,7 @@ import {
 } from "../host/session-host-types.js";
 import { handleJobsRoute, type JobsApiContext } from "./jobs-api.js";
 import { parseEventPage } from "./page-params.js";
-import { enqueueInput, pendingStats, takeInputs } from "./pending-inputs.js";
+import { enqueueInput, pendingStats, removeInput, takeInputs } from "./pending-inputs.js";
 import { fail, json, readJson } from "./respond.js";
 import { toLiveEventPayload, toSessionEventView, toSessionEventViews } from "./event-view.js";
 import { subscribeLive as subscribeLiveFrames } from "./live-stream.js";
@@ -443,6 +443,9 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
                             return fail("当前回合进行中，带图片的消息请等它结束后再发", 409);
                         }
                         enqueueInput(sessionId, text, mode);
+                        if (mode === "request") {
+                            void host.steerResponse?.(sessionId, text, () => removeInput(sessionId, text, mode));
+                        }
                         return json({ started: false, queued: true, mode, unarchived, pending: pendingStats(sessionId) }, 202);
                     }
                     return fail("不支持的方法", 405);

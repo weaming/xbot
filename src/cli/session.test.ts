@@ -7,6 +7,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { getSocketPath } from "../control/paths.js";
 import { encodeFrame, splitFrames, type PeerFrame } from "../control/protocol.js";
 import { listSavedSessionIds } from "../events/session-files.js";
+import { getResponsesBaselineFile } from "../utils/state-paths.js";
 import {
     formatTable,
     parseSessionArgs,
@@ -297,6 +298,10 @@ describe("会话命令行端到端", () => {
         fs.mkdirSync(path.dirname(extras[2]!), { recursive: true });
         fs.mkdirSync(path.dirname(lockFile), { recursive: true });
         for (const extra of extras.slice(0, 3)) fs.writeFileSync(extra, "");
+        const baselineFile = getResponsesBaselineFile(sessionId);
+        fs.mkdirSync(path.dirname(baselineFile), { recursive: true });
+        fs.writeFileSync(baselineFile, "{}");
+        extras.push(baselineFile);
         // 残留锁（进程已退出）：删除流程应接管并在收尾时清掉
         fs.writeFileSync(lockFile, JSON.stringify({
             pid: 999_999,

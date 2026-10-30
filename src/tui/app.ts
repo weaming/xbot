@@ -43,6 +43,7 @@ import {
 } from "./slash-commands.js";
 import { bindGlobalKeys, type GlobalKeyHost } from "./keybindings.js";
 import { buildStatusBarModel } from "./status-bar-model.js";
+import { protocolStatusLabel } from "../utils/responses-transport.js";
 import { ChatLayout } from "./chat-layout.js";
 import { TurnStateStore } from "./turn-state.js";
 import {
@@ -534,9 +535,15 @@ export class ChatApp {
             || this.switching
             || this.turnState.isBusy(sessionId)
             || (sessionId ? this.agent.isSessionBusy(sessionId) : false);
-        const message: PendingMessage = images.length > 0 ? { text, images } : text;
+        const message: PendingMessage = { text, images };
         if (isBusy) {
             this.pending.push(sessionId, message);
+            if (images.length === 0) {
+                void this.agent.steerResponse?.(sessionId, text, () => {
+                    this.pending.removeMessage(sessionId, message);
+                    if (!sessionId || sessionId === this.store.currentSessionId) this.renderPending();
+                });
+            }
             if (!sessionId || sessionId === this.store.currentSessionId) {
                 this.renderPending();
             }
@@ -2863,7 +2870,7 @@ export class ChatApp {
      */
     private renderStatusBar(): void {
         const modelSettings = getChatApiSettings(this.currentModelSelection);
-        const protocolName = modelSettings.protocol === "responses" ? "Responses" : "Chat";
+        const protocolName = protocolStatusLabel(modelSettings.protocol, modelSettings.model);
         const modelName = `${modelSettings.model || "default"} (${protocolName})`;
         const sessionId = this.store.currentSessionId;
         const pricing = resolvePricingMode(endpointHost(modelSettings.apiBase), modelSettings);

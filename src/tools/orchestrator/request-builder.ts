@@ -8,6 +8,7 @@
 import { getReasoningProvider } from "../../utils/reasoning-effort.js";
 import { buildReasoningEffortParams } from "../../utils/reasoning-effort.js";
 import type { ChatMessage } from "../../types/session.js";
+import { isGptModel } from "../../utils/responses-transport.js";
 
 /** 上游协议：由 client.protocol 决定，不由「有没有 createResponse」推断。 */
 export type ChatProtocol = "responses" | "chat_completions";
@@ -120,6 +121,7 @@ export interface BuildRequestBodyOptions {
     tools: any[];
     toolChoice?: "auto" | "none";
     stream: boolean;
+    store?: boolean;
     reasoning?: ReasoningParamsInput;
     /** MiniMax：content 不含 <think>，reasoning_details 单独提供。 */
     isMiniMax: boolean;
@@ -134,6 +136,10 @@ export function buildRequestBody(options: BuildRequestBodyOptions): Record<strin
         ? {
             ...(options.model.trim() ? { model: options.model } : {}),
             input: options.messages,
+            store: options.store ?? false,
+            ...(options.store && isGptModel(options.model)
+                ? { include: ["reasoning.encrypted_content"] }
+                : {}),
             tools: options.tools,
             tool_choice: options.toolChoice ?? (hasTools ? "auto" : "none"),
         }

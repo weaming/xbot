@@ -11,6 +11,7 @@
 
 import os from "os";
 import path from "path";
+import { createHash } from "node:crypto";
 
 function resolveStateRoot(stateRoot?: string): string {
     return stateRoot
@@ -28,6 +29,11 @@ export function getStartupLogFile(stateRoot?: string): string {
 /** 单个会话的进程日志：sessions/log/ 下，删除会话时一起清理。 */
 export function getSessionLogFile(sessionId: string): string {
     return path.join(resolveStateRoot(), "sessions", "log", `${sessionId}.log`);
+}
+
+export function getResponsesBaselineFile(sessionId: string): string {
+    const name = createHash("sha256").update(sessionId).digest("hex");
+    return path.join(resolveStateRoot(), "sessions", "responses", `${name}.json`);
 }
 
 export function getInputHistoryFile(stateRoot?: string): string {

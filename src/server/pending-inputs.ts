@@ -32,6 +32,15 @@ export function enqueueInput(sessionId: string, text: string, mode: PendingMode)
     stateOf(sessionId)[mode].push(trimmed);
 }
 
+/** 移除 steering 已接受的消息，避免下一请求再次附加。 */
+export function removeInput(sessionId: string, text: string, mode: PendingMode): boolean {
+    const inputs = queues.get(sessionId)?.[mode];
+    const index = inputs?.indexOf(text) ?? -1;
+    if (!inputs || index < 0) return false;
+    inputs.splice(index, 1);
+    return true;
+}
+
 /** 原子取走某模式的全部输入（消费即清空，避免重复带到多个请求）。 */
 export function takeInputs(sessionId: string, mode: PendingMode): string[] | undefined {
     const state = queues.get(sessionId);

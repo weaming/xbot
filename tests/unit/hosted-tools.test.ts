@@ -72,6 +72,7 @@ describe("Responses 请求体", () => {
         expect(body.tools.map((tool: any) => tool.type)).toEqual(["function", "function", "web_search"]);
         expect(body.tools[2]).toEqual({ type: "web_search" });
         expect(body.tool_choice).toBe("auto");
+        expect(body.store).toBe(false);
     });
 
     test("只有托管工具时也声明 tool_choice=auto", () => {

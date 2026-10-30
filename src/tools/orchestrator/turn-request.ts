@@ -8,6 +8,7 @@
 import { isDeepSeekEndpoint } from "../../pricing/deepseek.js";
 import type { ChatMessage } from "../../types/session.js";
 import { projectChatMessagesForPrompt } from "../../utils/tool-result-context.js";
+import { isResponsesStoreEnabled } from "../../utils/responses-transport.js";
 import {
   materializeDeepSeekImageMessages,
   materializeImageMessages,
@@ -200,6 +201,7 @@ export async function prepareRequest(options: PrepareRequestOptions): Promise<Pr
         tools: requestTools,
         ...(options.toolChoice ? { toolChoice: options.toolChoice } : {}),
         stream: options.stream,
+        store: isResponsesStoreEnabled(),
         isMiniMax,
         reasoning: {
             protocol,

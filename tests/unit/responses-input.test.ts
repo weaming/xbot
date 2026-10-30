@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { repairResponsesFunctionCallItemIds } from "../../src/tools/orchestrator/responses-input-repair.js";
+import { repairResponsesFunctionCallItemIds } from "../../src/tools/orchestrator/responses-input.js";
 
 describe("Responses input repair", () => {
   test("replaces an invalid function_call item ID and preserves its call ID", () => {

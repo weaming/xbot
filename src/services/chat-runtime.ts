@@ -31,6 +31,9 @@ import { getModelPreferencesFile } from "../utils/state-paths.js";
 import { withFileLock } from "../utils/file-lock.js";
 import { countTextTokens } from "../utils/tokenizer.js";
 import { createHash } from "node:crypto";
+export { closeResponsesSession as closeChatSessionTransport } from "../tools/orchestrator/responses-session.js";
+export { deleteResponsesBaseline } from "../tools/orchestrator/responses-baseline.js";
+export { steerResponsesSession as steerChatSession } from "../tools/orchestrator/responses-session.js";
 
 /** 当前会话注入的工具名集合：工具下发与 token 预算共用，避免两处漂移。 */
 function activeToolNames(sessionId?: string): string[] {
@@ -410,10 +413,11 @@ export async function runChatQuery(options: ChatRunOptions) {
         throw new Error(`LLM provider 配置无效：${settingsError}`);
     }
 
-    const client = createChatClient(settings.apiKey, settings.apiBase, settings.protocol);
+    const client = createChatClient(settings.apiKey, settings.apiBase, settings.protocol, options.sessionId, settings.model);
     let activeTurnCompactionFailed = false;
 
     try {
+        client.preconnect?.();
         return await executeWithChat({
             query: options.query,
             queryContent: options.queryContent,
@@ -529,5 +533,7 @@ export async function runChatQuery(options: ChatRunOptions) {
             wrappedError.partialMessages = error.partialMessages;
         }
         throw wrappedError;
+    } finally {
+        client.close?.();
     }
 }
