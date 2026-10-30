@@ -11,10 +11,98 @@
 import type { AgentEvent } from "../events/agent-events.js";
 import { formatToolArguments } from "../utils/tool-progress.js";
 
-/** 单次工具调用的参数超过这个长度就只发摘要：大型 patch/脚本正文能占掉整个响应的一半。 */
+/**
+ * 单次工具调用的参数超过这个长度就不带原文（只给 argumentSize）：
+ * 大型 patch/脚本正文能占掉整个响应的一半，界面要看原文时按需再拉。
+ */
 const ARGUMENTS_MAX_CHARS = 400;
 /** 摘要一行够用，再长也只是噪音。 */
 const SUMMARY_MAX_CHARS = 120;
+
+/** 一次 patch 里改动的单个文件。 */
+interface PatchFileStat {
+    path: string;
+    kind: "add" | "update" | "delete";
+    added: number;
+    removed: number;
+}
+
+interface PatchStat {
+    files: PatchFileStat[];
+    added: number;
+    removed: number;
+}
+
+/**
+ * 工具的三种历史形状统一成 name + 参数原文：
+ * - OpenAI chat：`{ id, function: { name, arguments } }`
+ * - Responses custom tool：`{ id, custom: { name, input } }`（apply_patch 这类自由文本工具）
+ * - 已经拍平的：`{ id, name, arguments }`
+ */
+export function readToolCall(call: any): { id?: string; name: string; rawArguments: string } {
+    const fn = call?.function;
+    const custom = call?.custom;
+    const name = (typeof fn?.name === "string" && fn.name)
+        || (typeof custom?.name === "string" && custom.name)
+        || (typeof call?.name === "string" && call.name)
+        || "工具";
+    const rawArguments = typeof fn?.arguments === "string"
+        ? fn.arguments
+        : typeof custom?.input === "string"
+          ? custom.input
+          : typeof call?.arguments === "string"
+            ? call.arguments
+            : "";
+    return { ...(typeof call?.id === "string" ? { id: call.id } : {}), name, rawArguments };
+}
+
+/**
+ * apply_patch 的 patch 文本按文件统计增删行：
+ * 界面要的是「改了哪些文件、各加减多少」，把整份 patch 摊在时间线上没人看。
+ */
+function patchStatOf(name: string, rawArguments: string): PatchStat | null {
+    if (!/apply_patch/i.test(name)) return null;
+
+    const files: PatchFileStat[] = [];
+    let current: PatchFileStat | null = null;
+    for (const line of rawArguments.split("\n")) {
+        const header = /^\*\*\* (Add|Update|Delete) File: (.+?)\s*$/.exec(line);
+        if (header) {
+            current = {
+                path: header[2]!,
+                kind: header[1] === "Add" ? "add" : header[1] === "Update" ? "update" : "delete",
+                added: 0,
+                removed: 0,
+            };
+            files.push(current);
+            continue;
+        }
+        if (line.startsWith("*** ")) {
+            current = null;
+            continue;
+        }
+        if (!current || line.startsWith("@@")) continue;
+        if (line.startsWith("+")) current.added += 1;
+        else if (line.startsWith("-")) current.removed += 1;
+    }
+    if (files.length === 0) return null;
+
+    return {
+        files,
+        added: files.reduce((sum, file) => sum + file.added, 0),
+        removed: files.reduce((sum, file) => sum + file.removed, 0),
+    };
+}
+
+function summarizePatch(stat: PatchStat): string {
+    const counts = `${stat.files.length} 个文件`;
+    // 只有一边有改动时别写成「+300 −0」
+    const changed = [
+        stat.added > 0 ? `+${stat.added}` : "",
+        stat.removed > 0 ? `−${stat.removed}` : "",
+    ].filter(Boolean);
+    return changed.length > 0 ? `${counts} · ${changed.join(" ")}` : counts;
+}
 
 function summarizeCall(name: string, rawArguments: string): string {
     let parsed: unknown;
@@ -127,18 +215,22 @@ export function toSessionEventView(event: AgentEvent): SessionEventView | null {
                             ...(toolCalls.length > 0
                                 ? {
                                       tool_calls: toolCalls.map((call: any) => {
-                                          const name = call?.function?.name ?? "工具";
-                                          const rawArguments = typeof call?.function?.arguments === "string"
-                                              ? call.function.arguments
-                                              : "";
+                                          const { id, name, rawArguments } = readToolCall(call);
+                                          const patchStat = patchStatOf(name, rawArguments);
                                           return {
-                                              ...(call?.id ? { id: call.id } : {}),
+                                              ...(id ? { id } : {}),
                                               name,
                                               // 摘要由服务端算好：界面只要一行字，不必为此传整份参数
-                                              summary: summarizeCall(name, rawArguments),
-                                              // 小参数照旧带上，界面还能展开看原文；大参数只留摘要
-                                              ...(rawArguments.length <= ARGUMENTS_MAX_CHARS
+                                              summary: patchStat ? summarizePatch(patchStat) : summarizeCall(name, rawArguments),
+                                              // patch 类给结构化的文件增删，界面按文件列表渲染
+                                              ...(patchStat ? { patchStat } : {}),
+                                              // 小参数照旧带上，界面还能展开看原文
+                                              ...(rawArguments.length > 0 && rawArguments.length <= ARGUMENTS_MAX_CHARS
                                                   ? { arguments: rawArguments }
+                                                  : {}),
+                                              // 大参数只留长度：界面点开时再按需拉全文
+                                              ...(rawArguments.length > ARGUMENTS_MAX_CHARS
+                                                  ? { argumentSize: rawArguments.length }
                                                   : {}),
                                           };
                                       }),

@@ -30,7 +30,7 @@ import { readMcpSelection } from "../tools/session-mcp-selection.js";
 import { toolCatalog } from "../tools/tool-catalog.js";
 import { fail, json, readJson } from "./respond.js";
 import { parseEventPage } from "./page-params.js";
-import { toLiveEventPayload, toSessionEventView, toSessionEventViews } from "./event-view.js";
+import { readToolCall, toLiveEventPayload, toSessionEventView, toSessionEventViews } from "./event-view.js";
 import { subscribeLive as subscribeLiveFrames } from "./live-stream.js";
 import { openSseStream, parseSseCursor, type SseSource } from "./sse.js";
 
@@ -531,6 +531,36 @@ export async function handleJobsRoute(
                 ctx.heartbeatMs,
                 req.signal,
             );
+        }
+
+        // 工具参数按需拉取：长参数不进事件响应，用户点开「参数」时再单独取一次
+        if (sub === "tool-arguments" && req.method === "GET") {
+            const job = ctx.store.get(jobId);
+            if (!job) return fail("任务不存在", 404);
+
+            const sessionId = url.searchParams.get("sessionId")?.trim() || job.sessionId;
+            if (!sessionId) return fail("任务尚未开始，暂无执行事件", 404);
+            if (!ctx.store.listSessions(jobId).some(item => item.sessionId === sessionId)) {
+                return fail("该会话不属于此任务", 404);
+            }
+
+            const seq = Number(url.searchParams.get("seq"));
+            if (!Number.isInteger(seq) || seq <= 0) return fail("seq 无效", 400);
+            const callId = url.searchParams.get("callId")?.trim() ?? "";
+
+            // readBefore 会回落到回合边界，可能带出多条：按 seq 取那一条即可
+            const event = (await ctx.host.readSessionEventsBefore(sessionId, seq + 1, 1)).at(-1);
+            if (!event || event.seq !== seq) return fail("事件不存在", 404);
+
+            const message = (event.payload as { message?: { tool_calls?: any[] } }).message;
+            const calls = Array.isArray(message?.tool_calls) ? message.tool_calls : [];
+            const call = callId
+                ? calls.find(item => item?.id === callId)
+                : calls[0];
+            if (!call) return fail("工具调用不存在", 404);
+
+            const { name, rawArguments } = readToolCall(call);
+            return json({ name, arguments: rawArguments });
         }
 
         return fail("未知路径", 404);

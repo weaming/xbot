@@ -58,7 +58,56 @@ describe("toSessionEventView", () => {
         }));
         const bigCall = (big?.payload.message as any).tool_calls[0];
         expect(bigCall.arguments).toBeUndefined();
+        // 长参数给长度，界面点开时按需拉全文
+        expect(bigCall.argumentSize).toBe(bigArg.length);
         expect(bigCall.summary.length).toBeLessThanOrEqual(121);
+    });
+
+    test("空参数不带 arguments，界面不会出现空的参数面板", () => {
+        const view = toSessionEventView(event("turn_message", {
+            message: { role: "assistant", tool_calls: [{ id: "c1", function: { name: "bash", arguments: "" } }] },
+        }));
+
+        const call = (view?.payload.message as any).tool_calls[0];
+        expect(call.arguments).toBeUndefined();
+        expect(call.argumentSize).toBeUndefined();
+    });
+
+    test("custom 工具形状：名字取 custom.name，apply_patch 按文件统计增删", () => {
+        const patch = [
+            "*** Begin Patch",
+            "*** Update File: src/a.ts",
+            "@@ export function a() {",
+            "-const old = 1;",
+            "+const next = 2;",
+            "+const more = 3;",
+            "*** Add File: src/b.ts",
+            "+export const b = 1;",
+            "*** Delete File: src/c.ts",
+            "*** End Patch",
+            "",
+        ].join("\n");
+        const view = toSessionEventView(event("turn_message", {
+            message: {
+                role: "assistant",
+                tool_calls: [{ id: "c9", type: "custom", custom: { name: "codex__apply_patch", input: patch } }],
+            },
+        }));
+
+        const call = (view?.payload.message as any).tool_calls[0];
+        expect(call.name).toBe("codex__apply_patch");
+        expect(call.summary).toBe("3 个文件 · +3 −1");
+        expect(call.patchStat).toEqual({
+            files: [
+                { path: "src/a.ts", kind: "update", added: 2, removed: 1 },
+                { path: "src/b.ts", kind: "add", added: 1, removed: 0 },
+                { path: "src/c.ts", kind: "delete", added: 0, removed: 0 },
+            ],
+            added: 3,
+            removed: 1,
+        });
+        // 小 patch 仍带原文，界面按文件清单渲染，不摊 patch
+        expect(call.arguments).toBe(patch);
     });
 
     test("turn_commit 只发 turnId：界面靠它判断回合是否收尾", () => {
