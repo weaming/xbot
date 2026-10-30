@@ -64,10 +64,13 @@ export function Textarea({
 export function OverflowMenu({
     children,
     className,
+    triggerClassName,
     label = "⋯",
 }: {
     children: ReactNode;
     className?: string;
+    /** 触发按钮自己的样式（头部里要跟标题同高） */
+    triggerClassName?: string;
     label?: string;
 }) {
     const [open, setOpen] = useState(false);
@@ -94,7 +97,13 @@ export function OverflowMenu({
 
     return (
         <div ref={wrapRef} className={cn("relative shrink-0", className)}>
-            <Button variant="ghost" aria-label="更多操作" aria-expanded={open} onClick={() => setOpen(!open)}>
+            <Button
+                variant="ghost"
+                aria-label="更多操作"
+                aria-expanded={open}
+                className={triggerClassName}
+                onClick={() => setOpen(!open)}
+            >
                 {label}
             </Button>
             {open && (
@@ -108,24 +117,6 @@ export function OverflowMenu({
                 </div>
             )}
         </div>
-    );
-}
-
-type BadgeTone = "default" | "accent" | "ok" | "warn" | "bad";
-
-const BADGE_TONES: Record<BadgeTone, string> = {
-    default: "border-border text-muted",
-    accent: "border-accent text-accent",
-    ok: "border-ok text-ok",
-    warn: "border-warn text-warn",
-    bad: "border-bad text-bad",
-};
-
-export function Badge({ tone = "default", children }: { tone?: BadgeTone; children: ReactNode }) {
-    return (
-        <span className={cn("rounded-full border px-2 py-0.5 text-xs leading-tight", BADGE_TONES[tone])}>
-            {children}
-        </span>
     );
 }
 
@@ -162,41 +153,63 @@ export function Dialog({
     );
 }
 
-export function Tabs<T extends string>({
-    tabs,
-    active,
+/**
+ * 紧凑分段控件：用来取代占一整行的 tab 栏。
+ * 放在头部里只占按钮的宽度，省下的一行留给会话历史。
+ */
+export function Segmented<T extends string>({
+    options,
+    value,
     onChange,
 }: {
-    tabs: Array<{ key: T; label: string; count?: number }>;
-    active: T;
+    options: Array<{ key: T; label: string; count?: number }>;
+    value: T;
     onChange: (key: T) => void;
 }) {
     return (
-        <div className="flex gap-1 border-b border-border">
-            {tabs.map(tab => (
+        // 高度与标题一致（h-9）：同一行里三块东西不能高矮不齐
+        <div className="flex h-9 shrink-0 items-center gap-0.5 rounded-md border border-border p-0.5">
+            {options.map(option => (
                 <button
-                    key={tab.key}
-                    onClick={() => onChange(tab.key)}
+                    key={option.key}
+                    type="button"
+                    onClick={() => onChange(option.key)}
                     className={cn(
-                        "-mb-px border-b-2 px-3 py-1.5 text-sm",
-                        tab.key === active
-                            ? "border-accent text-fg"
-                            : "border-transparent text-muted hover:text-fg",
+                        "flex h-full items-center rounded px-1.5 text-xs transition",
+                        option.key === value ? "bg-accent/15 text-accent" : "text-muted hover:text-fg",
                     )}
                 >
-                    {tab.label}
-                    {tab.count !== undefined && <span className="ml-1 text-xs text-muted">{tab.count}</span>}
+                    {option.label}
+                    {(option.count ?? 0) > 0 && <span className="ml-1 text-[10px]">{option.count}</span>}
                 </button>
             ))}
         </div>
     );
 }
 
-export function Field({ label, children }: { label: string; children: ReactNode }) {
+/**
+ * 字段容器：标签一行 + 内容。opt 动作（如「清空」）放标签行右侧，
+ * 不跟内容一起换行，免得挤成一团或和上方的胶囊重叠。
+ *
+ * 注意用 div 而不是 label：内容里有按钮组时，点 label 的空白会把点击
+ * 转发给第一个按钮，表现为「点空白也切换选中」。
+ */
+export function Field({
+    label,
+    action,
+    children,
+}: {
+    label: string;
+    action?: ReactNode;
+    children: ReactNode;
+}) {
     return (
-        <label className="flex flex-col gap-1">
-            <span className="text-xs text-muted">{label}</span>
+        <div className="flex flex-col gap-1">
+            <div className="flex items-center gap-2">
+                <span className="shrink-0 text-xs text-muted">{label}</span>
+                {action && <span className="ml-auto shrink-0">{action}</span>}
+            </div>
             {children}
-        </label>
+        </div>
     );
 }

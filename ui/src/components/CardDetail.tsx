@@ -10,7 +10,6 @@ import { api, ApiError, openEventStream } from "../lib/api";
 import type { AgentEvent, ImageAsset, Job, JobComment, JobSession, McpServer } from "../lib/types";
 import { cn } from "../lib/utils";
 import { abbreviateHome, formatShortTime } from "../lib/format";
-import { STATE_TONE, stateLabel } from "../lib/job-state";
 import { useInlineEdit } from "../lib/use-inline-edit";
 import { useNarrow } from "../lib/use-narrow";
 import { AssetImage } from "./AssetImage";
@@ -19,9 +18,9 @@ import { Timeline } from "./Timeline";
 import { TagInput } from "./TagInput";
 import { MarkdownBlock } from "./Markdown";
 import { MdEditor } from "./MdEditor";
-import { Badge, Button, Field, Input, OverflowMenu, Tabs, Textarea } from "./ui";
+import { Button, Field, Input, OverflowMenu, Segmented, Textarea } from "./ui";
 
-type TabKey = "props" | "sessions" | "comments";
+type TabKey = "props" | "sessions";
 
 /** 时间线一页的事件条数：够铺几屏，又不至于为了首屏把整份日志传下来。 */
 const EVENT_PAGE_SIZE = 200;
@@ -463,7 +462,7 @@ export function CardDetail({
             onChange={event => titleEdit.setDraft(event.target.value)}
             {...titleEdit.editorProps}
             // flex-1 让输入框和只读文字占据同一份宽度，否则会把右侧的关闭按钮挤走
-            className="min-w-0 flex-1 font-medium"
+            className="h-9 min-w-0 flex-1 font-medium"
         />
     ) : (
         <button
@@ -472,12 +471,125 @@ export function CardDetail({
             onClick={titleEdit.begin}
             // 盒模型与编辑态的 <Input> 完全一致（含移动端 16px 字号断点）：
             // 切换只换边框颜色，不改变尺寸，下面一行不会跟着上下跳
-            className="min-w-0 flex-1 cursor-text truncate rounded-md border border-transparent px-2.5 py-1.5 text-left text-base font-medium sm:text-sm hover:border-border hover:bg-col"
+            className="h-9 min-w-0 flex-1 cursor-text truncate rounded-md border border-transparent px-2.5 text-left text-base font-medium sm:text-sm hover:border-border hover:bg-col"
         >
             {titleText}
         </button>
     );
 
+    /** 属性 / 会话的分段切换：塞进头部，省掉一整行 tab 的高度 */
+    const viewSwitch = (
+        <Segmented
+            options={[
+                { key: "props", label: "属性" },
+                { key: "sessions", label: "会话", count: sessions.length },
+            ]}
+            value={tab}
+            onChange={setTab}
+        />
+    );
+
+    /** 评论流：Trello 式，跟在属性内容下方一起滚，不再单开 tab */
+    const commentsSection = (
+        <section className="flex flex-col gap-2 border-t border-border pt-3">
+            <h3 className="text-xs text-muted">评论{comments.length > 0 ? ` · ${comments.length}` : ""}</h3>
+            {comments.length === 0 && <p className="text-xs text-muted">还没有评论</p>}
+            {comments.map(comment => (
+                <div key={comment.id} className="flex flex-col gap-1.5">
+                    <div className="flex items-center gap-2 text-xs text-muted">
+                        <span>{comment.author === "agent" ? "agent" : "我"}</span>
+                        <span>{formatTime(comment.createdAt)}</span>
+                        {comment.editedAt && <span>已编辑</span>}
+                    </div>
+                    {editingComment?.id === comment.id ? (
+                        /* Esc 先退出编辑（放弃改动），再按一次才轮到关闭卡片 */
+                        <div
+                            className="flex flex-col gap-1"
+                            onKeyDown={event => {
+                                if (event.key !== "Escape") return;
+                                event.preventDefault();
+                                event.stopPropagation();
+                                setEditingComment(null);
+                            }}
+                        >
+                            <MdEditor
+                                value={editingComment.body}
+                                onChange={body => setEditingComment({ id: comment.id, body })}
+                                rows={4}
+                                autoFocus
+                            />
+                            <div className="flex gap-1">
+                                <Button
+                                    variant="primary"
+                                    onClick={async () => {
+                                        const next = editingComment.body.trim();
+                                        if (!next) return;
+                                        await api.updateComment(job.id, comment.id, next).catch(() => {});
+                                        setEditingComment(null);
+                                        await refreshComments();
+                                    }}
+                                >
+                                    保存
+                                </Button>
+                                <Button variant="ghost" onClick={() => setEditingComment(null)}>
+                                    取消
+                                </Button>
+                                <Button
+                                    variant="ghost"
+                                    className="text-bad"
+                                    onClick={async () => {
+                                        if (!window.confirm("删除这条评论？")) return;
+                                        await api.deleteComment(job.id, comment.id).catch(() => {});
+                                        setEditingComment(null);
+                                        await refreshComments();
+                                        await onChanged();
+                                    }}
+                                >
+                                    删除
+                                </Button>
+                            </div>
+                        </div>
+                    ) : (
+                        <>
+                            <MarkdownBlock content={comment.body} />
+                            <div className="flex gap-1">
+                                <Button
+                                    variant="ghost"
+                                    onClick={() => setEditingComment({ id: comment.id, body: comment.body })}
+                                >
+                                    编辑
+                                </Button>
+                                <Button
+                                    variant="ghost"
+                                    className="text-bad"
+                                    onClick={async () => {
+                                        if (!window.confirm("删除这条评论？")) return;
+                                        await api.deleteComment(job.id, comment.id).catch(() => {});
+                                        await refreshComments();
+                                        await onChanged();
+                                    }}
+                                >
+                                    删除
+                                </Button>
+                            </div>
+                        </>
+                    )}
+                </div>
+            ))}
+            <MdEditor
+                value={commentDraft}
+                onChange={setCommentDraft}
+                rows={3}
+                placeholder="写评论…（Ctrl/⌘ + Enter 提交）"
+                onSubmit={() => void submitComment()}
+            />
+            <div>
+                <Button variant="primary" onClick={() => void submitComment()}>
+                    发表评论
+                </Button>
+            </div>
+        </section>
+    );
     return (
         <div
             className="flex h-full flex-col"
@@ -494,20 +606,18 @@ export function CardDetail({
                 event.stopPropagation();
             }}
         >
-            {/* 窄屏：一行完事——状态、标题、⋯、关闭。卡片铺满整屏，纵向空间全给会话历史 */}
+            {/* 窄屏：一行完事——标题、属性/会话、⋯、关闭。卡片铺满整屏，纵向空间全给会话历史 */}
             <header className="flex flex-col gap-1 border-b border-border px-2 py-1.5 md:hidden">
                 <div className="flex items-center gap-1">
-                    <span className="shrink-0">
-                        <Badge tone={STATE_TONE[job.state]}>{stateLabel(job)}</Badge>
-                    </span>
                     {titleNode}
-                    <OverflowMenu>
+                    {viewSwitch}
+                    <OverflowMenu triggerClassName="h-9">
                         {actionNodes}
                         <div className="mt-0.5 border-t border-border px-2 py-1 text-xs text-muted">
                             #{job.id.slice(-8)} · {formatTime(job.createdAt)}
                         </div>
                     </OverflowMenu>
-                    <Button variant="ghost" onClick={onClose} aria-label="关闭">
+                    <Button variant="ghost" className="h-9" onClick={onClose} aria-label="关闭">
                         ×
                     </Button>
                 </div>
@@ -516,14 +626,14 @@ export function CardDetail({
 
             {/* 桌面：标题 / 元信息 / 动作三行，宽度够用不必收 */}
             <header className="hidden flex-col gap-2 border-b border-border p-3 md:flex">
-                <div className="flex items-start gap-2">
+                <div className="flex items-center gap-2">
                     {titleNode}
-                    <Button variant="ghost" onClick={onClose} aria-label="关闭">
+                    {viewSwitch}
+                    <Button variant="ghost" className="h-9" onClick={onClose} aria-label="关闭">
                         ×
                     </Button>
                 </div>
                 <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
-                    <Badge tone={STATE_TONE[job.state]}>{stateLabel(job)}</Badge>
                     <span className="font-mono">{job.id.slice(-8)}</span>
                     <span>{formatTime(job.createdAt)}</span>
                     {job.error && <span className="text-bad">{job.error}</span>}
@@ -532,23 +642,11 @@ export function CardDetail({
                 {error && <p className="text-xs text-bad">{error}</p>}
             </header>
 
-            <div className="px-2 pt-1.5 md:px-3 md:pt-2">
-                <Tabs
-                    tabs={[
-                        { key: "props", label: "属性" },
-                        { key: "sessions", label: "会话", count: sessions.length },
-                        { key: "comments", label: "评论", count: comments.length },
-                    ]}
-                    active={tab}
-                    onChange={setTab}
-                />
-            </div>
-
             {/* 外层只负责给高度：各 tab 自己决定滚动，会话历史才能吃满剩余空间 */}
             <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-2 md:p-3">
                 {tab === "props" && (
                     <div className="stable-scroll flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto text-sm">
-                        {/* 上下结构：长内容（描述、MCP、结果）能用满面板宽度 */}
+                        {/* 上下结构：长内容（描述、MCP）能用满面板宽度；评论跟在下面一起滚 */}
                         {/* 平时是普通文字，点一下才变成输入框：目录很少改，摊个输入框在那儿反而抢注意力 */}
                         <Field label="工作目录（只影响新会话）">
                             {workspaceEdit.editing ? (
@@ -616,7 +714,21 @@ export function CardDetail({
                             />
                         </Field>
 
-                        <Field label={job.sessionId ? "选中的 MCP（下个回合生效）" : "允许的 MCP"}>
+                        <Field
+                            label={job.sessionId ? "选中的 MCP（下个回合生效）" : "允许的 MCP"}
+                            // 「清空」放标签行右侧：留在胶囊流里换行时会和上面一行挤到一起
+                            action={
+                                servers.length > 0 && (mcpSelection ?? job.input.mcpServers)?.length !== 0 ? (
+                                    <button
+                                        type="button"
+                                        onClick={() => void applyMcpSelection([])}
+                                        className="rounded px-1.5 py-0.5 text-xs text-muted hover:bg-col hover:text-fg"
+                                    >
+                                        清空
+                                    </button>
+                                ) : undefined
+                            }
+                        >
                             <div className="flex flex-wrap gap-1.5">
                                 {servers.length === 0 && <span className="text-xs text-muted">（没有可选的 MCP）</span>}
                                 {servers.map(server => {
@@ -645,22 +757,10 @@ export function CardDetail({
                                         </button>
                                     );
                                 })}
-                                {servers.length > 0 && (mcpSelection ?? job.input.mcpServers)?.length !== 0 && (
-                                    <button
-                                        onClick={() => void applyMcpSelection([])}
-                                        className="ml-auto rounded-full px-2 py-0.5 text-xs text-muted underline-offset-2 hover:underline"
-                                    >
-                                        清空
-                                    </button>
-                                )}
                             </div>
                         </Field>
 
-                        {job.result?.text && (
-                            <Field label="结果">
-                                <MarkdownBlock content={job.result.text} className="max-h-72 overflow-auto" />
-                            </Field>
-                        )}
+                        {commentsSection}
                     </div>
                 )}
 
@@ -705,7 +805,15 @@ export function CardDetail({
                             </OverflowMenu>
                         </div>
                         <div ref={timelineRef} className="stable-scroll flex min-h-0 flex-1 flex-col overflow-y-auto pr-1">
-                            <Timeline events={events} live={live} />
+                            <Timeline
+                                events={events}
+                                live={live}
+                                onLoadArguments={(seq, callId) => {
+                                    if (!activeSessionId) return Promise.reject(new Error("没有执行会话"));
+                                    return api.getToolArguments(job.id, activeSessionId, seq, callId)
+                                        .then(result => result.arguments);
+                                }}
+                            />
                         </div>
                         {activeSessionId && (
                             <div className="flex shrink-0 flex-col gap-2 border-t border-border pt-2">
@@ -824,105 +932,6 @@ export function CardDetail({
                     </div>
                 )}
 
-                {tab === "comments" && (
-                    <div className="stable-scroll flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
-                        {comments.length === 0 && <p className="text-xs text-muted">还没有评论</p>}
-                        {comments.map(comment => (
-                            <div key={comment.id} className="flex flex-col gap-1.5">
-                                <div className="flex items-center gap-2 text-xs text-muted">
-                                    <span>{comment.author === "agent" ? "agent" : "我"}</span>
-                                    <span>{formatTime(comment.createdAt)}</span>
-                                    {comment.editedAt && <span>已编辑</span>}
-                                </div>
-                                {editingComment?.id === comment.id ? (
-                                    /* Esc 先退出编辑（放弃改动），再按一次才轮到关闭卡片 */
-                                    <div
-                                        className="flex flex-col gap-1"
-                                        onKeyDown={event => {
-                                            if (event.key !== "Escape") return;
-                                            event.preventDefault();
-                                            event.stopPropagation();
-                                            setEditingComment(null);
-                                        }}
-                                    >
-                                        <MdEditor
-                                            value={editingComment.body}
-                                            onChange={body => setEditingComment({ id: comment.id, body })}
-                                            rows={4}
-                                            autoFocus
-                                        />
-                                        <div className="flex gap-1">
-                                            <Button
-                                                variant="primary"
-                                                onClick={async () => {
-                                                    const next = editingComment.body.trim();
-                                                    if (!next) return;
-                                                    await api.updateComment(job.id, comment.id, next).catch(() => {});
-                                                    setEditingComment(null);
-                                                    await refreshComments();
-                                                }}
-                                            >
-                                                保存
-                                            </Button>
-                                            <Button variant="ghost" onClick={() => setEditingComment(null)}>
-                                                取消
-                                            </Button>
-                                            <Button
-                                                variant="ghost"
-                                                className="text-bad"
-                                                onClick={async () => {
-                                                    if (!window.confirm("删除这条评论？")) return;
-                                                    await api.deleteComment(job.id, comment.id).catch(() => {});
-                                                    setEditingComment(null);
-                                                    await refreshComments();
-                                                    await onChanged();
-                                                }}
-                                            >
-                                                删除
-                                            </Button>
-                                        </div>
-                                    </div>
-                                ) : (
-                                    <>
-                                        <MarkdownBlock content={comment.body} />
-                                        <div className="flex gap-1">
-                                        <Button
-                                            variant="ghost"
-                                            onClick={() => setEditingComment({ id: comment.id, body: comment.body })}
-                                        >
-                                            编辑
-                                        </Button>
-                                            <Button
-                                                variant="ghost"
-                                                className="text-bad"
-                                                onClick={async () => {
-                                                    if (!window.confirm("删除这条评论？")) return;
-                                                    await api.deleteComment(job.id, comment.id).catch(() => {});
-                                                    await refreshComments();
-                                                    await onChanged();
-                                                }}
-                                            >
-                                                删除
-                                            </Button>
-                                        </div>
-                                    </>
-                                )}
-                            </div>
-                        ))}
-                        <MdEditor
-                            value={commentDraft}
-                            onChange={setCommentDraft}
-                            rows={3}
-                            placeholder="写评论…（Ctrl/⌘ + Enter 提交）"
-                            onSubmit={() => void submitComment()}
-                        />
-                        <div>
-                            <Button variant="primary" onClick={() => void submitComment()}>
-                                发表评论
-                            </Button>
-                        </div>
-                    </div>
-                )}
             </div>
         </div>
     );

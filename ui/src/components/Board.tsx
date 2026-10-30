@@ -17,10 +17,8 @@ import {
     type DragStartEvent,
 } from "@dnd-kit/core";
 import { useState } from "react";
-import { STATE_TONE, stateLabel } from "../lib/job-state";
 import type { BoardColumnKey, Job } from "../lib/types";
 import { cn } from "../lib/utils";
-import { Badge } from "./ui";
 
 interface ColumnDef {
     key: BoardColumnKey;
@@ -47,7 +45,7 @@ export function columnOf(job: Job): BoardColumnKey {
         case "cancelled":
             return "cancelled";
         default:
-            // failed / lost / interfered：没有「待处理」列了，落到待办等人工处理
+            // failed / lost：没有对应列，落到待办等人工处理
             return "todo";
     }
 }
@@ -78,7 +76,6 @@ function CardBody({ job }: { job: Job }) {
                 </div>
             )}
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
-                <Badge tone={STATE_TONE[job.state]}>{stateLabel(job)}</Badge>
                 {job.input.archivedAt && <span>已归档</span>}
                 {job.attempts > 0 && <span>×{job.attempts}</span>}
                 <span className="font-mono">{job.id.slice(-6)}</span>

@@ -5,8 +5,7 @@ export type JobState =
     | "succeeded"
     | "failed"
     | "cancelled"
-    | "lost"
-    | "interfered";
+    | "lost";
 
 export interface JobInput {
     prompt: string;
@@ -30,12 +29,6 @@ export interface JobInput {
     archivedAt?: string;
 }
 
-export interface JobResult {
-    text: string;
-    aborted: boolean;
-    eventSeq: number;
-}
-
 export interface Job {
     id: string;
     source: string;
@@ -49,7 +42,6 @@ export interface Job {
     createdAt: string;
     startedAt?: string;
     finishedAt?: string;
-    result?: JobResult;
     error?: string;
     retriedFrom?: string;
 }
@@ -135,7 +127,7 @@ export interface AgentEvent {
     };
 }
 
-export type BoardColumnKey = "todo" | "doing" | "review" | "done" | "cancelled";
+export type BoardColumnKey = "todo" | "doing" | "done" | "cancelled";
 
 /** 一次工具调用的视图形状：时间线渲染与按需拉参数都用它。 */
 export type ToolCallView = NonNullable<NonNullable<AgentEvent["payload"]["message"]>["tool_calls"]>[number];

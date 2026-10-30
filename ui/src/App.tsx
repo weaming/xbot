@@ -169,9 +169,6 @@ export default function App() {
         window.addEventListener("keydown", onKeyDown);
         return () => window.removeEventListener("keydown", onKeyDown);
     }, [jobs, focusId, selectedId]);
-    const running = jobs.filter(job => job.state === "running").length;
-    const queued = jobs.filter(job => job.state === "queued").length;
-
     if (showAuth) {
         return (
             <div className="mx-auto mt-[10dvh] w-[min(420px,92vw)] rounded-xl border border-border bg-panel p-5">
@@ -218,9 +215,6 @@ export default function App() {
                     className={`inline-block h-2 w-2 rounded-full ${connected ? "bg-ok" : "bg-bad"}`}
                     title="事件流连接状态"
                 />
-                <span className="hidden text-xs text-muted sm:inline">
-                    进行中 {running} · 排队 {queued}
-                </span>
                 {error && <span className="text-xs text-bad">{error}</span>}
                 <span className="flex-1" />
                 {/* 与相邻按钮同尺寸；选中靠描边高亮，不用勾选框 */}
