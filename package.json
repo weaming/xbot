@@ -10,7 +10,7 @@
     "start": "bun run tui",
     "tui": "bun src/tui/main.ts",
     "build:ui": "cd ui && bun install --silent && bun run build",
-    "build": "bun run build:ui && tsgo && bun run build.mjs",
+    "build": "bun run build:ui && tsc && bun run build.mjs",
     "dev:ui": "cd ui && bun run dev",
     "dev": "bun --watch src/tui/main.ts",
     "test": "bash scripts/test.sh",
@@ -36,7 +36,6 @@
     "@types/chokidar": "^2.1.7",
     "@types/node": "^26.1.2",
     "@types/ws": "^8.18.1",
-    "@typescript/native-preview": "^7.0.0-dev.20260707.2",
     "typescript": "^7.0.2"
   }
 }

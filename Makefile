@@ -19,7 +19,7 @@ build-pack: $(UI_BUNDLE)
 	$(BUNPACK) build src/tui/main.ts -out $(ZBOT_TUI_BIN) -name zbot \
 		-inline .tokjson
 
-# dist-bundle 规则已包含 UI 构建与 tsgo，这里只负责编译成单文件可执行
+# dist-bundle 规则已包含 UI 构建与 tsc，这里只负责编译成单文件可执行
 build-cli: dist-bundle/main.js
 	mkdir -p "$(dir $(ZBOT_TUI_BIN))"
 	$(BUN) build dist-bundle/main.js --compile --no-compile-autoload-dotenv --outfile="$(ZBOT_TUI_BIN)"
@@ -37,7 +37,7 @@ CWD ?= $(CURDIR)
 serve: $(UI_BUNDLE)
 	$(BUN) src/tui/main.ts serve --port $(PORT) --cwd $(CWD)
 
-# 打包模式：全量构建（build:ui + tsgo + bun build）后跑 dist-bundle；
+# 打包模式：全量构建（build:ui + tsc + bun build）后跑 dist-bundle；
 # UI 由 `bun run build` 自己负责，这里不要再挂 $(UI_BUNDLE)，否则同一份 vite 构建跑两遍
 dist-bundle/main.js: $(shell find src -name '*.ts' 2>/dev/null) $(UI_SRC) build.mjs package.json
 	$(BUN) run build
