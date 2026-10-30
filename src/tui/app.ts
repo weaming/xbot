@@ -1036,15 +1036,18 @@ export class ChatApp {
             return;
         }
         const isCurrent = this.store.currentSessionId === sessionId;
+        let hasDeleted = false;
         this.pending.clear(sessionId);
         this.dropDraft(sessionId);
         this.editor.clearSessionPastes(sessionId);
         if (isCurrent) {
             this.turnState.lock(sessionId, "clearing");
             this.syncSubmitState();
+            setLogSession(null);
         }
         try {
             await this.agent.deleteSession(sessionId);
+            hasDeleted = true;
             this.agent.releaseSession(sessionId, { cause: "delete" });
             void this.refreshOwnership(true);
             this.store.removeSessionView(sessionId);
@@ -1058,6 +1061,7 @@ export class ChatApp {
             }
             this.tui.flash("🗑️ 已删除会话");
         } catch (error: any) {
+            if (isCurrent && !hasDeleted) setLogSession(sessionId);
             this.store.pushSystemMessage(`⚠️ 删除失败: ${error.message}`);
         } finally {
             if (isCurrent) {

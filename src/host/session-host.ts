@@ -11,16 +11,14 @@
  * 本文件只负责：会话容器与生命周期、锁与并发保护、对外门面。
  */
 
-import fs from "fs";
 import path from "node:path";
 import { buildSystemPrompt, closeChatSessionTransport, deleteResponsesBaseline, steerChatSession } from "../services/chat-runtime.js";
 import { createEmptySession, eventCwd, SessionReplay } from "../events/session-replay.js";
 import { EventLog } from "../events/event-log.js";
+import { removeSessionArtifacts } from "../events/session-cleanup.js";
 import { listSavedSessionIds } from "../events/session-files.js";
-import { getSessionExchangeLogFile } from "../utils/logger.js";
 import { appendInputHistory, loadInputHistory } from "./input-history.js";
-import { getSessionLogFile } from "../utils/state-paths.js";
-import { getSessionTodosFile, getStartupToolCwd, getToolCwd } from "../utils/runtime-paths.js";
+import { getStartupToolCwd, getToolCwd } from "../utils/runtime-paths.js";
 import { planResume } from "../services/resume-plan.js";
 import { clearMcpSelection, updateMcpSelection } from "../tools/session-mcp-selection.js";
 import {
@@ -728,28 +726,9 @@ export class LocalSessionHost implements SessionHost {
             lock = await acquireSessionLock(sessionId);
             await this.eventLog.delete(sessionId);
             await this.replay.deleteSnapshot(sessionId);
-            await deleteSessionImageAssets(sessionId);
             closeChatSessionTransport(sessionId);
-            await deleteResponsesBaseline(sessionId);
             this.activeSessions.delete(sessionId);
-            // 同步清理该会话的 console 日志。
-            try {
-                fs.unlinkSync(getSessionLogFile(sessionId));
-            } catch {
-                // 日志文件不存在时无需处理。
-            }
-            // 同步清理该会话的 LLM 交换日志。
-            try {
-                fs.unlinkSync(getSessionExchangeLogFile(sessionId));
-            } catch {
-                // 日志文件不存在时无需处理。
-            }
-            // 同步清理该会话的任务清单。
-            try {
-                fs.unlinkSync(getSessionTodosFile(sessionId));
-            } catch {
-                // 文件不存在时无需处理。
-            }
+            await removeSessionArtifacts(sessionId, { skipLock: true });
         } finally {
             try {
                 await this.releaseSessionLockSafely(lock);

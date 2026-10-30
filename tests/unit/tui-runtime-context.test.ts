@@ -3,8 +3,8 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 
-import { redirectLogsToFile } from "../../src/host/runtime-context.js";
-import { getStartupLogFile } from "../../src/utils/state-paths.js";
+import { redirectLogsToFile, setLogSession } from "../../src/host/runtime-context.js";
+import { getSessionLogFile, getStartupLogFile } from "../../src/utils/state-paths.js";
 
 describe("TUI 日志重定向", () => {
     let tmpDir: string;
@@ -33,5 +33,22 @@ describe("TUI 日志重定向", () => {
         console.debug("MCP stderr");
 
         expect(fs.readFileSync(getStartupLogFile(), "utf8")).toContain("MCP stderr");
+    });
+
+    test("删除当前会话前切回启动日志，避免重建已删除的会话日志", () => {
+        previousStateDir = process.env.ZBOT_STATE_DIR;
+        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-tui-log-delete-"));
+        process.env.ZBOT_STATE_DIR = tmpDir;
+        restoreLogs = redirectLogsToFile();
+        setLogSession("sess-deleted");
+        console.debug("before delete");
+
+        const sessionFile = getSessionLogFile("sess-deleted");
+        fs.unlinkSync(sessionFile);
+        setLogSession(null);
+        console.debug("after delete");
+
+        expect(fs.existsSync(sessionFile)).toBe(false);
+        expect(fs.readFileSync(getStartupLogFile(), "utf8")).toContain("after delete");
     });
 });

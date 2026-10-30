@@ -3,6 +3,9 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { getResponsesBaselineFile } from "../../src/utils/state-paths.js";
+import { getSessionLogFile } from "../../src/utils/state-paths.js";
+import { getSessionExchangeLogFile } from "../../src/utils/logger.js";
+import { getSessionTodosFile } from "../../src/utils/runtime-paths.js";
 
 /**
  * 多 TUI 实例协同测试：
@@ -208,9 +211,15 @@ describe("LocalSessionHost 多实例并发协同", () => {
 
         const second = await createToolImageAsset(Buffer.from("second"), "second.png", "image/png", sessionId);
         fs.writeFileSync(baselineFile, "{}");
+        const sessionFiles = [getSessionLogFile(sessionId), getSessionExchangeLogFile(sessionId), getSessionTodosFile(sessionId)];
+        for (const file of sessionFiles) {
+            fs.mkdirSync(path.dirname(file), { recursive: true });
+            fs.writeFileSync(file, "session data");
+        }
         await agent.deleteSession(sessionId);
         expect(fs.existsSync(second.path)).toBe(false);
         expect(fs.existsSync(baselineFile)).toBe(false);
+        for (const file of sessionFiles) expect(fs.existsSync(file)).toBe(false);
     });
 });
 

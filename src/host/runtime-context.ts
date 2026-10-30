@@ -101,9 +101,9 @@ export function redirectLogsToFile(): () => void {
 }
 
 /** 会话就绪后把日志目标切到该会话的文件；日志按 session 分离存储。 */
-export function setLogSession(sessionId: string): void {
+export function setLogSession(sessionId: string | null): void {
     if (currentLogFile) {
-        currentLogFile = getSessionLogFile(sessionId);
+        currentLogFile = sessionId ? getSessionLogFile(sessionId) : getStartupLogFile();
     }
 }
 
