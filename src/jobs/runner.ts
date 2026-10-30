@@ -6,6 +6,7 @@
  * 过期即判 lost（此时副作用未知，绝不自动重试）。
  */
 
+import { Cause, Data, Duration, Effect, Exit, Fiber } from "effect";
 import type { AgentEvent } from "../events/agent-events.js";
 import type { SessionHost } from "../host/session-host-types.js";
 import { withJobContext } from "../tools/job-context.js";
@@ -33,6 +34,16 @@ interface RunningJob {
     workspace: string;
     sessionId?: string;
     abort: () => void;
+    /** 执行 fiber：停机时按它结构化等待收尾，不靠轮询。 */
+    fiber?: Fiber.Fiber<void>;
+}
+
+/** 回合失败的载体：错误通道需要具名错误，取值时再还原成原始异常。 */
+class TurnFailure extends Data.TaggedError("TurnFailure")<{ readonly cause: unknown }> {}
+
+/** 每隔 intervalMs 跑一次（首次也等一个间隔，与 setInterval 一致）；fiber 被中断即停。 */
+function repeatEvery(intervalMs: number, action: Effect.Effect<void>): Effect.Effect<never> {
+    return Effect.forever(Effect.sleep(Duration.millis(intervalMs)).pipe(Effect.andThen(action)));
 }
 
 export interface JobRunnerOptions {
@@ -92,7 +103,7 @@ export class JobRunner {
     private readonly defaultTimeoutSec: number;
     private readonly consumePendingInputs?: (sessionId: string) => string[] | undefined;
     private readonly running = new Map<string, RunningJob>();
-    private timer?: ReturnType<typeof setInterval>;
+    private tickFiber?: Fiber.Fiber<void>;
     private ticking = false;
     private stopping = false;
 
@@ -108,24 +119,22 @@ export class JobRunner {
     }
 
     start(): void {
-        if (this.timer) return;
+        if (this.tickFiber) return;
         // 启动即清理上一进程留下的过期租约：那些 turn 的副作用未知，只能标 lost
         const expired = this.store.expireLeases();
         if (expired.length > 0) {
             console.warn(`[jobs] 上次退出遗留 ${expired.length} 个任务，已标记 lost`);
         }
-        this.timer = setInterval(() => {
-            // 定时器回调抛错会走 uncaughtException 把整个服务带走，这里兜住
-            void this.tick().catch(error => console.error("[jobs] 调度轮询失败:", error));
-        }, this.tickMs);
+        this.tickFiber = Effect.runFork(repeatEvery(this.tickMs, Effect.promise(() => this.tickSafely())));
     }
 
     /** 停止调度并中止在跑的回合；返回时 running 已清空。 */
     async stop(): Promise<void> {
         this.stopping = true;
-        if (this.timer) {
-            clearInterval(this.timer);
-            this.timer = undefined;
+        if (this.tickFiber) {
+            const fiber = this.tickFiber;
+            this.tickFiber = undefined;
+            await Effect.runPromise(Fiber.interrupt(fiber));
         }
         // 中止的是「宿主的回合」，不是自己的 AbortSignal —— 后者没有任何调用方监听
         for (const item of this.running.values()) {
@@ -134,9 +143,18 @@ export class JobRunner {
                 await this.host.abortSession(item.sessionId).catch(() => undefined);
             }
         }
-        const deadline = Date.now() + STOP_WAIT_MS;
-        while (this.running.size > 0 && Date.now() < deadline) {
-            await new Promise(resolve => setTimeout(resolve, 50));
+
+        // 等执行 fiber 收尾：超时说明回合卡在别处，交给进程退出兜底（不能卡死停机）
+        const fibers = [...this.running.values()].flatMap(item => (item.fiber ? [item.fiber] : []));
+        if (fibers.length > 0) {
+            await Effect.runPromise(Effect.race(
+                Effect.forEach(
+                    fibers,
+                    fiber => Fiber.join(fiber).pipe(Effect.exit),
+                    { concurrency: "unbounded", discard: true },
+                ),
+                Effect.sleep(Duration.millis(STOP_WAIT_MS)),
+            ));
         }
         if (this.running.size > 0) {
             console.warn(`[jobs] 停止时仍有 ${this.running.size} 个回合未收尾，交给进程退出兜底`);
@@ -145,7 +163,7 @@ export class JobRunner {
 
     /** 有新任务时立即跑一轮，不必等下一个 tick。 */
     kick(): void {
-        void this.tick();
+        void this.tickSafely();
     }
 
     stats(): RunnerStats {
@@ -201,6 +219,15 @@ export class JobRunner {
         }
     }
 
+    /** 轮询失败只记录：定时回调抛错会走 uncaughtException 把整个服务带走。 */
+    private async tickSafely(): Promise<void> {
+        try {
+            await this.tick();
+        } catch (error) {
+            console.error("[jobs] 调度轮询失败:", error);
+        }
+    }
+
     /** 同步登记到 running 再异步执行：并发计数必须先于下一个 claim。 */
     private dispatch(job: JobRecord): void {
         const controller = new AbortController();
@@ -211,102 +238,120 @@ export class JobRunner {
         };
         this.running.set(job.id, entry);
 
-        void this.execute(job, entry, controller.signal)
-            .catch(error => console.error(`[jobs] ${job.id} 执行异常:`, error))
-            .finally(() => {
+        entry.fiber = Effect.runFork(
+            this.execute(job, entry, controller.signal).pipe(
+                Effect.catchCause(cause => Effect.sync(() => {
+                    console.error(`[jobs] ${job.id} 执行异常:`, Cause.squash(cause));
+                })),
+                Effect.ensuring(Effect.sync(() => {
                 this.running.delete(job.id);
                 // 完成即补位：不必等下一个 tick 周期，队列不会因为 tick 间隔空转
                 if (!this.stopping) this.kick();
-            });
+                })),
+            ),
+        );
     }
 
-    private async execute(job: JobRecord, entry: RunningJob, signal: AbortSignal): Promise<void> {
-        let heartbeat: ReturnType<typeof setInterval> | undefined;
-        let timeout: ReturnType<typeof setTimeout> | undefined;
-        try {
-            const sessionId = await this.ensureSession(job);
+    /**
+     * 跑一个任务：领会话 → 记 running → 在作用域里跑回合。
+     * 租约心跳与回合超时都是作用域内的 fiber，回合结束（含异常）随作用域一起收掉，
+     * 不需要在 finally 里逐个 clearInterval/clearTimeout。
+     */
+    private execute(job: JobRecord, entry: RunningJob, signal: AbortSignal): Effect.Effect<void> {
+        const runner = this;
+
+        return Effect.gen(function* () {
+            const sessionId = yield* Effect.promise(() => runner.ensureSession(job));
             entry.sessionId = sessionId;
             if (signal.aborted) {
                 // 取消发生在建会话期间：任务此时是 leased，必须落终态，否则永远僵尸
-                const cancelled = this.store.get(job.id);
+                const cancelled = runner.store.get(job.id);
                 if (cancelled && !isTerminalState(cancelled.state)) {
                     // 与回合内中止保持同一口径：停机和服务停止要能区分出来
-                    this.store.transition(job.id, "cancelled", {
-                        error: this.stopping ? "服务停止，回合被中止" : "已取消",
+                    runner.store.transition(job.id, "cancelled", {
+                        error: runner.stopping ? "服务停止，回合被中止" : "已取消",
                     });
                 }
                 return;
             }
 
-            this.store.transition(job.id, "running");
-
-            heartbeat = setInterval(() => {
-                if (this.store.renewLease(job.id, this.owner, this.leaseMs)) return;
-                // 租约丢了（被判 lost 或被别人接手）：立刻中止，别再往会话里写
-                void this.host.abortSession(sessionId);
-            }, Math.max(1_000, Math.floor(this.leaseMs / LEASE_RENEW_DIVISOR)));
+            runner.store.transition(job.id, "running");
 
             let timedOut = false;
-            const timeoutMs = (job.input.timeoutSec ?? this.defaultTimeoutSec) * 1000;
-            timeout = setTimeout(() => {
-                timedOut = true;
-                void this.host.abortSession(sessionId);
-            }, timeoutMs);
-
             let aborted = false;
             let failure: unknown;
-            const before = await this.host.readSessionEventsSince(sessionId, 0);
-            try {
+            let before: AgentEvent[] = [];
+
+            const renewEveryMs = Math.max(1_000, Math.floor(runner.leaseMs / LEASE_RENEW_DIVISOR));
+            const heartbeat = repeatEvery(renewEveryMs, Effect.sync(() => {
+                if (runner.store.renewLease(job.id, runner.owner, runner.leaseMs)) return;
+                // 租约丢了（被判 lost 或被别人接手）：立刻中止，别再往会话里写
+                void runner.host.abortSession(sessionId);
+            }));
+
+            const timeoutMs = (job.input.timeoutSec ?? runner.defaultTimeoutSec) * 1_000;
+            const deadline = Effect.sleep(Duration.millis(timeoutMs)).pipe(
+                Effect.andThen(Effect.sync(() => {
+                    timedOut = true;
+                })),
+                Effect.andThen(Effect.promise(() => runner.host.abortSession(sessionId))),
+            );
+
+            yield* Effect.scoped(Effect.gen(function* () {
+                yield* Effect.forkScoped(heartbeat);
+                yield* Effect.forkScoped(deadline);
+
+                before = yield* Effect.promise(() => runner.host.readSessionEventsSince(sessionId, 0));
+
                 // 注入任务上下文：job_comment 工具据此知道往哪张卡片写评论
-                const outcome = await withJobContext({ jobId: job.id, sessionId }, () =>
-                    this.host.sendMessage(sessionId, job.input.prompt, {
-                        // 回合进行中用户追加的输入，在下一次请求前带给模型
-                        ...(this.consumePendingInputs
-                            ? { consumePendingMessages: () => this.consumePendingInputs?.(sessionId) }
-                            : {}),
-                    }),
-                );
-                aborted = outcome.aborted === true;
-            } catch (error) {
-                failure = error;
-            } finally {
-                if (timeout) clearTimeout(timeout);
-                timeout = undefined;
-            }
+                const outcome = yield* Effect.exit(Effect.tryPromise({
+                    try: () => withJobContext({ jobId: job.id, sessionId }, () =>
+                        runner.host.sendMessage(sessionId, job.input.prompt, {
+                            // 回合进行中用户追加的输入，在下一次请求前带给模型
+                            ...(runner.consumePendingInputs
+                                ? { consumePendingMessages: () => runner.consumePendingInputs?.(sessionId) }
+                                : {}),
+                        }),
+                    ),
+                    catch: cause => new TurnFailure({ cause }),
+                }));
+                if (Exit.isSuccess(outcome)) aborted = outcome.value.aborted === true;
+                else {
+                    const squashed = Cause.squash(outcome.cause);
+                    failure = squashed instanceof TurnFailure ? squashed.cause : squashed;
+                }
+            }));
 
             // 可能已被取消：此时 job 已是终态，收尾让给取消方
-            const current = this.store.get(job.id);
+            const current = runner.store.get(job.id);
             if (!current || isTerminalState(current.state)) return;
 
             if (failure) {
-                this.store.transition(job.id, "failed", { error: errorMessage(failure) });
+                runner.store.transition(job.id, "failed", { error: errorMessage(failure) });
                 return;
             }
             if (aborted) {
                 // 停机导致的中止不算失败：否则每次重启都在「待处理」里堆一批失败卡片
-                const stopped = this.stopping;
-                this.store.transition(job.id, stopped ? "cancelled" : "failed", {
+                const stopped = runner.stopping;
+                runner.store.transition(job.id, stopped ? "cancelled" : "failed", {
                     error: stopped ? "服务停止，回合被中止" : timedOut ? "回合超时" : "回合被中止",
                 });
                 return;
             }
 
-            const events = await this.host.readSessionEventsSince(sessionId, lastSeqOf(before));
+            const events = yield* Effect.promise(() => runner.host.readSessionEventsSince(sessionId, lastSeqOf(before)));
             const result: JobResult = {
                 text: extractAssistantText(events),
                 aborted: false,
                 eventSeq: lastSeqOf(events) || lastSeqOf(before),
             };
-            this.store.transition(job.id, "succeeded", { result });
-        } catch (error) {
-            const current = this.store.get(job.id);
+            runner.store.transition(job.id, "succeeded", { result });
+        }).pipe(Effect.catchCause(cause => Effect.sync(() => {
+            const current = runner.store.get(job.id);
             if (current && !isTerminalState(current.state)) {
-                this.store.transition(job.id, "failed", { error: errorMessage(error) });
+                runner.store.transition(job.id, "failed", { error: errorMessage(Cause.squash(cause)) });
             }
-        } finally {
-            if (heartbeat) clearInterval(heartbeat);
-            if (timeout) clearTimeout(timeout);
-        }
+        })));
     }
 
     /**
