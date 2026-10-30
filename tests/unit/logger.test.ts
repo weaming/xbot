@@ -18,6 +18,7 @@ beforeEach(() => {
 
 afterEach(() => {
     delete process.env.ZBOT_STATE_DIR;
+    delete process.env.ZBOT_LLM_LOG_DELTAS;
     fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -108,6 +109,11 @@ describe("LLM exchange 链式增量记录", () => {
 
     function readRequests(): any[] {
         const text = fs.readFileSync(path.join(tmpDir, "logs", "llm-exchange.jsonl"), "utf8");
+        return text.split("\n").filter(Boolean).map(line => JSON.parse(line));
+    }
+
+    function readSessionEntries(sessionId: string): any[] {
+        const text = fs.readFileSync(path.join(tmpDir, "sessions", "http", `${sessionId}.jsonl`), "utf8");
         return text.split("\n").filter(Boolean).map(line => JSON.parse(line));
     }
 
@@ -335,6 +341,79 @@ describe("LLM exchange 链式增量记录", () => {
         expect(response.content.instructions).toBeUndefined();
         expect(response.content.id).toBe("resp-1");
         expect(response.content.output).toEqual([]);
+    });
+
+    test("响应回显的 tools 与请求一致时只记 toolsRef", () => {
+        const sessionId = "sess-tools-ref";
+        const toolsB = [{ type: "function", function: { name: "t2" } }];
+        recordLLMExchange("HTTP_REQUEST", { input: [], tools: toolsA }, { sessionId });
+        const requestId = readSessionEntries(sessionId)[0].content.requestId;
+
+        recordLLMExchange("HTTP_SSE_EVENT", {
+            type: "response.created",
+            response: { id: "resp_1", tools: toolsA, instructions: null, output: [] },
+        }, { sessionId });
+        recordLLMExchange("WS_RECV", { type: "response.completed", response: { id: "resp_1", tools: toolsA } }, { sessionId });
+        // 工具定义不同则保留全量，不做引用
+        recordLLMExchange("WS_RECV", { type: "response.completed", response: { id: "resp_1", tools: toolsB } }, { sessionId });
+
+        const [, created, completed, changed] = readSessionEntries(sessionId);
+        expect(created.content.response.tools).toBeUndefined();
+        expect(created.content.response.toolsRef).toBe(requestId);
+        expect(created.content.response.instructions).toBeNull();
+        expect(completed.content.response.toolsRef).toBe(requestId);
+        expect(changed.content.response.tools).toEqual(toolsB);
+        expect(changed.content.response.toolsRef).toBeUndefined();
+    });
+
+    test("重启后续链仍能引用更早请求里的 tools 全量", async () => {
+        const mod = await import(`../../src/utils/logger.js?toolsref=${Date.now()}`) as typeof import("../../src/utils/logger.js");
+        const sessionId = "sess-tools-ref-reload";
+        const input = [{ role: "user", content: "q0" }];
+        recordLLMExchange("HTTP_REQUEST", { input, tools: toolsA }, { sessionId });
+        // 第二次请求工具未变化，只写 toolsHash
+        recordLLMExchange("HTTP_REQUEST", { input: [...input, { role: "user", content: "q1" }], tools: toolsA }, { sessionId });
+        const [first, second] = readSessionEntries(sessionId).map(entry => entry.content);
+        expect(second.tools).toBeUndefined();
+
+        mod.recordLLMExchange("WS_RECV", { type: "response.created", response: { id: "resp_1", tools: toolsA } }, { sessionId });
+
+        const created = readSessionEntries(sessionId).at(-1)!;
+        expect(created.content.response.toolsRef).toBe(first.requestId);
+    });
+
+    test("回显 tools 补 strict 默认值或键序不同时仍能引用", () => {
+        const sessionId = "sess-tools-ref-echo";
+        const requestTools = [{ type: "function", name: "t1", description: "d", parameters: { type: "object" } }];
+        recordLLMExchange("HTTP_REQUEST", { input: [], tools: requestTools }, { sessionId });
+        const requestId = readSessionEntries(sessionId)[0].content.requestId;
+
+        // 上游回显：补 strict:null，键顺序也不同
+        const echoedTools = [{ strict: null, parameters: { type: "object" }, description: "d", name: "t1", type: "function" }];
+        recordLLMExchange("HTTP_SSE_EVENT", {
+            type: "response.created",
+            response: { id: "resp_1", tools: echoedTools },
+        }, { sessionId });
+
+        const created = readSessionEntries(sessionId).at(-1)!;
+        expect(created.content.response.tools).toBeUndefined();
+        expect(created.content.response.toolsRef).toBe(requestId);
+    });
+
+    test("增量态 delta 事件默认丢弃，ZBOT_LLM_LOG_DELTAS=1 时保留", () => {
+        const sessionId = "sess-deltas";
+        recordLLMExchange("HTTP_SSE_EVENT", { type: "response.output_text.delta", delta: "he" }, { sessionId });
+        recordLLMExchange("HTTP_SSE_EVENT", { type: "response.output_item.done", item: {} }, { sessionId });
+        recordLLMExchange("WS_RECV", { type: "response.reasoning_text.delta", delta: "x" }, { sessionId });
+        recordLLMExchange("WS_RECV", { type: "response.completed", response: { id: "r" } }, { sessionId });
+
+        expect(readSessionEntries(sessionId).map(entry => entry.content.type))
+            .toEqual(["response.output_item.done", "response.completed"]);
+
+        process.env.ZBOT_LLM_LOG_DELTAS = "1";
+        recordLLMExchange("HTTP_SSE_EVENT", { type: "response.output_text.delta", delta: "kept" }, { sessionId });
+
+        expect(readSessionEntries(sessionId).at(-1)!.content.delta).toBe("kept");
     });
 
     test("重启后续链只写新增（从日志尾部恢复历史总数）", async () => {

@@ -128,8 +128,14 @@ export function getSessionExchangeLogFile(sessionId: string): string {
     return path.join(resolveSessionsDir("http"), `${sessionId}.jsonl`);
 }
 
-/** 进程内缓存：tools 全量仅在变化时写入日志，未变化只写 hash。 */
-let lastLoggedToolsHash: string | undefined;
+/** 已写入全量 tools 的请求：响应回显同一份 tools 时只记引用，避免每轮重复写。 */
+interface ToolsEchoRef {
+    hash: string;
+    requestId: string;
+}
+
+/** 进程内缓存：全局日志（无 sessionId）里最近一次写入全量 tools 的请求。 */
+let lastLoggedToolsRef: ToolsEchoRef | undefined;
 
 /** 历史载体字段名：responses 协议用 input，chat_completions 用 messages。 */
 type HistoryField = "input" | "messages";
@@ -141,6 +147,8 @@ interface SessionChainState {
     historyCount: number;
     historyHash?: string;
     toolsHash?: string;
+    /** 最近一次写入全量 tools 的请求，供响应回显引用。 */
+    toolsRef?: ToolsEchoRef;
 }
 
 /** 尾部续链的初始读取窗口：只需最后一条 REQUEST，避免启动时解析整个文件。 */
@@ -180,6 +188,7 @@ function parseChainEntry(line: string): SessionChainState | null {
 
     const c = entry.content ?? {};
     const { field, items } = pickHistory(c);
+    const toolsHash = typeof c.toolsHash === 'string' ? c.toolsHash : undefined;
     return {
         lastRequestId: typeof c.requestId === 'string' ? c.requestId : null,
         // 旧格式没有 historyField/historyCount：其 input/messages 是全量快照，长度即总数。
@@ -187,11 +196,17 @@ function parseChainEntry(line: string): SessionChainState | null {
         historyCount: c.previous_response_id === undefined
             ? (typeof c.historyCount === 'number' ? c.historyCount : items.length) : 0,
         historyHash: c.previous_response_id === undefined && typeof c.historyHash === 'string' ? c.historyHash : undefined,
-        toolsHash: Array.isArray(c.tools) && typeof c.toolsHash === 'string' ? c.toolsHash : undefined,
+        toolsHash,
+        // 只有写了 tools 全量的请求才能被引用
+        toolsRef: Array.isArray(c.tools) && toolsHash && typeof c.requestId === 'string'
+            ? { hash: toolsHash, requestId: c.requestId } : undefined,
     };
 }
 
-/** 从尾部反向找最后一条可解析的 REQUEST；窗口不够（单行超窗口）时按倍数放大。 */
+/**
+ * 从尾部反向找最后一条可解析的 REQUEST，并继续向前找最近一份 tools 全量作为引用目标；
+ * 窗口不够（单行超窗口）时按倍数放大。
+ */
 function readChainFromTail(fd: number, size: number): SessionChainState | null {
     let win = Math.min(size, CHAIN_TAIL_BYTES);
     while (true) {
@@ -202,10 +217,21 @@ function readChainFromTail(fd: number, size: number): SessionChainState | null {
         const lines = buf.toString('utf8').split('\n');
         // 窗口起点不在行首时首段是半行，丢弃。
         const start = from === 0 ? 0 : 1;
+        let latest: SessionChainState | null = null;
         for (let i = lines.length - 1; i >= start; i--) {
             const state = parseChainEntry(lines[i]);
-            if (state) return state;
+            if (!state) continue;
+            if (!latest) {
+                latest = state;
+                if (latest.toolsRef) break;
+                continue;
+            }
+            // 更早的 tools 全量只在 hash 一致时可用（工具定义可能已变化）
+            if (state.toolsRef && state.toolsRef.hash === latest.toolsHash) latest.toolsRef = state.toolsRef;
+            if (latest.toolsRef) break;
         }
+        // 窗口内没找到可引用的 tools 全量时继续放大窗口
+        if (latest && (latest.toolsRef || from === 0)) return latest;
         if (from === 0) return null;
         win = Math.min(size, win * 4);
     }
@@ -236,6 +262,45 @@ function hashOf(value: unknown): string {
     return createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 16);
 }
 
+/**
+ * 工具定义的比对形状：上游回显会给每个工具补 `strict: null/false` 等默认值，键顺序也可能不同；
+ * 先做键排序并去掉这些默认值，才能判断响应回显与请求里是否同一份 tools。
+ */
+function canonicalizeTools(tools: any[]): unknown[] {
+    const canonical = (value: any): any => {
+        if (Array.isArray(value)) return value.map(canonical);
+        if (!value || typeof value !== "object") return value;
+
+        const out: Record<string, any> = {};
+        for (const key of Object.keys(value).sort()) {
+            if (key === "strict" && (value[key] === null || value[key] === false)) continue;
+            out[key] = canonical(value[key]);
+        }
+        return out;
+    };
+    return tools.map(canonical);
+}
+
+/** 工具定义 hash：请求与响应用同一套规范化规则，避免回显默认值导致比对失败。 */
+function toolsHashOf(tools: any[]): string {
+    return hashOf(canonicalizeTools(tools));
+}
+
+/**
+ * 响应回显的 tools 与最近一次请求一致时，改记为对请求记录的引用（toolsRef = requestId），
+ * 避免 created/in_progress/completed 每个事件都重复写一份完整 tools。
+ */
+function referEchoedTools(content: any, ref: ToolsEchoRef | undefined): any {
+    if (!ref || !content || typeof content !== "object") return content;
+    const response = content.response ?? content;
+    if (!response || typeof response !== "object" || !Array.isArray(response.tools)) return content;
+    if (toolsHashOf(response.tools) !== ref.hash) return content;
+
+    const rest = { ...response, toolsRef: ref.requestId };
+    delete rest.tools;
+    return content.response ? { ...content, response: rest } : rest;
+}
+
 /** 将一次 AI 交互编码为单行 JSONL 记录。 */
 export function formatAIInteractionLogEntry(type: string, content: any): string {
     const entry: AIInteractionLogEntry = {
@@ -258,12 +323,24 @@ export function formatAIInteractionLogEntry(type: string, content: any): string 
     });
 }
 
+/** 增量态事件（逐 token 的 delta）默认不落盘：只压缩体积，终态事件仍完整保留。 */
+function isIncrementalDelta(type: LLMExchangeType, content: any): boolean {
+    if (type !== "HTTP_SSE_EVENT" && type !== "WS_RECV") return false;
+    const name = content?.type;
+    if (typeof name !== "string" || !name.endsWith(".delta")) return false;
+    // 需要还原逐帧流式过程时用 ZBOT_LLM_LOG_DELTAS=1 打开
+    const keep = process.env.ZBOT_LLM_LOG_DELTAS;
+    return keep !== "1" && keep !== "true";
+}
+
 /**
  * 记录一次 LLM 协议交换。REQUEST 为链式增量记录：
  *  - requestId + parentRequestId 形成会话内的请求链（同轮重试也成链）；
  *  - 历史（input 或 messages）只写相对上一请求新增的部分，另记 historyCount 供尾部续链；
  *  - tools 仅在内容变化时写全量，否则只写 toolsHash。
- * 旧式 RESPONSE 丢弃上游回显的 tools/instructions；HTTP_RESPONSE、HTTP_SSE_EVENT 和 WS 消息保留原始内容。
+ * 响应里回显的 tools 与请求一致时只写 toolsRef（指向写入全量 tools 的请求）；
+ * 旧式 RESPONSE 丢弃上游回显的 tools/instructions；HTTP_RESPONSE、HTTP_SSE_EVENT 和 WS 消息其余字段保留原始内容。
+ * 增量态事件（*.delta）默认丢弃，只保留终态与控制事件；ZBOT_LLM_LOG_DELTAS=1 时全量记录。
  * 主路径写失败时兜底到 fallback 文件，避免数据丢失。
  */
 export function recordLLMExchange(
@@ -271,6 +348,8 @@ export function recordLLMExchange(
     content: any,
     meta: LLMExchangeMeta = {},
 ): void {
+    if (isIncrementalDelta(type, content)) return;
+
     if (type === "REQUEST" || type === "HTTP_REQUEST") {
         const chain = meta.sessionId
             ? loadSessionChain(meta.sessionId)
@@ -288,10 +367,10 @@ export function recordLLMExchange(
             && field === chain.historyField && chain.historyCount <= items.length ? chain.historyCount : 0;
         const historyHash = content.previous_response_id === undefined ? hashOf(items) : undefined;
         const tools = Array.isArray(content?.tools) ? content.tools : [];
-        const toolsHash = hashOf(tools);
-        const toolsChanged = toolsHash !== (meta.sessionId ? chain.toolsHash : lastLoggedToolsHash);
-        if (meta.sessionId) chain.toolsHash = toolsHash;
-        else lastLoggedToolsHash = toolsHash;
+        const toolsHash = toolsHashOf(tools);
+        const prevToolsRef = meta.sessionId ? chain.toolsRef : lastLoggedToolsRef;
+        const toolsChanged = toolsHash !== prevToolsRef?.hash;
+        const toolsRef = toolsChanged ? { hash: toolsHash, requestId } : prevToolsRef;
         content = {
             ...content,
             requestId,
@@ -308,12 +387,22 @@ export function recordLLMExchange(
         chain.historyField = field;
         chain.historyCount = content.previous_response_id === undefined ? items.length : 0;
         chain.historyHash = historyHash;
-        if (meta.sessionId) sessionChains.set(meta.sessionId, chain);
-    } else if (type === "RESPONSE") {
-        const requestId = meta.requestId ?? (meta.sessionId ? loadSessionChain(meta.sessionId).lastRequestId : undefined);
-        content = omitResponseEcho(content);
-        if (requestId) {
-            content = { ...content, requestId, ...(meta.usage ? { usage: meta.usage } : {}) };
+        chain.toolsHash = toolsHash;
+        chain.toolsRef = toolsRef;
+        if (meta.sessionId) {
+            sessionChains.set(meta.sessionId, chain);
+        } else {
+            lastLoggedToolsRef = toolsRef;
+        }
+    } else {
+        content = referEchoedTools(content, meta.sessionId ? loadSessionChain(meta.sessionId).toolsRef : lastLoggedToolsRef);
+        if (type === "RESPONSE") {
+            const requestId = meta.requestId
+                ?? (meta.sessionId ? loadSessionChain(meta.sessionId).lastRequestId : undefined);
+            content = omitResponseEcho(content);
+            if (requestId) {
+                content = { ...content, requestId, ...(meta.usage ? { usage: meta.usage } : {}) };
+            }
         }
     }
 

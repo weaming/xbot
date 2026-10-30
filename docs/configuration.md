@@ -70,6 +70,7 @@ OPENAI_RESPONSES_EFFORTS=low,high,max
 | `OPENAI_RESPONSES_HOSTED_TOOLS` | Responses 可选托管工具（如 `web_search,tool_search`），上游执行；Chat Completions 无托管工具 |
 | `APPLY_PATCH_MODE` | `apply_patch`（MCP codex 等）的下发形态：`custom` 自由文本（模型直接输出补丁原文）、`off` 原样下发（`function` 为历史值，等价 `off`）。默认 `gpt-*` 用 `custom`，其余（含 DeepSeek）原样 |
 | `ZBOT_MEMORY_USER_ID` | 记忆用户标识，默认 `0` |
+| `ZBOT_LLM_LOG_DELTAS` | `true` 或 `1` 时把流式增量事件（`*.delta`）也写入协议日志；默认丢弃，只保留终态与控制事件 |
 | `NETWORK_PROXY` | 网络和命令行工具使用的代理；TUI 会将容器默认代理地址调整为 `http://localhost:7890` |
 | `OPENAI_PROXY` | 模型 API 请求使用的代理 |
 
@@ -77,7 +78,7 @@ OPENAI_RESPONSES_EFFORTS=low,high,max
 
 `store=false` 时，WS 在当前连接的缓存有效期间仍可用 `previous_response_id` 增量续接；重连后会重新发送完整上下文。显式设置 `OPENAI_RESPONSES_STORE=true` 时，上游若不支持存储会直接报错。
 
-会话的协议日志位于 `sessions/http/<会话 ID>.jsonl`：HTTP 记录实际请求、响应或 SSE 事件，WS 记录请求、收到的消息及错误。同一次请求只记一份：请求统一按请求链记录（`requestId`/`parentRequestId` 与输入增量），其余字段与真实网络请求一致；使用 `previous_response_id` 时保留实际发送的增量 `input`，未变化的工具定义只写 `toolsHash`。WS 的控制消息（steer/interrupt）原样记录为 `WS_SEND`。
+会话的协议日志位于 `sessions/http/<会话 ID>.jsonl`：HTTP 记录实际请求、响应或 SSE 事件，WS 记录请求、收到的消息及错误。同一次请求只记一份：请求统一按请求链记录（`requestId`/`parentRequestId` 与输入增量），其余字段与真实网络请求一致；使用 `previous_response_id` 时保留实际发送的增量 `input`，未变化的工具定义只写 `toolsHash`。响应里回显的 `tools` 与请求一致时只写 `toolsRef`（指向写入该份工具定义的请求 `requestId`），不再逐条重复；工具定义变化时仍保留全量。流式增量事件（`response.output_text.delta` 等 `*.delta`）默认不落盘，只保留 `*.done`、`response.completed` 等终态与错误事件；需要逐帧复刻时设 `ZBOT_LLM_LOG_DELTAS=1`。WS 的控制消息（steer/interrupt）原样记录为 `WS_SEND`。
 
 TUI 的 MCP 服务列表由 `~/.zbot/mcp-servers.yaml` 管理。详见 [MCP 服务配置](mcp.md)。
 
