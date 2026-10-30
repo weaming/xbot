@@ -122,12 +122,9 @@ describe("JobStore 状态迁移", () => {
         store.claimNext("w1", 30_000, new Set());
 
         store.transition(job.id, "running");
-        const done = store.transition(job.id, "succeeded", {
-            result: { text: "完成", aborted: false, eventSeq: 7 },
-        });
+        const done = store.transition(job.id, "succeeded");
 
         expect(done.state).toBe("succeeded");
-        expect(done.result?.text).toBe("完成");
         expect(done.finishedAt).toBeDefined();
         // 终态必须清空租约，否则过期扫描会把它判成 lost
         expect(done.leaseOwner).toBeUndefined();

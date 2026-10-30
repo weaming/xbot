@@ -48,7 +48,6 @@ CREATE TABLE IF NOT EXISTS jobs (
     created_at TEXT NOT NULL,
     started_at TEXT,
     finished_at TEXT,
-    result TEXT,
     error TEXT,
     retried_from TEXT
 );
@@ -109,7 +108,6 @@ interface JobRow {
     created_at: string;
     started_at: string | null;
     finished_at: string | null;
-    result: string | null;
     error: string | null;
     retried_from: string | null;
 }
@@ -182,7 +180,6 @@ function toRecord(row: JobRow): JobRecord {
         createdAt: row.created_at,
         ...(row.started_at ? { startedAt: row.started_at } : {}),
         ...(row.finished_at ? { finishedAt: row.finished_at } : {}),
-        ...(row.result ? { result: JSON.parse(row.result) as JobRecord["result"] } : {}),
         ...(row.error ? { error: row.error } : {}),
         ...(row.retried_from ? { retriedFrom: row.retried_from } : {}),
     };
@@ -406,20 +403,19 @@ export class JobStore {
     transition(
         id: string,
         to: JobState,
-        patch: { result?: JobRecord["result"]; error?: string; sessionId?: string } = {},
+        patch: { error?: string; sessionId?: string } = {},
     ): JobRecord {
         const current = this.getOrThrow(id);
         if (!canTransition(current.state, to)) throw new JobInvalidTransitionError(id, current.state, to);
 
         const terminal = isTerminalState(to);
         this.db.run(
-            `UPDATE jobs SET state = ?, result = COALESCE(?, result), error = COALESCE(?, error),
+            `UPDATE jobs SET state = ?, error = COALESCE(?, error),
                              session_id = COALESCE(?, session_id), finished_at = ?,
                              lease_owner = NULL, lease_until = NULL
              WHERE id = ?`,
             [
                 to,
-                patch.result ? JSON.stringify(patch.result) : null,
                 patch.error ?? null,
                 patch.sessionId ?? null,
                 terminal ? this.isoNow() : null,
@@ -432,7 +428,6 @@ export class JobStore {
             to,
             ...(patch.error ? { error: patch.error } : {}),
         });
-        if (patch.result) this.appendEvent(id, "job_result", { eventSeq: patch.result.eventSeq });
         return this.getOrThrow(id);
     }
 

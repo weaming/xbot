@@ -89,7 +89,7 @@ async function waitFor(
 }
 
 describe("JobRunner 执行", () => {
-    test("跑通后 succeeded 并带上助手输出", async () => {
+    test("跑通后置为 succeeded", async () => {
         const host = createStubHost();
         const { store, runner } = makeRunner(host);
         const job = createJob(store);
@@ -97,7 +97,6 @@ describe("JobRunner 执行", () => {
         runner.kick();
         const done = await waitFor(store, job.id, item => item.state === "succeeded");
 
-        expect(done.result?.text).toBe("完成");
         expect(done.sessionId).toBeDefined();
         expect(done.attempts).toBe(1);
     });

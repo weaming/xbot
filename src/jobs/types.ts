@@ -5,8 +5,6 @@
  * 重试默认复用同一个 Session（失败上下文有价值），要干净上下文时用 freshSession。
  */
 
-import type { UsageInfo } from "../types/chat.js";
-
 /** 终态不可逆：想再跑一次只能新建 Job 并记 retriedFrom。 */
 export type JobState =
     | "queued"
@@ -15,10 +13,9 @@ export type JobState =
     | "succeeded"
     | "failed"
     | "cancelled"
-    | "lost"
-    | "interfered";
+    | "lost";
 
-const TERMINAL_STATES: readonly JobState[] = ["succeeded", "failed", "cancelled", "lost", "interfered"];
+const TERMINAL_STATES: readonly JobState[] = ["succeeded", "failed", "cancelled", "lost"];
 
 /** 看板列：卡片放在哪一列由用户拖拽决定，与任务状态无关。 */
 export const BOARD_COLUMNS = ["todo", "doing", "done", "cancelled"] as const;
@@ -38,7 +35,6 @@ const JOB_STATES: readonly JobState[] = [
     "failed",
     "cancelled",
     "lost",
-    "interfered",
 ];
 
 export function isJobState(value: string): value is JobState {
@@ -57,12 +53,11 @@ export function isTerminalState(state: JobState): boolean {
 const TRANSITIONS: Record<JobState, readonly JobState[]> = {
     queued: ["leased", "cancelled", "failed"],
     leased: ["running", "queued", "lost", "cancelled", "failed"],
-    running: ["succeeded", "failed", "cancelled", "lost", "interfered"],
+    running: ["succeeded", "failed", "cancelled", "lost"],
     succeeded: [],
     failed: [],
     cancelled: [],
     lost: [],
-    interfered: [],
 };
 
 export function canTransition(from: JobState, to: JobState): boolean {
@@ -137,16 +132,6 @@ export interface JobComment {
     deletedAt?: string;
 }
 
-export interface JobResult {
-    /** 回合最终输出文本。 */
-    text: string;
-    /** 回合是被取消的（不等于失败）。 */
-    aborted: boolean;
-    /** 结束时会话事件的最后 seq，客户端据此知道详情流读到哪。 */
-    eventSeq: number;
-    usage?: UsageInfo;
-}
-
 export interface JobRecord {
     id: string;
     /** 来源标识：区分不同调用方，与 idempotencyKey 组成唯一键。 */
@@ -164,7 +149,6 @@ export interface JobRecord {
     createdAt: string;
     startedAt?: string;
     finishedAt?: string;
-    result?: JobResult;
     error?: string;
     /** 由哪个 Job 重试而来。 */
     retriedFrom?: string;
@@ -174,7 +158,6 @@ export type JobEventType =
     | "job_created"
     | "job_state"
     | "job_attempt"
-    | "job_result"
     | "job_updated"
     | "session_added"
     | "comment_added"
@@ -223,7 +206,7 @@ export function columnOf(job: Pick<JobRecord, "state" | "input">): BoardColumn {
         case "cancelled":
             return "cancelled";
         default:
-            // failed / lost / interfered：已经没有「待处理」列，落到待办等人工处理
+            // failed / lost：没有对应列，落到待办等人工处理
             return "todo";
     }
 }

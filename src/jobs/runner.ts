@@ -7,7 +7,6 @@
  */
 
 import { Cause, Data, Duration, Effect, Exit, Fiber } from "effect";
-import type { AgentEvent } from "../events/agent-events.js";
 import type { SessionHost } from "../host/session-host-types.js";
 import { withJobContext } from "../tools/job-context.js";
 import { defaultMcpSelection } from "../mcp/client-manager.js";
@@ -17,7 +16,6 @@ import {
     DEFAULT_TIMEOUT_SEC,
     isTerminalState,
     type JobRecord,
-    type JobResult,
 } from "./types.js";
 
 const DEFAULT_MAX_CONCURRENT = 2;
@@ -66,22 +64,6 @@ export interface JobRunnerOptions {
 export interface RunnerStats {
     queued: number;
     running: number;
-}
-
-/** 从会话事件里取最后一条 assistant 正文：sendMessage 只回状态，不带文本。 */
-function extractAssistantText(events: AgentEvent[]): string {
-    let text = "";
-    for (const event of events) {
-        if (event.type !== "turn_message") continue;
-        const message = event.payload.message;
-        if (message.role !== "assistant") continue;
-        if (typeof message.content === "string" && message.content.trim()) text = message.content;
-    }
-    return text;
-}
-
-function lastSeqOf(events: AgentEvent[]): number {
-    return events.length > 0 ? events[events.length - 1]!.seq : 0;
 }
 
 function errorMessage(error: unknown): string {
@@ -280,7 +262,6 @@ export class JobRunner {
             let timedOut = false;
             let aborted = false;
             let failure: unknown;
-            let before: AgentEvent[] = [];
 
             const renewEveryMs = Math.max(1_000, Math.floor(runner.leaseMs / LEASE_RENEW_DIVISOR));
             const heartbeat = repeatEvery(renewEveryMs, Effect.sync(() => {
@@ -300,8 +281,6 @@ export class JobRunner {
             yield* Effect.scoped(Effect.gen(function* () {
                 yield* Effect.forkScoped(heartbeat);
                 yield* Effect.forkScoped(deadline);
-
-                before = yield* Effect.promise(() => runner.host.readSessionEventsSince(sessionId, 0));
 
                 // 注入任务上下文：job_comment 工具据此知道往哪张卡片写评论
                 const outcome = yield* Effect.exit(Effect.tryPromise({
@@ -339,13 +318,8 @@ export class JobRunner {
                 return;
             }
 
-            const events = yield* Effect.promise(() => runner.host.readSessionEventsSince(sessionId, lastSeqOf(before)));
-            const result: JobResult = {
-                text: extractAssistantText(events),
-                aborted: false,
-                eventSeq: lastSeqOf(events) || lastSeqOf(before),
-            };
-            runner.store.transition(job.id, "succeeded", { result });
+            // 成功只改状态：会话输出留在会话里，任务不再重复保存一份当「结果」
+            runner.store.transition(job.id, "succeeded");
         }).pipe(Effect.catchCause(cause => Effect.sync(() => {
             const current = runner.store.get(job.id);
             if (current && !isTerminalState(current.state)) {
