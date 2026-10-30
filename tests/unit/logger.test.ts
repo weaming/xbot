@@ -262,6 +262,59 @@ describe("LLM exchange 链式增量记录", () => {
         expect(requests[1].messages).toBeUndefined();        // 不污染不存在的字段
     });
 
+    test("带 previous_response_id 的 HTTP 请求保留实际增量输入", () => {
+        const sessionId = "sess-previous-response";
+        const input = [{ role: "user", content: "first" }, { role: "user", content: "next" }];
+        recordLLMExchange("HTTP_REQUEST", { input }, { sessionId });
+        recordLLMExchange("HTTP_REQUEST", {
+            previous_response_id: "resp_1",
+            input: [{ role: "user", content: "latest" }],
+        }, { sessionId });
+        recordLLMExchange("HTTP_REQUEST", { input }, { sessionId });
+
+        const file = path.join(tmpDir, "sessions", "http", `${sessionId}.jsonl`);
+        const requests = fs.readFileSync(file, "utf8").trim().split("\n").map(line => JSON.parse(line).content);
+        expect(requests[1].previous_response_id).toBe("resp_1");
+        expect(requests[1].input).toEqual([{ role: "user", content: "latest" }]);
+        expect(requests[2].input).toEqual(input);
+    });
+
+    test("输入前缀被替换时写入完整 HTTP 请求", () => {
+        const sessionId = "sess-replaced-input";
+        recordLLMExchange("HTTP_REQUEST", { input: [{ role: "user", content: "old" }] }, { sessionId });
+        recordLLMExchange("HTTP_REQUEST", { input: [{ role: "user", content: "new" }] }, { sessionId });
+
+        const file = path.join(tmpDir, "sessions", "http", `${sessionId}.jsonl`);
+        const requests = fs.readFileSync(file, "utf8").trim().split("\n").map(line => JSON.parse(line).content);
+        expect(requests[1].input).toEqual([{ role: "user", content: "new" }]);
+        expect(requests[1].historyBase).toBe(0);
+    });
+
+    test("工具定义在不同会话中分别写入首份全量", () => {
+        recordLLMExchange("HTTP_REQUEST", { input: [], tools: toolsA }, { sessionId: "sess-tools-a" });
+        recordLLMExchange("HTTP_REQUEST", { input: [], tools: toolsA }, { sessionId: "sess-tools-b" });
+
+        for (const sessionId of ["sess-tools-a", "sess-tools-b"]) {
+            const file = path.join(tmpDir, "sessions", "http", `${sessionId}.jsonl`);
+            const entry = JSON.parse(fs.readFileSync(file, "utf8").trim());
+            expect(entry.content.tools).toEqual(toolsA);
+        }
+    });
+
+    test("HTTP 响应与 WS 消息保留完整协议内容", () => {
+        const sessionId = "sess-protocol-frames";
+        const response = { id: "resp_1", tools: toolsA, instructions: "sys", output: [] };
+        const wsMessage = { type: "response.create", previous_response_id: "resp_1", input: [] };
+        recordLLMExchange("HTTP_RESPONSE", response, { sessionId });
+        recordLLMExchange("WS_SEND", wsMessage, { sessionId });
+
+        const file = path.join(tmpDir, "sessions", "http", `${sessionId}.jsonl`);
+        const entries = fs.readFileSync(file, "utf8").trim().split("\n").map(line => JSON.parse(line));
+        expect(entries.map(entry => entry.type)).toEqual(["HTTP_RESPONSE", "WS_SEND"]);
+        expect(entries[0].content).toEqual(response);
+        expect(entries[1].content).toEqual(wsMessage);
+    });
+
     test("历史条数回退（上下文压缩）时整块重写而不是漏记", () => {
         const input = (n: number) => Array.from({ length: n }, (_, i) => ({ role: "user", content: `m${i}` }));
 

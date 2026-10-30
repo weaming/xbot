@@ -77,6 +77,8 @@ OPENAI_RESPONSES_EFFORTS=low,high,max
 
 `store=false` 时，WS 在当前连接的缓存有效期间仍可用 `previous_response_id` 增量续接；重连后会重新发送完整上下文。显式设置 `OPENAI_RESPONSES_STORE=true` 时，上游若不支持存储会直接报错。
 
+会话的协议日志位于 `sessions/http/<会话 ID>.jsonl`：HTTP 记录实际请求、响应或 SSE 事件，WS 记录请求、收到的消息及错误。同一次请求只记一份：请求统一按请求链记录（`requestId`/`parentRequestId` 与输入增量），其余字段与真实网络请求一致；使用 `previous_response_id` 时保留实际发送的增量 `input`，未变化的工具定义只写 `toolsHash`。WS 的控制消息（steer/interrupt）原样记录为 `WS_SEND`。
+
 TUI 的 MCP 服务列表由 `~/.zbot/mcp-servers.yaml` 管理。详见 [MCP 服务配置](mcp.md)。
 
 ## 配置和数据目录

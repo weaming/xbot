@@ -2,6 +2,7 @@ import type OpenAI from "openai";
 import { ResponsesWS } from "openai/resources/responses/ws";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import { createHash } from "node:crypto";
+import { recordLLMExchange } from "../../utils/logger.js";
 import { isInternalHostname } from "../../utils/proxy.js";
 import { buildResponsesContinuation, ResponsesBaselineStore, responsesIdentity, type ResponseBaseline } from "./responses-baseline.js";
 
@@ -130,8 +131,32 @@ export class ResponsesSession {
   private pendingSteers: PendingSteer[] = [];
   private readonly baselineStore: ResponsesBaselineStore;
 
-  constructor(private readonly client: OpenAI, private readonly hasApiKey: boolean, sessionId?: string) {
+  constructor(private readonly client: OpenAI, private readonly hasApiKey: boolean, private readonly sessionId?: string) {
     this.baselineStore = new ResponsesBaselineStore(sessionId, responsesIdentity(client.baseURL, client.apiKey ?? "", client.organization, client.project));
+  }
+
+  private sendWs(socket: ResponsesWS, message: Record<string, any>): void {
+    socket.send(message as any);
+    // 请求创建与 HTTP 一样记为请求（走请求链增量），避免同一次请求既记 REQUEST 又记 WS_SEND；
+    // 其余控制消息（steer/interrupt）保持原样。
+    if (message.type === "response.create") {
+      recordLLMExchange("REQUEST", message, { sessionId: this.sessionId });
+    } else {
+      recordLLMExchange("WS_SEND", message, { sessionId: this.sessionId });
+    }
+  }
+
+  private logWsEvent(event: any): void {
+    if (event.type === "message") {
+      recordLLMExchange("WS_RECV", event.message, { sessionId: this.sessionId });
+    } else if (event.type === "error") {
+      recordLLMExchange("WS_ERROR", this.errorDetails(event.error), { sessionId: this.sessionId });
+    }
+  }
+
+  private errorDetails(error: any): Record<string, unknown> {
+    return { message: error?.message ?? String(error), ...(error?.status ? { status: error.status } : {}),
+      ...(error?.code ? { code: error.code } : {}), ...(error?.error ? { error: error.error } : {}) };
   }
 
   private async loadBaseline(request: Record<string, any>): Promise<void> {
@@ -208,11 +233,11 @@ export class ResponsesSession {
   private sendSteer(steer: PendingSteer, responseId: string): void {
     if (steer.responseId || !this.socket) return;
     steer.responseId = responseId;
-    this.socket.send({
+    this.sendWs(this.socket, {
       type: "response.steer",
       previous_response_id: responseId,
       input: steer.input,
-    } as any);
+    });
   }
 
   private finishSteer(steer: PendingSteer, accepted: boolean): void {
@@ -257,7 +282,7 @@ export class ResponsesSession {
     if (this.baseline || request.previous_response_id !== undefined || !Array.isArray(request.input)) return;
 
     const events = socket.stream();
-    socket.send({ ...request, type: "response.create", generate: false } as any);
+    this.sendWs(socket, { ...request, type: "response.create", generate: false });
     let isOpen = socket.socket.readyState === 1;
     const abort = () => socket.close();
     signal?.addEventListener("abort", abort, { once: true });
@@ -265,6 +290,7 @@ export class ResponsesSession {
     try {
       if (signal?.aborted) throw new DOMException("请求已取消", "AbortError");
       for await (const event of events) {
+        this.logWsEvent(event);
         if (signal?.aborted) throw new DOMException("请求已取消", "AbortError");
         if (event.type === "open") {
           isOpen = true;
@@ -335,11 +361,11 @@ export class ResponsesSession {
     const sendInterrupt = () => {
       if (!responseId || interruptSent || isTerminal) return;
       interruptSent = true;
-      socket.send({
+      this.sendWs(socket, {
         type: "response.interrupt",
         response_id: responseId,
         mode: "discard_partial_items",
-      } as any);
+      });
     };
     const abort = () => sendInterrupt();
     signal?.addEventListener("abort", abort, { once: true });
@@ -357,8 +383,9 @@ export class ResponsesSession {
       if (warmupId) request = { ...request, previous_response_id: warmupId, input: [] };
       canRetryFull = request.previous_response_id !== undefined && params.previous_response_id === undefined;
       const events = socket.stream();
-      socket.send({ ...request, type: "response.create" } as any);
+      this.sendWs(socket, { ...request, type: "response.create" });
       for await (const event of events) {
+        this.logWsEvent(event);
         if (event.type === "open") { isOpen = true; continue; }
         if (event.type === "error") {
           const details = event.error.error as any;
@@ -366,7 +393,7 @@ export class ResponsesSession {
           if (canRetryFull && !isStarted && code === "previous_response_not_found") {
             canRetryFull = false;
             await this.saveBaseline(undefined, fullRequest);
-            socket.send({ ...fullRequest, type: "response.create" } as any);
+            this.sendWs(socket, { ...fullRequest, type: "response.create" });
             continue;
           }
           if (!isOpen && !details) throw new WebSocketConnectError("Responses WebSocket 握手失败", { cause: event.error });
@@ -544,13 +571,22 @@ export class ResponsesSession {
     const canRetry = request.previous_response_id !== undefined && params.previous_response_id === undefined;
     let response: any;
     try {
+      recordLLMExchange("HTTP_REQUEST", { ...request, stream: false }, { sessionId: this.sessionId });
       response = await this.client.responses.create({ ...request, stream: false } as any, { signal });
     } catch (error) {
+      recordLLMExchange("HTTP_ERROR", this.errorDetails(error), { sessionId: this.sessionId });
       if (!canRetry || !isPreviousResponseNotFound(error)) throw error;
       await this.saveBaseline(undefined, fullRequest);
       request = fullRequest;
-      response = await this.client.responses.create({ ...request, stream: false } as any, { signal });
+      recordLLMExchange("HTTP_REQUEST", { ...request, stream: false }, { sessionId: this.sessionId });
+      try {
+        response = await this.client.responses.create({ ...request, stream: false } as any, { signal });
+      } catch (retryError) {
+        recordLLMExchange("HTTP_ERROR", this.errorDetails(retryError), { sessionId: this.sessionId });
+        throw retryError;
+      }
     }
+    recordLLMExchange("HTTP_RESPONSE", response, { sessionId: this.sessionId });
     if (response?.status === "completed" || response?.status === undefined) {
       const baseline = Array.isArray(response?.output) ? this.makeBaseline(fullRequest, response?.id, response.output) : undefined;
       await this.saveBaseline(baseline, fullRequest);
@@ -580,8 +616,10 @@ export class ResponsesSession {
       let shouldRetry = false;
       const outputItems: any[] = [];
       try {
+        recordLLMExchange("HTTP_REQUEST", { ...request, stream: true }, { sessionId: this.sessionId });
         const stream = await this.client.responses.create({ ...request, stream: true } as any, { signal });
         for await (const event of stream as any) {
+          recordLLMExchange("HTTP_SSE_EVENT", event, { sessionId: this.sessionId });
           if (canRetry && !hasEmitted && event.type === "error" && isPreviousResponseNotFound(event)) {
             shouldRetry = true;
             break;
@@ -599,6 +637,7 @@ export class ResponsesSession {
           yield event;
         }
       } catch (error) {
+        recordLLMExchange("HTTP_ERROR", this.errorDetails(error), { sessionId: this.sessionId });
         if (!canRetry || hasEmitted || !isPreviousResponseNotFound(error)) throw error;
         shouldRetry = true;
       }

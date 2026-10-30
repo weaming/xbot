@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createChatClient } from "../../src/tools/chat-orchestrator.js";
@@ -11,6 +11,11 @@ import { prepareRequest } from "../../src/tools/orchestrator/turn-request.js";
 const previousStateDir = process.env.ZBOT_STATE_DIR;
 const previousWebSocket = process.env.OPENAI_RESPONSES_WEBSOCKET;
 const previousStore = process.env.OPENAI_RESPONSES_STORE;
+
+async function readSessionLog(sessionId: string): Promise<any[]> {
+  const file = path.join(process.env.ZBOT_STATE_DIR!, "sessions", "http", `${sessionId}.jsonl`);
+  return (await readFile(file, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+}
 
 afterEach(() => {
   if (previousStateDir === undefined) delete process.env.ZBOT_STATE_DIR;
@@ -62,6 +67,14 @@ test("GPT Responses 默认通过 WebSocket 发送且不请求上游存储", asyn
     expect(requests[0].generate).toBe(false);
     expect(requests[1].store).toBe(false);
     expect(requests[1].previous_response_id).toBe("warmup");
+    const log = await readSessionLog(sessionId);
+    expect(log.map(entry => entry.type)).toEqual(["REQUEST", "WS_RECV", "REQUEST", "WS_RECV"]);
+    // 请求除请求链字段外与真实发送内容一致
+    expect(log[0].content).toMatchObject(requests[0]);
+    expect(log[2].content).toMatchObject({ type: "response.create", previous_response_id: "warmup", input: [] });
+    expect(log[0].content.requestId).toBeString();
+    expect(log[2].content.parentRequestId).toBe(log[0].content.requestId);
+    expect(log[3].content.response.id).toBe("resp_default");
   } finally {
     client.close?.();
     closeResponsesSession(sessionId);
@@ -137,6 +150,14 @@ test("store=true 跨连接及 HTTP/WS 切换续接，失效时重发完整输入
     expect(httpRequests[0]!.body.input).toEqual([next]);
     expect(httpRequests[1]!.body.previous_response_id).toBeUndefined();
     expect(httpRequests[1]!.body.input).toEqual([input, output, next]);
+    const httpLog = await readSessionLog(sessionId);
+    const loggedRequests = httpLog.filter(entry => entry.type === "HTTP_REQUEST");
+    expect(loggedRequests.map(entry => entry.content.previous_response_id)).toEqual(["resp_1", undefined]);
+    expect(loggedRequests[0].content.input).toEqual([next]);
+    expect(loggedRequests[1].content.input).toEqual([input, output, next]);
+    expect(httpLog.some(entry => entry.type === "HTTP_ERROR" && entry.content.status === 400)).toBe(true);
+    expect(httpLog.some(entry => entry.type === "HTTP_RESPONSE" && entry.content.id === "resp_2")).toBe(true);
+    expect(httpLog.find(entry => entry.type === "HTTP_RESPONSE").content.requestId).toBeUndefined();
 
     process.env.OPENAI_RESPONSES_WEBSOCKET = "true";
     const last = createChatClient("key", baseURL, "responses", sessionId);
@@ -229,6 +250,13 @@ test("HTTP SSE 保存输出项并在旧响应不存在时回退", async () => {
     expect(requests[2].previous_response_id).toBeUndefined();
     expect(requests[2].input).toEqual([input, output, next]);
     expect(events.at(-1).type).toBe("response.completed");
+    const log = await readSessionLog(sessionId);
+    const loggedRequests = log.filter(entry => entry.type === "HTTP_REQUEST");
+    expect(loggedRequests.map(entry => entry.content.previous_response_id)).toEqual([undefined, "resp_1", undefined]);
+    expect(loggedRequests[1].content.input).toEqual([next]);
+    expect(log.some(entry => entry.type === "HTTP_SSE_EVENT" && entry.content.type === "codex.rate_limits")).toBe(true);
+    expect(log.some(entry => entry.type === "HTTP_ERROR" && JSON.stringify(entry.content).includes("previous_response_not_found"))).toBe(true);
+    expect(log.at(-1).content.type).toBe("response.completed");
   } finally {
     closeResponsesSession(sessionId);
     await deleteResponsesBaseline(sessionId);

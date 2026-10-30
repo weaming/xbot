@@ -173,7 +173,9 @@ export async function runTurnLoop(ctx: TurnContext): Promise<TurnLoopResult> {
       let hasCompactedAfterOverflow = false;
       let hasRetriedInvalidAssistant = false;
       while (true) {
-        recordLLMExchange("REQUEST", prepared.requestBody, { sessionId: ctx.sessionId });
+        if (prepared.protocol === "chat_completions") {
+          recordLLMExchange("REQUEST", prepared.requestBody, { sessionId: ctx.sessionId });
+        }
         requestStartedAt = Date.now();
         try {
           response = await ctx.sendRequest(prepared.requestBody);
@@ -217,17 +219,19 @@ export async function runTurnLoop(ctx: TurnContext): Promise<TurnLoopResult> {
 
       lastUsageInfo.latestPromptTokens = lastUsageInfo.promptTokens;
 
-      const usageEntry = buildUsageStats({
-        model: ctx.model,
-        requestBody: prepared.requestBody,
-        response: normalized,
-        requestStartedAt,
-        requestKind: ctx.iteration === 1 ? ctx.initialRequestKind : "tool_response",
-        sessionId: ctx.sessionId,
-        ...(ctx.contextEpochId ? { contextEpochId: ctx.contextEpochId } : {}),
-        normalized: lastUsageInfo,
-      });
-      recordLLMExchange("RESPONSE", response, { sessionId: ctx.sessionId, usage: usageEntry });
+      if (prepared.protocol === "chat_completions") {
+        const usageEntry = buildUsageStats({
+          model: ctx.model,
+          requestBody: prepared.requestBody,
+          response: normalized,
+          requestStartedAt,
+          requestKind: ctx.iteration === 1 ? ctx.initialRequestKind : "tool_response",
+          sessionId: ctx.sessionId,
+          ...(ctx.contextEpochId ? { contextEpochId: ctx.contextEpochId } : {}),
+          normalized: lastUsageInfo,
+        });
+        recordLLMExchange("RESPONSE", response, { sessionId: ctx.sessionId, usage: usageEntry });
+      }
       ctx.emit({ type: "usage", usage: lastUsageInfo });
 
       if (!assistantMsg) {

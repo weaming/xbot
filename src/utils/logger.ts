@@ -59,6 +59,16 @@ function getFallbackLogFile(): string {
     return path.join(os.homedir(), '.zbot', 'logs', 'llm-exchange.fallback.jsonl');
 }
 
+function appendLogLine(file: string, line: string): void {
+    try {
+        fs.appendFileSync(file, line, 'utf8');
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.appendFileSync(file, line, 'utf8');
+    }
+}
+
 export type LLMRequestKind = 'user_request' | 'tool_response' | 'context_compaction' | 'cli_request' | 'turn_resume' | 'peer_request';
 
 export interface LLMUsageLogEntry {
@@ -90,6 +100,9 @@ interface AIInteractionLogEntry {
     content: any;
     schemaVersion: number;
 }
+
+type LLMExchangeType = "REQUEST" | "RESPONSE" | "HTTP_REQUEST" | "HTTP_RESPONSE"
+    | "HTTP_SSE_EVENT" | "HTTP_ERROR" | "WS_SEND" | "WS_RECV" | "WS_ERROR";
 
 export interface LLMExchangeMeta {
     requestId?: string;
@@ -126,6 +139,8 @@ interface SessionChainState {
     historyField: HistoryField;
     /** 已落盘的历史总条数（不是本条记录写入的增量条数）。 */
     historyCount: number;
+    historyHash?: string;
+    toolsHash?: string;
 }
 
 /** 尾部续链的初始读取窗口：只需最后一条 REQUEST，避免启动时解析整个文件。 */
@@ -154,14 +169,14 @@ function omitResponseEcho(content: any): any {
 
 /** 解析一行 REQUEST 的链信息；非 REQUEST 或损坏行返回 null。 */
 function parseChainEntry(line: string): SessionChainState | null {
-    if (!line.includes('"REQUEST"')) return null;
+    if (!line.includes('"REQUEST"') && !line.includes('"HTTP_REQUEST"')) return null;
     let entry: any;
     try {
         entry = JSON.parse(line);
     } catch {
         return null; // 截断或损坏行。
     }
-    if (entry?.type !== 'REQUEST') return null;
+    if (entry?.type !== 'REQUEST' && entry?.type !== 'HTTP_REQUEST') return null;
 
     const c = entry.content ?? {};
     const { field, items } = pickHistory(c);
@@ -169,7 +184,10 @@ function parseChainEntry(line: string): SessionChainState | null {
         lastRequestId: typeof c.requestId === 'string' ? c.requestId : null,
         // 旧格式没有 historyField/historyCount：其 input/messages 是全量快照，长度即总数。
         historyField: c.historyField === 'input' || c.historyField === 'messages' ? c.historyField : field,
-        historyCount: typeof c.historyCount === 'number' ? c.historyCount : items.length,
+        historyCount: c.previous_response_id === undefined
+            ? (typeof c.historyCount === 'number' ? c.historyCount : items.length) : 0,
+        historyHash: c.previous_response_id === undefined && typeof c.historyHash === 'string' ? c.historyHash : undefined,
+        toolsHash: Array.isArray(c.tools) && typeof c.toolsHash === 'string' ? c.toolsHash : undefined,
     };
 }
 
@@ -245,11 +263,15 @@ export function formatAIInteractionLogEntry(type: string, content: any): string 
  *  - requestId + parentRequestId 形成会话内的请求链（同轮重试也成链）；
  *  - 历史（input 或 messages）只写相对上一请求新增的部分，另记 historyCount 供尾部续链；
  *  - tools 仅在内容变化时写全量，否则只写 toolsHash。
- * RESPONSE 丢弃上游回显的 tools/instructions，其余原样记录。
+ * 旧式 RESPONSE 丢弃上游回显的 tools/instructions；HTTP_RESPONSE、HTTP_SSE_EVENT 和 WS 消息保留原始内容。
  * 主路径写失败时兜底到 fallback 文件，避免数据丢失。
  */
-export function recordLLMExchange(type: "REQUEST" | "RESPONSE", content: any, meta: LLMExchangeMeta = {}): void {
-    if (type === "REQUEST") {
+export function recordLLMExchange(
+    type: LLMExchangeType,
+    content: any,
+    meta: LLMExchangeMeta = {},
+): void {
+    if (type === "REQUEST" || type === "HTTP_REQUEST") {
         const chain = meta.sessionId
             ? loadSessionChain(meta.sessionId)
             : {
@@ -260,13 +282,16 @@ export function recordLLMExchange(type: "REQUEST" | "RESPONSE", content: any, me
         const requestId = meta.requestId ?? createUlid();
         const { field, items } = pickHistory(content);
         // 协议切换或上下文压缩导致条数回退时整块重写，避免漏记。
-        const prevCount = field === chain.historyField && chain.historyCount <= items.length ? chain.historyCount : 0;
+        const hasMatchingPrefix = chain.historyHash === undefined
+            || chain.historyHash === hashOf(items.slice(0, chain.historyCount));
+        const prevCount = content?.previous_response_id === undefined && hasMatchingPrefix
+            && field === chain.historyField && chain.historyCount <= items.length ? chain.historyCount : 0;
+        const historyHash = content.previous_response_id === undefined ? hashOf(items) : undefined;
         const tools = Array.isArray(content?.tools) ? content.tools : [];
         const toolsHash = hashOf(tools);
-        const toolsChanged = toolsHash !== lastLoggedToolsHash;
-        if (toolsChanged) {
-            lastLoggedToolsHash = toolsHash;
-        }
+        const toolsChanged = toolsHash !== (meta.sessionId ? chain.toolsHash : lastLoggedToolsHash);
+        if (meta.sessionId) chain.toolsHash = toolsHash;
+        else lastLoggedToolsHash = toolsHash;
         content = {
             ...content,
             requestId,
@@ -275,12 +300,14 @@ export function recordLLMExchange(type: "REQUEST" | "RESPONSE", content: any, me
             historyField: field,
             historyBase: prevCount,
             historyCount: items.length,
+            historyHash,
             toolsHash,
             tools: toolsChanged ? tools : undefined,
         };
         chain.lastRequestId = requestId;
         chain.historyField = field;
-        chain.historyCount = items.length;
+        chain.historyCount = content.previous_response_id === undefined ? items.length : 0;
+        chain.historyHash = historyHash;
         if (meta.sessionId) sessionChains.set(meta.sessionId, chain);
     } else if (type === "RESPONSE") {
         const requestId = meta.requestId ?? (meta.sessionId ? loadSessionChain(meta.sessionId).lastRequestId : undefined);
@@ -291,17 +318,14 @@ export function recordLLMExchange(type: "REQUEST" | "RESPONSE", content: any, me
     }
 
     const line = `${formatAIInteractionLogEntry(type, content)}\n`;
-    const { logDir, exchangeFile } = resolveLogFiles();
+    const { exchangeFile } = resolveLogFiles();
     const fallbackFile = getFallbackLogFile();
     const targetFile = meta.sessionId ? getSessionExchangeLogFile(meta.sessionId) : exchangeFile;
     try {
-        fs.mkdirSync(logDir, { recursive: true });
-        fs.mkdirSync(path.dirname(targetFile), { recursive: true });
-        fs.appendFileSync(targetFile, line, 'utf8');
+        appendLogLine(targetFile, line);
     } catch (primaryError) {
         try {
-            fs.mkdirSync(path.dirname(fallbackFile), { recursive: true });
-            fs.appendFileSync(fallbackFile, line, 'utf8');
+            appendLogLine(fallbackFile, line);
         } catch (fallbackError) {
             _error(`[LLM_EXCHANGE_LOG] ${type} entry write failed: primary (${(primaryError as Error).message})`
                 + ` and fallback (${(fallbackError as Error).message}); entry dropped.`);
