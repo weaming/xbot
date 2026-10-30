@@ -181,13 +181,59 @@ export function CardDetail({
         const node = timelineRef.current;
         if (!node) return;
         const onScroll = (): void => {
-            stickToBottom.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48;
             // 滚到顶部就是"要看更早的"：正在拉或已经拉到头时不重复请求
             if (node.scrollTop < 64) void loadOlder();
         };
         node.addEventListener("scroll", onScroll, { passive: true });
         return () => node.removeEventListener("scroll", onScroll);
     }, [tab, activeSessionId, events, older]);
+
+    /**
+     * 贴底判定 + 历史区变矮时的滚动策略。键盘弹起、输入区展开都会让历史区变矮：
+     * - 原本贴底且内容已溢出：跟到新底部，最新消息被输入框顶上去，仍停在视野里
+     * - 原本在看历史，或底部还有空白：原地不动，别被浏览器钳制滚动带走
+     */
+    useEffect(() => {
+        const node = timelineRef.current;
+        if (!node) return;
+        let height = node.clientHeight;
+        let top = node.scrollTop;
+        let selfScroll = false;
+
+        /** 自己写的 scrollTop 不算用户意图，否则会被当成"用户滚到底"改写贴底状态 */
+        const applyScroll = (value: number): void => {
+            top = value;
+            selfScroll = true;
+            node.scrollTop = value;
+            // scroll 事件在本帧之后派发，下一帧再撤标记才挡得住
+            requestAnimationFrame(() => {
+                selfScroll = false;
+            });
+        };
+
+        const onScroll = (): void => {
+            if (selfScroll) return;
+            top = node.scrollTop;
+            stickToBottom.current = node.scrollHeight - top - node.clientHeight < 48;
+        };
+
+        const observer = new ResizeObserver(() => {
+            const next = node.clientHeight;
+            if (next === height) return;
+            height = next;
+            // 内容没溢出时 scrollTop 只能停在 0，这么写本来就不会动
+            if (stickToBottom.current) applyScroll(node.scrollHeight - next);
+            // 变高时浏览器会把超出的 scrollTop 钳回来，这里还原成变之前的位置
+            else if (node.scrollTop !== top) applyScroll(top);
+        });
+
+        node.addEventListener("scroll", onScroll, { passive: true });
+        observer.observe(node);
+        return () => {
+            node.removeEventListener("scroll", onScroll);
+            observer.disconnect();
+        };
+    }, [tab, activeSessionId]);
 
     /** 上翻一页：插入到已有事件之前，并把滚动位置钉在原处，视觉上不跳动。 */
     async function loadOlder(): Promise<void> {
@@ -394,6 +440,16 @@ export function CardDetail({
     const isActive = job.state === "running" || job.state === "leased";
     /** 窄屏且没在输入：输入区只留一行，历史区多出两三行可见高度 */
     const composerExpanded = !narrow || composerFocus || attachments.length > 0;
+    /**
+     * 沉浸态：窄屏一聚焦输入，header 与会话选择行就让出去。
+     * 键盘弹起已经吃掉小半屏，这两行再占着就没剩几行历史可看；
+     * 点一下历史区失焦即收回，不需要额外的开关。
+     */
+    const immersive = narrow && composerExpanded;
+    /** 出错提示：沉浸时 header 不在，改挂到输入区上方，免得报错看不见 */
+    const errorBar = job.error || error
+        ? <p className="text-xs text-bad">{job.error ?? error}</p>
+        : null;
 
     // 桌面铺成一行按钮，窄屏塞进「⋯」菜单：两处共用同一批动作，免得两套状态机各自演进
     const actionNodes = (
@@ -606,23 +662,26 @@ export function CardDetail({
                 event.stopPropagation();
             }}
         >
-            {/* 窄屏：一行完事——标题、属性/会话、⋯、关闭。卡片铺满整屏，纵向空间全给会话历史 */}
-            <header className="flex flex-col gap-1 border-b border-border px-2 py-1.5 md:hidden">
-                <div className="flex items-center gap-1">
-                    {titleNode}
-                    {viewSwitch}
-                    <OverflowMenu triggerClassName="h-9">
-                        {actionNodes}
-                        <div className="mt-0.5 border-t border-border px-2 py-1 text-xs text-muted">
-                            #{job.id.slice(-8)} · {formatTime(job.createdAt)}
-                        </div>
-                    </OverflowMenu>
-                    <Button variant="ghost" className="h-9" onClick={onClose} aria-label="关闭">
-                        ×
-                    </Button>
-                </div>
-                {(job.error || error) && <p className="text-xs text-bad">{job.error ?? error}</p>}
-            </header>
+            {/* 窄屏：一行完事——标题、属性/会话、⋯、关闭。卡片铺满整屏，纵向空间全给会话历史；
+                沉浸态（正在输入）整条让位，把高度让给历史区 */}
+            {!immersive && (
+                <header className="flex flex-col gap-1 border-b border-border px-2 py-1.5 md:hidden">
+                    <div className="flex items-center gap-1">
+                        {titleNode}
+                        {viewSwitch}
+                        <OverflowMenu triggerClassName="h-9">
+                            {actionNodes}
+                            <div className="mt-0.5 border-t border-border px-2 py-1 text-xs text-muted">
+                                #{job.id.slice(-8)} · {formatTime(job.createdAt)}
+                            </div>
+                        </OverflowMenu>
+                        <Button variant="ghost" className="h-9" onClick={onClose} aria-label="关闭">
+                            ×
+                        </Button>
+                    </div>
+                    {errorBar}
+                </header>
+            )}
 
             {/* 桌面：标题 / 元信息 / 动作三行，宽度够用不必收 */}
             <header className="hidden flex-col gap-2 border-b border-border p-3 md:flex">
@@ -643,9 +702,15 @@ export function CardDetail({
             </header>
 
             {/* 外层只负责给高度：各 tab 自己决定滚动，会话历史才能吃满剩余空间 */}
-            <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-2 md:p-3">
+            <div
+                className={cn(
+                    "flex min-h-0 flex-1 flex-col overflow-hidden",
+                    // 沉浸态没有 header，顶部内边距一起去掉，历史区一直顶到面板上沿
+                    immersive ? "px-2 pb-2" : "p-2 md:p-3",
+                )}
+            >
                 {tab === "props" && (
-                    <div className="stable-scroll flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto text-sm">
+                    <div className="stable-scroll flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-contain text-sm">
                         {/* 上下结构：长内容（描述、MCP）能用满面板宽度；评论跟在下面一起滚 */}
                         {/* 平时是普通文字，点一下才变成输入框：目录很少改，摊个输入框在那儿反而抢注意力 */}
                         <Field label="工作目录（只影响新会话）">
@@ -766,7 +831,8 @@ export function CardDetail({
 
                 {tab === "sessions" && (
                     <div className="flex min-h-0 flex-1 flex-col gap-1.5 md:gap-2">
-                        <div className="flex shrink-0 items-center gap-1.5">
+                        {/* 沉浸态连会话下拉一起让出去：切会话先退出输入即可，不值当占着两行高度 */}
+                        <div className={cn("flex shrink-0 items-center gap-1.5", immersive && "hidden")}>
                             {sessions.length === 0 ? (
                                 <span className="flex-1 text-xs text-muted">还没有执行会话</span>
                             ) : (
@@ -804,7 +870,10 @@ export function CardDetail({
                                 )}
                             </OverflowMenu>
                         </div>
-                        <div ref={timelineRef} className="stable-scroll flex min-h-0 flex-1 flex-col overflow-y-auto pr-1">
+                        <div
+                            ref={timelineRef}
+                            className="stable-scroll flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain pr-1"
+                        >
                             <Timeline
                                 events={events}
                                 live={live}
@@ -817,6 +886,7 @@ export function CardDetail({
                         </div>
                         {activeSessionId && (
                             <div className="flex shrink-0 flex-col gap-2 border-t border-border pt-2">
+                                {immersive && errorBar}
                                 <div className={cn("flex gap-1.5", composerExpanded ? "flex-col" : "items-end")}>
                                     <Textarea
                                         ref={composerRef}

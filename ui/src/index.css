@@ -49,6 +49,20 @@ body,
     }
 }
 
+/* 键盘弹起时不给页面留滚动余量：有余量时在输入框上一拖，整页跟着走，
+   输入框和键盘之间就会露出底色。可视区尺寸由 useVisualViewport 写进 CSS 变量，
+   页面高度跟着它走，等于没有可滚的余量。 */
+html,
+body {
+    overflow: hidden;
+    /* 滚到边界别把滚动链甩给页面（iOS 16.4+ 生效） */
+    overscroll-behavior: none;
+}
+
+#root {
+    height: calc(var(--vv-height, 100dvh) + var(--vv-top, 0px));
+}
+
 body {
     margin: 0;
     background: var(--color-bg);
@@ -63,6 +77,27 @@ body {
 /* 拖拽时原卡片半透明，落点由 DragOverlay 呈现 */
 .dragging {
     opacity: 0.4;
+}
+
+/* 全屏浮层（手机上的卡片详情）：四条边直接对应可视区的四条边。
+   软键盘弹起时布局视口未必变（iOS Safari），可视区一定会小：
+   照可视区约束，输入框停在键盘上沿，浏览器就不必把整页往上顶。
+   上下都用边距而不是高度来定：可视区偏移抖动时盒子跟着走，底边始终贴着键盘。 */
+.vv-shell {
+    position: fixed;
+    top: var(--vv-top, 0px);
+    right: 0;
+    bottom: var(--vv-bottom, 0px);
+    left: 0;
+}
+
+/* 桌面（与 Tailwind md 同断点）：回到流内，高度交给 flex */
+@media (min-width: 48rem) {
+    .vv-shell {
+        position: static;
+        top: auto;
+        bottom: auto;
+    }
 }
 
 /* 滚动条：统一成细条 + 语义色。Linux/Windows 的默认滚动条又粗又灰，

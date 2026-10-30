@@ -163,7 +163,7 @@ export function MdEditor({
                         }
                     }}
                     // min-h：内容很少时也要有像样的输入面积，不能缩成一行
-                    className="min-h-[96px] w-full resize-y bg-transparent px-2.5 py-2 text-sm text-fg outline-none"
+                    className="min-h-[96px] w-full resize-y overscroll-contain bg-transparent px-2.5 py-2 text-sm text-fg outline-none"
                 />
             )}
         </div>

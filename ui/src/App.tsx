@@ -5,8 +5,14 @@ import { CreateDialog } from "./components/CreateDialog";
 import { Button, Field, Input } from "./components/ui";
 import { api, ApiError, clearToken, getToken, openEventStream, saveToken } from "./lib/api";
 import type { BoardColumnKey, Job, McpServer } from "./lib/types";
+import { useScrollLock } from "./lib/use-scroll-lock";
+import { useVisualViewport } from "./lib/use-viewport";
 
 export default function App() {
+    // 手机软键盘：整页按可视区排布，详情浮层才能停在键盘上沿
+    useVisualViewport();
+    // 键盘弹起时别让手指把整页拖走（iOS 上只靠 CSS 拦不住）
+    useScrollLock();
     const [token, setToken] = useState(getToken());
     const [jobs, setJobs] = useState<Job[]>([]);
     const [servers, setServers] = useState<McpServer[]>([]);
@@ -260,8 +266,9 @@ export default function App() {
                     />
                 </div>
                 {selected && (
-                    // 窄屏铺满整个视口（连顶部的应用栏一起盖住）：少一层头部就多一行历史
-                    <aside className="fixed inset-0 z-30 flex w-full flex-col bg-panel md:static md:w-[520px] md:shrink-0 md:border-l md:border-border">
+                    // 窄屏铺满整个视口（连顶部的应用栏一起盖住）：少一层头部就多一行历史。
+                    // vv-shell 贴可视区而不是布局视口：键盘弹起时高度自己收，不用浏览器把整页顶上移
+                    <aside className="vv-shell z-30 flex w-full flex-col bg-panel md:w-[520px] md:shrink-0 md:border-l md:border-border">
                         <CardDetail
                             // 换卡片必须换实例：标题/超时是 defaultValue，复用实例会把上一张卡的值写回去
                             key={selected.id}

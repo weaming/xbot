@@ -52,7 +52,8 @@ export function Textarea({
     ref,
     ...props
 }: TextareaHTMLAttributes<HTMLTextAreaElement> & { ref?: Ref<HTMLTextAreaElement> }) {
-    return <textarea ref={ref} className={cn(FIELD, "min-h-[64px] resize-y", className)} {...props} />;
+    // overscroll-contain：内部滚到头也别把滚动链甩给页面，否则手机上拖输入框会带着整页走
+    return <textarea ref={ref} className={cn(FIELD, "min-h-[64px] resize-y overscroll-contain", className)} {...props} />;
 }
 
 /**
