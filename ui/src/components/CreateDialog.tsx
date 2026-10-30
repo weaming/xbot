@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { api, ApiError } from "../lib/api";
 import type { McpServer } from "../lib/types";
-import { cn } from "../lib/utils";
+import { cn, newIdempotencyKey } from "../lib/utils";
 import { abbreviateHome } from "../lib/format";
 import { Button, Dialog, Field, Input } from "./ui";
 import { TagInput } from "./TagInput";
@@ -65,7 +65,7 @@ export function CreateDialog({
             await api.createJob({
                 prompt: prompt.trim(),
                 title: title.trim(),
-                idempotencyKey: crypto.randomUUID(),
+                idempotencyKey: newIdempotencyKey(),
                 ...(workspace.trim() ? { workspace: workspace.trim() } : {}),
                 ...(labels.length > 0 ? { labels } : {}),
                 // 明确传选中集：默认就是「非 lazy 的服务」，用户勾掉谁就少谁。

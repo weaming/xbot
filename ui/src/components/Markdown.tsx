@@ -8,19 +8,15 @@
 import { useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { cn } from "../lib/utils";
+import { cn, copyText } from "../lib/utils";
 
 export function MarkdownBlock({ content, className }: { content: string; className?: string }) {
-    const [copied, setCopied] = useState(false);
+    /** idle / ok / fail：失败也要给反馈，否则手机上是「点了没反应」 */
+    const [copyState, setCopyState] = useState<"idle" | "ok" | "fail">("idle");
 
     const copy = async () => {
-        try {
-            await navigator.clipboard.writeText(content);
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1200);
-        } catch {
-            // 剪贴板不可用（非安全上下文）时静默失败，不打断阅读
-        }
+        setCopyState((await copyText(content)) ? "ok" : "fail");
+        setTimeout(() => setCopyState("idle"), 1200);
     };
 
     return (
@@ -35,7 +31,7 @@ export function MarkdownBlock({ content, className }: { content: string; classNa
                 // 点偏了就是没反应。给一圈描边 + hover 底色，命中范围与视觉一致
                 className="absolute top-1.5 right-1.5 z-10 rounded-md border border-transparent px-2 py-1 text-xs text-muted opacity-70 transition hover:border-border hover:bg-col hover:text-fg hover:opacity-100"
             >
-                {copied ? "已复制" : "复制"}
+                {copyState === "ok" ? "已复制" : copyState === "fail" ? "复制失败" : "复制"}
             </button>
         </div>
     );
