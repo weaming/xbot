@@ -7,6 +7,17 @@ export function cn(...inputs: ClassValue[]): string {
 }
 
 /**
+ * 不可撤销操作的统一确认入口，`false` 表示用户点了取消。
+ *
+ * 规则：删数据、把任务交给调度器跑起来、丢掉本机状态——界面上撤不回来的，
+ * 点了先问一句；能撤销的（归档/取消归档、拖拽换列、就地编辑）不打扰。
+ * 用原生 confirm：手机上就是系统弹窗，比自绘对话框稳，也不占额外交互面积。
+ */
+export function confirmAction(message: string): boolean {
+    return window.confirm(message);
+}
+
+/**
  * 幂等键：`crypto.randomUUID` 只在安全上下文（https 或 localhost）才有，
  * 手机用 http 打开局域网 IP 时它是 undefined——这里给出形状一致的 UUID v4。
  */

@@ -73,8 +73,8 @@ export type LiveFrame =
 
 export interface EventStreamOptions {
     onOpen?(): void;
-    /** 连接失败或断开（会自动重连） */
-    onError?(): void;
+    /** 连接失败或断开（会自动重连）；`status` 只在服务端明确拒绝时给（如 401 不再重连） */
+    onError?(info?: { status?: number }): void;
     /** 普通消息帧（data 为原始字符串） */
     onMessage?(data: string, seq: number): void;
     /** 服务端要求重置时间轴：游标归零，调用方清空已有事件 */
@@ -133,7 +133,7 @@ export function openEventStream(path: string, since: number, options: EventStrea
                     signal: controller.signal,
                 });
                 if (res.status === 401) {
-                    options.onError?.();
+                    options.onError?.({ status: 401 });
                     return; // 令牌不对，重连也没用；让上层弹登录框
                 }
                 if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);

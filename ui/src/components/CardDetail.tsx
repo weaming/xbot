@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, openEventStream } from "../lib/api";
 import type { AgentEvent, ImageAsset, Job, JobComment, JobSession, McpServer } from "../lib/types";
-import { cn } from "../lib/utils";
+import { cn, confirmAction } from "../lib/utils";
 import { abbreviateHome, formatShortTime } from "../lib/format";
 import { useInlineEdit } from "../lib/use-inline-edit";
 import { useNarrow } from "../lib/use-narrow";
@@ -33,7 +33,25 @@ function formatTime(iso?: string): string {
 function sessionOptionLabel(item: JobSession, narrow: boolean): string {
     const head = `#${item.sessionId.slice(-8)} · ${item.purpose === "branch" ? "分支" : "执行"}`;
     const archived = item.archived ? " · 已归档" : "";
-    return narrow ? `${head}${archived}` : `${head} · ${formatShortTime(item.createdAt)}${archived}`;
+    if (narrow) return `${head}${archived}`;
+    const time = formatShortTime(item.createdAt);
+    return time ? `${head} · ${time}${archived}` : `${head}${archived}`;
+}
+
+/**
+ * 打开卡片时的会话占位：`job.sessionId` 本来就知道，
+ * 先用它撑住下拉框、分段计数与输入区，别等网络回来才让界面「长」出来。
+ * 用途与时间留空，加载完再补齐（多数卡片只有一个会话，补齐后几乎看不出差别）。
+ */
+function placeholderSessions(job: Job): JobSession[] {
+    if (!job.sessionId) return [];
+    return [{
+        jobId: job.id,
+        sessionId: job.sessionId,
+        purpose: "run",
+        attempt: 1,
+        createdAt: "",
+    }];
 }
 
 export function CardDetail({
@@ -57,7 +75,9 @@ export function CardDetail({
     const composerRef = useRef<HTMLTextAreaElement>(null);
     const narrow = useNarrow();
     const [comments, setComments] = useState<JobComment[]>([]);
-    const [sessions, setSessions] = useState<JobSession[]>([]);
+    const [sessions, setSessions] = useState<JobSession[]>(() => placeholderSessions(job));
+    /** 会话列表是否到手：没到手前不显示"还没有执行会话"，免得先空后有 */
+    const [sessionsReady, setSessionsReady] = useState(false);
     const [activeSessionId, setActiveSessionId] = useState<string | null>(job.sessionId ?? null);
     const [events, setEvents] = useState<AgentEvent[]>([]);
     /** 更早的事件还有没有、是不是正在拉：时间线首屏只取最后一页，上翻再补 */
@@ -91,7 +111,10 @@ export function CardDetail({
     }, [job.id]);
 
     const refreshSessions = useCallback(async () => {
-        const list = await api.listSessions(job.id).catch(() => []);
+        // 拉失败就保持现状：占位会话是已知事实，别被当成"没有会话"清掉
+        const list = await api.listSessions(job.id).catch(() => null);
+        if (!list) return;
+        setSessionsReady(true);
         setSessions(list);
         setActiveSessionId(current => {
             if (current && list.some(item => item.sessionId === current)) return current;
@@ -329,6 +352,8 @@ export function CardDetail({
     };
 
     const start = async () => {
+        // 交给调度器就开始改文件、烧额度，界面上收不回来，先问一句
+        if (!confirmAction("开始执行？跑起来就撤不回来了。")) return;
         setError(null);
         try {
             await api.startJob(job.id);
@@ -350,6 +375,15 @@ export function CardDetail({
         } catch (cause) {
             setError(cause instanceof ApiError ? cause.message : String(cause));
         }
+    };
+
+    /** 删除评论：软删除保留历史，但界面上撤不回来，仍需确认（编辑态与展示态共用） */
+    const removeComment = async (commentId: string) => {
+        if (!confirmAction("删除这条评论？")) return;
+        await api.deleteComment(job.id, commentId).catch(() => {});
+        setEditingComment(null);
+        await refreshComments();
+        await onChanged();
     };
 
     /**
@@ -401,6 +435,8 @@ export function CardDetail({
     const openBranch = async () => {
         const prompt = window.prompt("在这个新会话里做什么？（留空只建空会话）");
         if (prompt === null) return;
+        // 填了内容就等于当场开跑，界面上收不回来；留空建的空会话随便删
+        if (prompt.trim() && !confirmAction("会立刻开跑，撤不回来。继续？")) return;
         try {
             const created = await api.createSession(job.id, prompt || undefined);
             setActiveSessionId(created.sessionId);
@@ -415,7 +451,7 @@ export function CardDetail({
     /** 归档执行会话：历史仍保留，只是从默认列表隐藏。 */
     const archiveSession = async () => {
         if (!activeSessionId) return;
-        if (!window.confirm("归档这个执行会话？会话会从列表隐藏，历史仍保留。")) return;
+        if (!confirmAction("归档这个会话？历史仍保留。")) return;
         try {
             await api.archiveSession(activeSessionId);
             // 归档后仍留在列表里（标「已归档」），否则取消归档的入口就没了
@@ -494,7 +530,7 @@ export function CardDetail({
                 <Button
                     variant="danger"
                     onClick={async () => {
-                        if (!window.confirm("删除这张卡片？评论、执行记录和它名下的会话都会被永久删除，不可恢复。")) return;
+                        if (!confirmAction("删除卡片？评论、执行记录、会话都会一起删除，不可恢复。")) return;
                         try {
                             await api.deleteJob(job.id);
                             onClose();
@@ -593,13 +629,7 @@ export function CardDetail({
                                 <Button
                                     variant="ghost"
                                     className="text-bad"
-                                    onClick={async () => {
-                                        if (!window.confirm("删除这条评论？")) return;
-                                        await api.deleteComment(job.id, comment.id).catch(() => {});
-                                        setEditingComment(null);
-                                        await refreshComments();
-                                        await onChanged();
-                                    }}
+                                    onClick={() => void removeComment(comment.id)}
                                 >
                                     删除
                                 </Button>
@@ -618,12 +648,7 @@ export function CardDetail({
                                 <Button
                                     variant="ghost"
                                     className="text-bad"
-                                    onClick={async () => {
-                                        if (!window.confirm("删除这条评论？")) return;
-                                        await api.deleteComment(job.id, comment.id).catch(() => {});
-                                        await refreshComments();
-                                        await onChanged();
-                                    }}
+                                    onClick={() => void removeComment(comment.id)}
                                 >
                                     删除
                                 </Button>
@@ -832,14 +857,17 @@ export function CardDetail({
                 {tab === "sessions" && (
                     <div className="flex min-h-0 flex-1 flex-col gap-1.5 md:gap-2">
                         {/* 沉浸态连会话下拉一起让出去：切会话先退出输入即可，不值当占着两行高度 */}
-                        <div className={cn("flex shrink-0 items-center gap-1.5", immersive && "hidden")}>
+                        {/* 行高固定：下拉框是网络回来才有的，别让它把整列顶下去 */}
+                        <div className={cn("flex h-9 shrink-0 items-center gap-1.5", immersive && "hidden")}>
                             {sessions.length === 0 ? (
-                                <span className="flex-1 text-xs text-muted">还没有执行会话</span>
+                                <span className="flex-1 text-xs text-muted">
+                                    {sessionsReady ? "还没有执行会话" : ""}
+                                </span>
                             ) : (
                                 <select
                                     value={activeSessionId ?? ""}
                                     onChange={event => setActiveSessionId(event.target.value)}
-                                    className="min-w-0 flex-1 rounded-md border border-border bg-bg px-2 py-1.5 text-sm"
+                                    className="h-full min-w-0 flex-1 rounded-md border border-border bg-bg px-2 text-sm"
                                 >
                                     {sessions.map(item => (
                                         <option key={item.sessionId} value={item.sessionId}>

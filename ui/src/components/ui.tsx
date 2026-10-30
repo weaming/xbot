@@ -181,7 +181,12 @@ export function Segmented<T extends string>({
                     )}
                 >
                     {option.label}
-                    {(option.count ?? 0) > 0 && <span className="ml-1 text-[10px]">{option.count}</span>}
+                    {/* 计数留固定宽度：从「没有」到「有」只换数字，不挤动左边的标签和标题 */}
+                    {option.count !== undefined && (
+                        <span className="ml-1 min-w-[1.1em] text-center text-[10px] tabular-nums">
+                            {option.count > 0 ? option.count : ""}
+                        </span>
+                    )}
                 </button>
             ))}
         </div>

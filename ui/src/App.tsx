@@ -7,6 +7,22 @@ import { api, ApiError, clearToken, getToken, openEventStream, saveToken } from 
 import type { BoardColumnKey, Job, McpServer } from "./lib/types";
 import { useScrollLock } from "./lib/use-scroll-lock";
 import { useVisualViewport } from "./lib/use-viewport";
+import { confirmAction } from "./lib/utils";
+
+/** 事件流状态：还没连上不算异常，只有连上又断了才值得报红 */
+type ConnState = "connecting" | "live" | "down";
+
+const CONN_DOT: Record<ConnState, string> = {
+    connecting: "bg-muted/40",
+    live: "bg-ok",
+    down: "bg-bad",
+};
+
+const CONN_TITLE: Record<ConnState, string> = {
+    connecting: "正在连接事件流",
+    live: "事件流已连接",
+    down: "事件流断开，正在重连",
+};
 
 export default function App() {
     // 手机软键盘：整页按可视区排布，详情浮层才能停在键盘上沿
@@ -23,7 +39,7 @@ export default function App() {
     const [showArchived, setShowArchived] = useState(false);
     const [defaultCwd, setDefaultCwd] = useState("");
     const [home, setHome] = useState("");
-    const [connected, setConnected] = useState(false);
+    const [conn, setConn] = useState<ConnState>("connecting");
     const [authError, setAuthError] = useState<string | null>(null);
     const [tokenDraft, setTokenDraft] = useState("");
     const [error, setError] = useState<string | null>(null);
@@ -68,8 +84,15 @@ export default function App() {
             const since = history.length > 0 ? history[history.length - 1].seq : 0;
 
             stream = openEventStream("/api/jobs/live", since, {
-                onOpen: () => setConnected(true),
-                onError: () => setConnected(false),
+                onOpen: () => setConn("live"),
+                onError: info => {
+                    // 401 重连也没用：直接回登录页，别留一个永远红的灯
+                    if (info?.status === 401) {
+                        setAuthError("令牌已失效，请重新输入");
+                        return;
+                    }
+                    setConn("down");
+                },
                 onMessage: () => {
                     // 状态流只用来触发刷新：卡片数少，重拉全量比增量合并更不容易出错
                     if (refreshTimer.current) return;
@@ -217,10 +240,9 @@ export default function App() {
         <div className="flex h-full flex-col">
             <header className="flex items-center gap-2 border-b border-border bg-panel px-3 py-2">
                 <h1 className="text-base font-semibold">zbot 任务</h1>
-                <span
-                    className={`inline-block h-2 w-2 rounded-full ${connected ? "bg-ok" : "bg-bad"}`}
-                    title="事件流连接状态"
-                />
+                {/* 刷新时灯是灰的（还在连），连上转绿，断了才红——红色只留给真异常 */}
+                <span className={`inline-block h-2 w-2 shrink-0 rounded-full ${CONN_DOT[conn]}`} title={CONN_TITLE[conn]} />
+                {conn === "down" && <span className="shrink-0 text-xs text-bad">断线重连中</span>}
                 {error && <span className="text-xs text-bad">{error}</span>}
                 <span className="flex-1" />
                 {/* 与相邻按钮同尺寸；选中靠描边高亮，不用勾选框 */}
@@ -236,6 +258,8 @@ export default function App() {
                 <Button
                     variant="ghost"
                     onClick={() => {
+                        // 清掉本机令牌就回不去了：要重新从 token 文件里粘一次，先问一句
+                        if (!confirmAction("退出登录？令牌需要重新粘贴。")) return;
                         // 退出即清干净：令牌、列表、打开的卡片都不留在页面上
                         clearToken();
                         setToken("");
@@ -245,7 +269,7 @@ export default function App() {
                         setTokenDraft("");
                         setAuthError(null);
                         setError(null);
-                        setConnected(false);
+                        setConn("connecting");
                     }}
                 >
                     退出
