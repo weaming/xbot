@@ -123,27 +123,29 @@ function ToolCall({
     const [open, setOpen] = useState(false);
     const hasResult = durationMs !== undefined || resultSize !== undefined;
     return (
-        <div className="rounded-md border border-border bg-col/60">
+        <div className="overflow-hidden rounded-md border border-border bg-col/60">
             <button
                 type="button"
                 onClick={() => setOpen(!open)}
                 className="flex w-full items-center gap-2 px-2.5 py-1.5 text-xs"
             >
                 <span className="text-accent">▸</span>
-                <span className="shrink-0 font-mono">{name}</span>
-                <span className="flex-1 truncate text-left font-mono text-muted">{summary}</span>
-                {hasResult && (
-                    <span
-                        className="shrink-0 text-ok"
-                        title={resultSize === undefined ? undefined : `输出 ${resultSize} 字`}
-                    >
-                        {durationMs === undefined ? "✓" : formatDuration(durationMs)}
-                    </span>
-                )}
-                {/* 大参数只发摘要，参数面板自然也就没有 */}
-                {args !== undefined && (
-                    <span className="ml-auto shrink-0 text-muted">{open ? "收起" : "参数"}</span>
-                )}
+                {/* 工具名限宽截断：MCP 名字动辄二三十个字符，不限宽就会把右边的「参数」顶出行外 */}
+                <span className="max-w-[38%] shrink-0 truncate font-mono">{name}</span>
+                <span className="min-w-0 flex-1 truncate text-left font-mono text-muted">{summary}</span>
+                {/* 尾部信息整组不许压缩，摘要让位给它们 */}
+                <span className="ml-auto flex shrink-0 items-center gap-2">
+                    {hasResult && (
+                        <span
+                            className="text-ok"
+                            title={resultSize === undefined ? undefined : `输出 ${resultSize} 字`}
+                        >
+                            {durationMs === undefined ? "✓" : formatDuration(durationMs)}
+                        </span>
+                    )}
+                    {/* 大参数只发摘要，参数面板自然也就没有 */}
+                    {args !== undefined && <span className="text-muted">{open ? "收起" : "参数"}</span>}
+                </span>
             </button>
             {open && args !== undefined && (
                 <pre className="max-h-60 overflow-auto px-2.5 pb-2 font-mono text-xs break-all whitespace-pre-wrap">
@@ -166,7 +168,7 @@ function ToolStatus({ name, durationMs, size }: { name: string; durationMs?: num
             title={size === undefined ? undefined : `${name} 输出 ${size} 字`}
         >
             <span aria-hidden>←</span>
-            <span className="font-mono">{name}</span>
+            <span className="min-w-0 truncate font-mono">{name}</span>
             {typeof durationMs === "number" && <span className="text-ok">{formatDuration(durationMs)}</span>}
         </div>
     );
