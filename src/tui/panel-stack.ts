@@ -12,7 +12,7 @@
  */
 
 /** 面板种类：只用于展示与诊断，路由不依赖它。 */
-export type PanelKind = "session" | "todo" | "shortcut" | "model" | "question" | "mcp";
+export type PanelKind = "session" | "shortcut" | "model" | "question" | "mcp";
 
 /** 面板必须提供的能力。 */
 interface PanelLike {

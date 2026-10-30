@@ -29,7 +29,7 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
             { keys: "⌘R", desc: "重命名当前会话（终端未转发 ⌘ 时用 ⌘P 面板内 ⌃R）" },
             { keys: "⌃X", desc: "删除当前会话（2 秒内再按一次确认）" },
             { keys: "⌃[ / ⌃]", desc: "上一个 / 下一个会话（legacy 下 ⌃[ 等于 Esc）" },
-            { keys: "⌃T", desc: "任务清单面板" },
+            { keys: "⌃T", desc: "显示 / 收起历史 turn 的改动详情（向上滚动加载更早）" },
             { keys: "⌃O", desc: "展开 / 收起工具调用详情" },
         ],
     },
@@ -105,19 +105,19 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
         ],
     },
     {
-        title: "面板内 · 任务清单（⌃T）/ 快捷键（⌃/）",
+        title: "面板内 · 快捷键（⌃/）",
         entries: [
             { keys: "↑↓ / jk", desc: "滚动一行" },
             { keys: "⌃U / ⌃D", desc: "上 / 下翻页（PgUp / PgDn 同）" },
             { keys: "滚轮", desc: "滚动" },
-            { keys: "Esc / ⌃C", desc: "关闭；⌃T 关闭任务清单，⌃/ 或 F1 关闭快捷键面板" },
+            { keys: "Esc / ⌃C", desc: "关闭；⌃/ 或 F1 也可关闭快捷键面板" },
         ],
     },
     {
         title: "命令",
         entries: [
             { keys: "/new /sessions", desc: "新建会话 / 打开会话面板" },
-            { keys: "/todo /keys", desc: "任务清单面板 / 快捷键面板" },
+            { keys: "/keys", desc: "快捷键面板" },
             { keys: "/clear /delete", desc: "清空当前会话 / 彻底删除会话" },
             { keys: "/close", desc: "关闭当前会话（释放持有，数据保留，⌘P 可重新打开）" },
             { keys: "/archive /unarchive", desc: "归档 / 取消归档当前会话" },

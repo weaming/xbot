@@ -208,6 +208,22 @@ export class ChatStore {
         }
     }
 
+    /**
+     * 回合收尾兜底：落定残留的流式标记。
+     * 实时事件包丢失（或 message_end 到达时状态已切换）时，消息会一直停在
+     * 「运行中」，渲染层就会一直展开工具详情；重放历史前先在这里抹平。
+     */
+    finishStreaming(sessionId?: string): void {
+        const state = this.getSessionState(sessionId);
+        let changed = false;
+        for (const message of state.messages) {
+            if (!message.streaming) continue;
+            message.streaming = false;
+            changed = true;
+        }
+        if (changed) this.notifyMessages();
+    }
+
     setSessions(sessions: SessionView[]): void {
         this.sessions = sortSessions(sessions);
         this.listeners?.onSessionsChanged();

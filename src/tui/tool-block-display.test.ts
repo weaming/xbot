@@ -222,6 +222,36 @@ describe("工具块参数转换", () => {
         expect(rendered).toContain("\x1b[31m");
     });
 
+    test("showDiff=false 时只保留文件名与增删统计", () => {
+        const single = [
+            "```diff",
+            "--- sample.txt",
+            "+++ sample.txt",
+            "@@ -1,2 +1,2 @@",
+            "-old line",
+            "+new line",
+            "```",
+        ].join("\n");
+        expect(stripTerminalSequences(renderCollapsedFileBlocks([{ result: single }], false)))
+            .toBe("🔧 Edited sample.txt (+1 -1)");
+
+        const multiple = [
+            "```diff",
+            "--- first.ts",
+            "+++ first.ts",
+            "@@ -10,2 +10,2 @@",
+            "-old line",
+            "+new line",
+            "--- second.ts",
+            "+++ second.ts",
+            "@@ -20,1 +20,2 @@",
+            "+added line",
+            "```",
+        ].join("\n");
+        expect(stripTerminalSequences(renderCollapsedFileBlocks([{ result: multiple }], false)).split("\n"))
+            .toEqual(["🔧 Edited 2 files (+2 -1)", "  └ first.ts (+1 -1)", "  └ second.ts (+1 -0)"]);
+    });
+
     test("文件变更摘要带耗时并合并且多块耗时", () => {
         const single = renderCollapsedToolBlock({
             name: "write_file",

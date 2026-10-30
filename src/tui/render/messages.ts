@@ -54,6 +54,26 @@ export interface RenderContext {
     spinnerIndex: number;
     /** 终端列数（流式 reasoning 的视口宽度）。 */
     columns: number;
+    /** ⌃T：在正常模式下也展开历史 turn 的改动详情。 */
+    diffDetail: boolean;
+    /** 允许展开改动详情的消息 id（按需向上滚动加载的窗口）。 */
+    diffMessageIds: ReadonlySet<number>;
+    /**
+     * 当前真正在跑的那条 assistant 消息 id（由回合状态推导）。
+     * `null` 表示没有活跃回合；`undefined` 表示调用方未提供，退回消息自身的 streaming 标记。
+     */
+    activeTurnMessageId?: number | null;
+}
+
+/** 该消息是否落在 ⌃T 的详情窗口内；流式消息不受窗口限制。 */
+function isDiffExpanded(message: UiMessage, ctx: RenderContext): boolean {
+    return ctx.diffDetail && ctx.diffMessageIds.has(message.id);
+}
+
+/** 该消息是否属于正在运行的回合。 */
+function isRunningMessage(message: UiMessage, ctx: RenderContext): boolean {
+    if (ctx.activeTurnMessageId !== undefined) return ctx.activeTurnMessageId === message.id;
+    return message.streaming;
 }
 
 /**
@@ -61,7 +81,12 @@ export interface RenderContext {
  * 折叠态变化时通过前缀位一并纳入，保证切换后重绘。
  */
 export function messageRenderKey(message: UiMessage, ctx: RenderContext): string {
-    const flags = `${ctx.detailed ? 1 : 0}${ctx.showReasoning ? 1 : 0}`;
+    const flags = [
+        ctx.detailed ? 1 : 0,
+        ctx.showReasoning ? 1 : 0,
+        isDiffExpanded(message, ctx) ? 1 : 0,
+        isRunningMessage(message, ctx) ? 1 : 0,
+    ].join("");
     if (message.role === "assistant") {
         const timeline = message.timeline ?? [];
         const last = timeline[timeline.length - 1];
@@ -157,7 +182,9 @@ export function renderSystemText(message: UiMessage): string {
 function updateAssistantTimeline(entry: MessageComponents, message: UiMessage, ctx: RenderContext): void {
     const container = entry.timeline!;
     const timeline = message.timeline ?? (message.text ? [{ type: "text", text: message.text }] : []);
-    const showDetail = message.streaming || ctx.detailed;
+    const showDetail = isRunningMessage(message, ctx) || ctx.detailed;
+    // 改动详情：运行中的 turn 始终展开，历史 turn 只在 ⌃T 窗口内展开
+    const showDiff = showDetail || isDiffExpanded(message, ctx);
     const children: Component[] = [];
     // 末条正文只渲染一次：循环外算好，避免每个 text item 都从尾扫一遍 timeline
     const lastTextItem = findLastTextItem(timeline);
@@ -171,8 +198,8 @@ function updateAssistantTimeline(entry: MessageComponents, message: UiMessage, c
         const item = timeline[index]!;
         const fileBlocks = !showDetail ? collectCollapsedFileBlocks(timeline, index) : [];
         const component = fileBlocks.length > 0
-            ? new ToolBlockText(renderCollapsedFileBlocks(fileBlocks), 1, true)
-            : renderTimelineItem(item, lastTextItem, showDetail, entry, ctx);
+            ? new ToolBlockText(renderCollapsedFileBlocks(fileBlocks, showDiff), 1, true)
+            : renderTimelineItem(item, lastTextItem, showDetail, showDiff, entry, ctx);
         if (!component) continue;
         if (children.length > 0) children.push(new Spacer(1));
         children.push(component);
@@ -187,6 +214,7 @@ function renderTimelineItem(
     item: AssistantTimelineItem,
     lastTextItem: AssistantTimelineItem | undefined,
     showDetail: boolean,
+    showDiff: boolean,
     entry: MessageComponents,
     ctx: RenderContext,
 ): Component | undefined {
@@ -233,8 +261,8 @@ function renderTimelineItem(
     const shouldShowTool = showDetail || isAskUser || (isFileMutation && item.block.result !== undefined);
     if (!shouldShowTool) return undefined;
     const text = item.block.expanded
-        ? renderExpandedToolBlock(item.block)
-        : renderCollapsedToolBlock(item.block);
+        ? renderExpandedToolBlock(item.block, showDiff)
+        : renderCollapsedToolBlock(item.block, showDiff);
     return new ToolBlockText(text, 1, isFileMutation);
 }
 

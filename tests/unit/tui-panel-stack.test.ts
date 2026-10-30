@@ -37,7 +37,7 @@ describe("PanelStack 基本栈操作", () => {
         const stack = makeStack();
         const lower = makePanel();
         const upper = makePanel();
-        stack.push({ kind: "todo", panel: lower.panel });
+        stack.push({ kind: "question", panel: lower.panel });
         stack.push({ kind: "shortcut", panel: upper.panel });
 
         expect(stack.routeInput("x")).toBe(true);
@@ -64,7 +64,7 @@ describe("PanelStack 基本栈操作", () => {
         const lower = makePanel();
         const upper = makePanel();
         const closings: string[] = [];
-        stack.push({ kind: "todo", panel: lower.panel });
+        stack.push({ kind: "question", panel: lower.panel });
         stack.push({ kind: "model", panel: upper.panel, onClose: () => closings.push("model") });
 
         stack.pop();
@@ -77,12 +77,12 @@ describe("PanelStack 基本栈操作", () => {
         const stack = makeStack();
         const closings: string[] = [];
         stack.push({ kind: "session", panel: makePanel().panel, onClose: () => closings.push("session") });
-        stack.push({ kind: "todo", panel: makePanel().panel, onClose: () => closings.push("todo") });
+        stack.push({ kind: "question", panel: makePanel().panel, onClose: () => closings.push("question") });
 
         stack.remove("session");
         expect(closings).toEqual(["session"]);
         expect(stack.has("session")).toBe(false);
-        expect(stack.has("todo")).toBe(true);
+        expect(stack.has("question")).toBe(true);
         expect(stack.depth).toBe(1);
     });
 
@@ -90,11 +90,11 @@ describe("PanelStack 基本栈操作", () => {
         const stack = makeStack();
         const closings: string[] = [];
         stack.push({ kind: "session", panel: makePanel().panel, onClose: () => closings.push("session") });
-        stack.push({ kind: "todo", panel: makePanel().panel, onClose: () => closings.push("todo") });
+        stack.push({ kind: "question", panel: makePanel().panel, onClose: () => closings.push("question") });
 
         stack.clear();
         // 自顶向下关闭
-        expect(closings).toEqual(["todo", "session"]);
+        expect(closings).toEqual(["question", "session"]);
         expect(stack.isEmpty).toBe(true);
     });
 });
@@ -135,7 +135,7 @@ describe("PanelStack 输入路由", () => {
         const stack = makeStack();
         const top = makePanel();
         stack.push({ kind: "question", panel: makePanel().panel, intercept: () => false });
-        stack.push({ kind: "todo", panel: top.panel });
+        stack.push({ kind: "model", panel: top.panel });
 
         expect(stack.routeInput("z")).toBe(true);
         expect(top.received).toEqual(["z"]);

@@ -12,6 +12,7 @@ import {
     matchesKey,
 } from "@earendil-works/pi-tui";
 import type { TuiAltScreen } from "@earendil-works/pi-tui";
+import { parseWheelDelta } from "./panel-input.js";
 import { SESSION_SHORTCUTS } from "./slash-commands.js";
 
 /** kitty 协议下 release/repeat 事件不触发全局快捷键（一次按键会收到多个事件）。 */
@@ -45,7 +46,6 @@ export interface GlobalKeyHost {
     isRenaming(): boolean;
     cancelRename(): void;
     openSessionPanel(): void;
-    openTodoPanel(): void;
     openShortcutPanel(): void;
     toggleQuestionPanel(): void;
     continueCurrent(): void;
@@ -70,6 +70,10 @@ export interface GlobalKeyHost {
     /** ⌘R：重命名当前会话标题。 */
     renameCurrentSession(): void;
     toggleDetailed(): void;
+    /** ⌃T：切换历史 turn 的改动详情（⌃O 展开模式下忽略）。 */
+    toggleDiffDetail(): void;
+    /** 向上滚动逼近顶端时追加一批更早 turn 的改动详情。 */
+    expandDiffDetail(): void;
     switchSession(delta: number, includeArchived?: boolean): void;
     /** Ctrl+C 的中止判定：忙碌且未被其他实例锁定。 */
     isInterruptible(): boolean;
@@ -111,10 +115,15 @@ export function bindGlobalKeys(tui: TuiAltScreen, host: GlobalKeyHost): void {
             return { consume: true };
         }
 
-        // Ctrl+T：切换任务清单面板
+        // Ctrl+T：切换历史 turn 的改动详情（⌃O 展开模式下忽略，交由宿主判断）
         if (matchesKey(data, Key.ctrl("t"))) {
-            host.openTodoPanel();
+            host.toggleDiffDetail();
             return { consume: true };
+        }
+
+        // 向上滚动：接近顶端时补一批更早 turn 的改动详情（不拦截滚动本身）
+        if ((parseWheelDelta(data) ?? 0) < 0 || matchesKey(data, Key.pageUp)) {
+            host.expandDiffDetail();
         }
 
         // Ctrl+/ / F1：打开快捷键面板

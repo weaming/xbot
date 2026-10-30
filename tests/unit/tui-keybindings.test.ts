@@ -20,6 +20,10 @@ const K = {
     ctrlB: "\x02",
     ctrlO: "\x0f",
     ctrlU: "\x15",
+    pageUp: "\x1b[5~",
+    /** SGR 滚轮：向上 / 向下各一格 */
+    wheelUp: "\x1b[<64;10;5M",
+    wheelDown: "\x1b[<65;10;5M",
     ctrlRightBracket: "\x1d",
     f1: "\x1bOP",
     esc: "\x1b",
@@ -44,7 +48,6 @@ function setup(overrides: Partial<GlobalKeyHost> = {}): Setup {
         isRenaming: () => false,
         cancelRename: () => calls.push("cancelRename"),
         openSessionPanel: () => calls.push("openSessionPanel"),
-        openTodoPanel: () => calls.push("openTodoPanel"),
         openShortcutPanel: () => calls.push("openShortcutPanel"),
         continueCurrent: () => calls.push("continueCurrent"),
         editorText: () => "",
@@ -55,6 +58,8 @@ function setup(overrides: Partial<GlobalKeyHost> = {}): Setup {
         deletePending: (index) => calls.push(`deletePending:${index}`),
         isDetailed: () => false,
         scrollPage: (direction) => calls.push(`scrollPage:${direction}`),
+        toggleDiffDetail: () => calls.push("toggleDiffDetail"),
+        expandDiffDetail: () => calls.push("expandDiffDetail"),
         requestExitWithConfirm: (label) => calls.push(`requestExitWithConfirm:${label}`),
         newSession: () => calls.push("newSession"),
         requestConfirm: (label, run) => {
@@ -93,7 +98,7 @@ describe("全局快捷键", () => {
         const { calls, send } = setup({ handlePanelInput: () => true });
 
         expect(send(K.ctrlT)).toEqual({ consume: true });
-        expect(calls).not.toContain("openTodoPanel");
+        expect(calls).not.toContain("toggleDiffDetail");
     });
 
     test("面板打开时将 Kitty 长按重复事件交给面板，松开事件不触发面板", () => {
@@ -113,7 +118,7 @@ describe("全局快捷键", () => {
         }
     });
 
-    test("面板 / 会话 / 清单快捷键", () => {
+    test("面板 / 会话 / 改动详情快捷键", () => {
         const { calls, send } = setup();
 
         send(K.ctrlP);
@@ -123,7 +128,7 @@ describe("全局快捷键", () => {
         send(K.ctrlN);
 
         expect(calls).toContain("openSessionPanel");
-        expect(calls).toContain("openTodoPanel");
+        expect(calls).toContain("toggleDiffDetail");
         expect(calls).toContain("openShortcutPanel");
         expect(calls).toContain("newSession");
     });
@@ -133,6 +138,17 @@ describe("全局快捷键", () => {
 
         expect(send(K.ctrlD)).toEqual({ consume: true });
         expect(calls).toContain("requestExitWithConfirm:⌃D");
+    });
+
+    test("向上滚动（滚轮 / PgUp）尝试补齐更早 turn 的改动详情，向下滚动不触发", () => {
+        const up = setup();
+        up.send(K.wheelUp);
+        up.send(K.pageUp);
+        expect(up.calls.filter(call => call === "expandDiffDetail")).toHaveLength(2);
+
+        const down = setup();
+        down.send(K.wheelDown);
+        expect(down.calls).not.toContain("expandDiffDetail");
     });
 
     test("Ctrl+X：输入框为空才触发二次确认，确认后删除会话", () => {
@@ -177,7 +193,7 @@ describe("全局快捷键", () => {
         const { calls, send } = setup({ isRenaming: () => true });
 
         expect(send(K.ctrlT)).toBeUndefined();
-        expect(calls).not.toContain("openTodoPanel");
+        expect(calls).not.toContain("toggleDiffDetail");
 
         expect(send(K.esc)).toEqual({ consume: true });
         expect(calls).toContain("cancelRename");

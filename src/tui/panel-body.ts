@@ -1,6 +1,6 @@
 /**
  * 浮层内部纵向容器：只按顺序渲染子组件，不参与布局分配（高度自适应内容）。
- * 会话面板与任务清单面板共用。
+ * 会话面板与快捷键面板共用。
  */
 
 import type { Component } from "@earendil-works/pi-tui";

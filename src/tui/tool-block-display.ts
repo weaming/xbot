@@ -123,12 +123,12 @@ function shortenTextArg(rawArgs: string): string | undefined {
 }
 
 /** 渲染非展开模式的工具摘要；特殊工具交给专用渲染器处理。 */
-export function renderCollapsedToolBlock(block: CollapsedToolBlock): string {
+export function renderCollapsedToolBlock(block: CollapsedToolBlock, showDiff = true): string {
     const digest = isAskUserTool(block.name) ? parseAskUserBlock(block) : undefined;
     if (digest) return renderAskUserBlock(digest);
 
     if (isFileMutationTool(block.name) && block.result !== undefined) {
-        return renderCollapsedFileBlocks([block]);
+        return renderCollapsedFileBlocks([block], showDiff);
     }
 
     const lines = [theme.tool(`🔧 ${block.name}`) + renderToolBlockStatus([block])];
@@ -164,12 +164,12 @@ function appendStatusToFirstLine(text: string, status: string): string {
 }
 
 /** 渲染展开模式的工具块；文件变更工具（edit_file / write_file）无需显示参数。 */
-export function renderExpandedToolBlock(block: CollapsedToolBlock): string {
+export function renderExpandedToolBlock(block: CollapsedToolBlock, showDiff = true): string {
     const digest = isAskUserTool(block.name) ? parseAskUserBlock(block) : undefined;
     if (digest) return renderAskUserBlock(digest);
 
     if (isFileMutationTool(block.name) && block.result !== undefined) {
-        return renderCollapsedFileBlocks([block]);
+        return renderCollapsedFileBlocks([block], showDiff);
     }
 
     const lines = [theme.tool(`🔧 ${block.name}`) + renderToolBlockStatus([block])];
@@ -254,7 +254,7 @@ export function renderToolBlockResult(toolName: string, result: string, isError 
 }
 
 /** 将多个已完成的文件变更工具块（edit_file/write_file）合并为统一的变更摘要。 */
-export function renderCollapsedFileBlocks(blocks: CollapsedFileBlock[]): string {
+export function renderCollapsedFileBlocks(blocks: CollapsedFileBlock[], showDiff = true): string {
     const files = blocks.flatMap((block) => parseFileBlock(block));
     const errors = blocks.filter((block) => block.result !== undefined && block.isError);
     const status = renderToolBlockStatus(blocks);
@@ -269,11 +269,14 @@ export function renderCollapsedFileBlocks(blocks: CollapsedFileBlock[]): string 
 
     const isPatch = blocks.length > 0 && blocks.every((b) => isApplyPatchTool(b.name ?? ""));
     const toolTag = isPatch ? getPatchToolTag(blocks[0]?.name ?? "apply_patch") : undefined;
-    return appendStatusToFirstLine(renderEditFileOutput(files, true, toolTag), status);
+    return appendStatusToFirstLine(renderEditFileOutput(files, true, toolTag, showDiff), status);
 }
 
-/** 渲染多文件变更：摘要行 + 每文件的子标题与 diff 行。 */
-function renderEditFileOutput(files: EditFileDiff[], includeIcon: boolean, toolTag?: string): string {
+/**
+ * 渲染多文件变更：摘要行 + 每文件的子标题与 diff 行。
+ * `showDiff=false` 时只保留文件名与增删统计（历史 turn 默认形态）。
+ */
+function renderEditFileOutput(files: EditFileDiff[], includeIcon: boolean, toolTag?: string, showDiff = true): string {
     const displayFiles = files.map((file) => ({
         ...file,
         path: displayPath(file.path),
@@ -285,7 +288,12 @@ function renderEditFileOutput(files: EditFileDiff[], includeIcon: boolean, toolT
     const summaryText = toolTag ? `${summary} [${toolTag}]` : summary;
     const lines = [renderEditSummary(summaryText, additions, removals)];
 
-    if (displayFiles.length === 1) {
+    if (!showDiff) {
+        // 多文件仍逐行列名，否则只剩「Updated N files」，看不出改了哪些文件
+        if (displayFiles.length > 1) {
+            for (const file of displayFiles) lines.push(renderFileSubHeader(file));
+        }
+    } else if (displayFiles.length === 1) {
         lines.push(...renderEditDiffLines(displayFiles[0].lines));
     } else {
         for (const file of displayFiles) {

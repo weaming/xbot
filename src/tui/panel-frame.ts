@@ -1,6 +1,6 @@
 /**
  * 浮窗边框：圆角框 + 强调色，套在面板内容外层（内容区精确补齐，右竖线贴边）。
- * 会话 / 任务清单 / 快捷键三处浮层共用同一套边框，靠颜色区分。
+ * 会话 / 快捷键等浮层共用同一套边框，靠颜色区分。
  */
 
 import { visibleWidth } from "@earendil-works/pi-tui";
@@ -11,7 +11,6 @@ import { theme } from "./theme.js";
 /** 各浮层的边框强调色。 */
 export const PANEL_ACCENT = {
     session: theme.commandBorder,
-    todo: theme.statusOk,
     shortcut: theme.statusWarn,
     question: theme.question,
     model: theme.statusOk,

@@ -98,12 +98,6 @@ describe("特征：面板互斥", () => {
         expect(activeKind(app)).toBe("session");
     });
 
-    test("打开任务清单面板后激活项为 todo", () => {
-        const { app } = makeApp();
-        app.openTodoPanel();
-        expect(activeKind(app)).toBe("todo");
-    });
-
     test("打开快捷键面板后激活项为 shortcut", () => {
         const { app } = makeApp();
         app.openShortcutPanel();
@@ -124,12 +118,12 @@ describe("特征：面板互斥", () => {
 
         // 再开另一个面板：先关旧的，结果仍是单值
         app.closeActivePanel();
-        app.openTodoPanel();
+        app.openShortcutPanel();
         const second = activeKind(app);
 
         expect(first).toBe("session");
-        expect(second).toBe("todo");
-        expect(activeKind(app)).toBe("todo");
+        expect(second).toBe("shortcut");
+        expect(activeKind(app)).toBe("shortcut");
     });
 });
 
@@ -165,7 +159,7 @@ describe("特征：归属轮询生命周期", () => {
 
     test("非会话面板不启动归属轮询", () => {
         const { app } = makeApp();
-        app.openTodoPanel();
+        app.openShortcutPanel();
         expect(app.ownershipTimer).toBeNull();
     });
 });

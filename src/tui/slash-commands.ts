@@ -9,7 +9,6 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     { name: "new", description: "新建会话" },
     { name: "review", description: "发起 dev-review → 修复循环，通过后暂存并提交" },
     { name: "sessions", description: "打开会话面板（搜索 / 切换 / 管理）" },
-    { name: "todo", description: "打开任务清单面板（Ctrl+T）" },
     { name: "tasks", description: "查看或管理后台 shell 任务（list/status/wait/stop）" },
     { name: "ps", description: "列出当前会话正在运行的后台任务" },
     { name: "stop", description: "终止当前会话运行中的后台任务（可指定 id）" },
@@ -57,7 +56,6 @@ export const TAB_LINK_PREFIX = "zbot://session/";
 /** 会话面板与新建会话的点击目标（由 TUI 内部处理，不交给系统浏览器）。 */
 export const SESSION_PANEL_URL = "zbot://sessions";
 export const SESSION_NEW_URL = "zbot://new";
-export const TODO_PANEL_URL = "zbot://todos";
 export const SHORTCUT_PANEL_URL = "zbot://keys";
 
 /** Ctrl+C / Ctrl+D 防误退确认窗口（ms）：窗口内再按一次退出键才真正退出。 */
@@ -108,7 +106,6 @@ export function buildHelpText(): string {
         "  /new      新建会话",
         "  /review   发送 dev-review → 修复循环指令（通过后暂存并提交）",
         "  /sessions 打开会话面板（⌘P / ⌃P）",
-        "  /todo     打开任务清单面板（⌃T）",
         "  /tasks [list]                  列出当前会话的后台任务",
         "  /tasks status <task_id>        查看任务状态与输出",
         "  /tasks wait <task_id> [秒]     等待任务完成（默认 10 秒）",

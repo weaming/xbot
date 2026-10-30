@@ -55,7 +55,7 @@ describe("浮层矩形推算", () => {
                 },
             } as any;
 
-            for (const kind of ["session", "todo", "shortcut", "question"] as const) {
+            for (const kind of ["session", "shortcut", "question", "model"] as const) {
                 openPanelOverlay(tui, new Text("panel"), kind);
 
                 expect(options.width).toBe(panelBounds(tui, 0).width);

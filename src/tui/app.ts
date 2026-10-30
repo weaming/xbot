@@ -37,7 +37,6 @@ import {
     SHORTCUT_PANEL_URL,
     SLASH_COMMANDS,
     TAB_LINK_PREFIX,
-    TODO_PANEL_URL,
     truncateInline,
     wrapAppLink,
 } from "./slash-commands.js";
@@ -70,7 +69,6 @@ import { isAskUserTool } from "./tool-block-parse.js";
 import { PanelFrame } from "./panel-frame.js";
 import { ShortcutPanel } from "./shortcut-panel.js";
 import { ModelPanel } from "./model-panel.js";
-import { TodoPanel } from "./todo-panel.js";
 import {
     setUserQuestionChannel,
     type UserAnswer,
@@ -137,6 +135,9 @@ interface PendingQuestion {
 
 /** 需要当前会话才能执行的命令（无会话时直接提示，不静默失败）。 */
 const SESSION_REQUIRED_COMMANDS = new Set(["/clear", "/archive", "/unarchive", "/delete", "/close", "/compact", "/continue", "/system", "/model", "/cwd"]);
+
+/** ⌃T 改动详情：初始展开的 turn 数，也是向上滚动时每批加载的 turn 数。 */
+const DIFF_TURN_BATCH = 2;
 
 /**
  * 释放会话后的提示：按发起方区分，避免把本实例的主动操作说成"被其他实例拿走"。
@@ -276,6 +277,10 @@ export class ChatApp {
     /** 每个会话的 lazy 启用集保存队列：连按空格时合并成最新一份，串行落盘。 */
     private readonly lazySaveQueues = new Map<string, { running: boolean; queued?: string[] }>();
     private detailed = false;
+    /** ⌃T：正常模式下也展开历史 turn 的改动详情。 */
+    private diffDetail = false;
+    /** 已展开详情的 turn 数：向上滚动到顶端时按批增加。 */
+    private diffTurnWindow = DIFF_TURN_BATCH;
     private exiting = false;
     /** 高危操作的待确认状态：同一标签在 2 秒内再按一次才执行。 */
     private pendingConfirm: { label: string; run: () => void; armedAt: number } | null = null;
@@ -646,9 +651,6 @@ export class ChatApp {
                 break;
             case "/sessions":
                 this.openSessionPanel();
-                break;
-            case "/todo":
-                this.openTodoPanel();
                 break;
             case "/tasks":
                 await this.showBackgroundTasks(rest, sessionId);
@@ -1100,7 +1102,6 @@ export class ChatApp {
             isRenaming: () => this.renameSessionId !== null,
             cancelRename: () => this.cancelRename(),
             openSessionPanel: () => this.openSessionPanel(),
-            openTodoPanel: () => this.openTodoPanel(),
             openShortcutPanel: () => this.openShortcutPanel(),
             toggleQuestionPanel: () => this.toggleQuestionPanel(),
             continueCurrent: () => { void this.continueCurrent(); },
@@ -1123,6 +1124,8 @@ export class ChatApp {
             selectSessionTab: (index) => this.selectSessionTab(index),
             renameCurrentSession: () => this.renameCurrentSession(),
             toggleDetailed: () => this.toggleDetailed(),
+            toggleDiffDetail: () => this.toggleDiffDetail(),
+            expandDiffDetail: () => this.expandDiffDetail(),
             switchSession: (delta, includeArchived) => { void this.switchSession(delta, includeArchived); },
             isInterruptible: () => this.isInterruptible(),
             detachCurrentWork: () => this.detachCurrentWork(),
@@ -1963,6 +1966,8 @@ export class ChatApp {
     private onAgentTurnFinished(sessionId: string): void {
         // 回合真正结束：先摘掉外部忙闲占位，避免 tab 停在 spinner 上
         this.turnState.unlock(sessionId, "resuming");
+        // 兜底落定流式标记：漏掉 message_end 时消息会一直显示为运行中
+        this.store.finishStreaming(sessionId);
         if (this.store.currentSessionId === sessionId) {
             this.syncSubmitState();
             this.renderTabBar();
@@ -2349,29 +2354,6 @@ export class ChatApp {
         this.panels.remove("session");
     }
 
-    /** 打开任务清单面板（Ctrl+T / /todo / 状态栏 ☐ 链接）：只读展示当前会话 todo。 */
-    private openTodoPanel(): void {
-        if (!this.panels.isEmpty || this.exiting) return;
-        const panel = new TodoPanel({
-            visibleRows: panelContentRows(this.tui),
-            load: () => readSessionTodos(this.store.currentSessionId ?? undefined),
-            close: () => this.closeTodoPanel(),
-        });
-        const handle = openPanelOverlay(this.tui, panel, "todo");
-        this.panels.push({
-            kind: "todo",
-            panel,
-            meta: handle,
-            onClose: () => this.afterPanelClosed(handle),
-        });
-        this.writeWheelLog("打开面板 todo");
-        this.tui.requestRender();
-    }
-
-    private closeTodoPanel(): void {
-        this.panels.remove("todo");
-    }
-
     /** 打开快捷键面板（Ctrl+/ / F1 / /keys）：只读展示全部键位，行数按终端高度推算。 */
     private openShortcutPanel(): void {
         if (!this.panels.isEmpty || this.exiting) return;
@@ -2712,10 +2694,6 @@ export class ChatApp {
         }
         if (url === SESSION_NEW_URL) {
             void this.newSession();
-            return;
-        }
-        if (url === TODO_PANEL_URL) {
-            this.openTodoPanel();
             return;
         }
         if (url === SHORTCUT_PANEL_URL) {
@@ -3078,9 +3056,11 @@ export class ChatApp {
         }, 16);
     }
 
+    /** 清空消息树；详情窗口一并复位，换会话后不沿用上一批的展开量。 */
     private clearMessages(): void {
         this.messagesContainer.clear();
         this.messageComponents.clear();
+        this.diffTurnWindow = DIFF_TURN_BATCH;
     }
 
     /** 把 store 的消息投影成组件树；逐条按内容指纹决定是否重建。 */
@@ -3121,7 +3101,85 @@ export class ChatApp {
             showReasoning: this.showReasoning,
             spinnerIndex: this.spinnerIndex,
             columns: this.tui.terminal.columns,
+            diffDetail: this.diffDetail,
+            diffMessageIds: this.diffWindowIds(),
+            activeTurnMessageId: this.activeTurnMessageId() ?? null,
         };
+    }
+
+    /**
+     * 当前真正在跑的 assistant 消息：以回合阶段为准，而不是消息上的 streaming 标记。
+     * 标记可能因事件缺失而残留，阶段则由回合生命周期统一清理。
+     */
+    private activeTurnMessageId(): number | undefined {
+        const sessionId = this.store.currentSessionId;
+        if (!sessionId || !this.turnState.phase(sessionId)) return undefined;
+        const messages = this.store.messages;
+        for (let index = messages.length - 1; index >= 0; index -= 1) {
+            const message = messages[index]!;
+            if (message.role !== "assistant") continue;
+            return message.streaming ? message.id : undefined;
+        }
+        return undefined;
+    }
+
+    /** ⌃T 详情窗口：从最新往前允许展示改动详情的 assistant 消息 id。 */
+    private diffWindowIds(): Set<number> {
+        const ids = new Set<number>();
+        if (!this.diffDetail) return ids;
+
+        const messages = this.store.messages;
+        let remaining = this.diffTurnWindow;
+        for (let index = messages.length - 1; index >= 0 && remaining > 0; index -= 1) {
+            const message = messages[index]!;
+            if (message.role !== "assistant") continue;
+            ids.add(message.id);
+            remaining -= 1;
+        }
+        return ids;
+    }
+
+    /** 是否还有更早 turn 的改动详情没展开。 */
+    private hasHiddenDiffTurns(): boolean {
+        return this.store.messages.filter(message => message.role === "assistant").length > this.diffTurnWindow;
+    }
+
+    /** ⌃T：切换历史 turn 的改动详情（⌃O 已展开全部，此时忽略）。 */
+    private toggleDiffDetail(): void {
+        if (this.detailed) return;
+        this.diffDetail = !this.diffDetail;
+        this.diffTurnWindow = DIFF_TURN_BATCH;
+        this.rerenderMessages();
+    }
+
+    /** 按当前显示开关重绘全部消息（不走 store 通知，避免多余的异步回调）。 */
+    private rerenderMessages(): void {
+        const ctx = this.renderContext();
+        for (const entry of this.messageComponents.values()) {
+            const message = this.store.getMessageById(entry.messageId);
+            if (!message || !entry.timeline) continue;
+            updateMessageComponent(entry, message, ctx);
+            entry.renderKey = messageRenderKey(message, ctx);
+        }
+        this.tui.requestRender();
+    }
+
+    /**
+     * 向上滚动到逼近顶端时再展开一批 turn 的改动详情（滚动加载）。
+     * 新内容插在视口上方，按新增行数补偿滚动位置，视野不跳动。
+     */
+    private expandDiffDetail(): void {
+        if (!this.diffDetail || this.detailed) return;
+        if (!this.hasHiddenDiffTurns()) return;
+        // 还剩不到一屏可见内容时才补：提前一屏预渲染，滚到底前已就绪
+        if (this.scrollView.scrollTop > this.scrollView.viewportHeight) return;
+
+        const width = this.tui.terminal.columns;
+        const heightBefore = this.messagesContainer.render(width).length;
+        this.diffTurnWindow += DIFF_TURN_BATCH;
+        this.syncMessages();
+        const addedLines = this.messagesContainer.render(width).length - heightBefore;
+        if (addedLines > 0) this.scrollView.scrollBy(addedLines);
     }
 
 
