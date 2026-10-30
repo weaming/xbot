@@ -235,6 +235,12 @@ export const api = {
         `/api/jobs/events?since=${since}`,
     ),
 
+    /** 长参数不在事件响应里：用户点开某次工具调用时再单独取一次原文。 */
+    getToolArguments: (jobId: string, sessionId: string, seq: number, callId?: string) => {
+        const query = `sessionId=${encodeURIComponent(sessionId)}&seq=${seq}${callId ? `&callId=${encodeURIComponent(callId)}` : ""}`;
+        return request<{ name: string; arguments: string }>(`/api/jobs/${jobId}/tool-arguments?${query}`);
+    },
+
     listMcpServers: () => request<McpServer[]>("/api/jobs/mcp/servers"),
 
     /** 取服务端信息：新建任务时用 cwd 当输入框 placeholder。 */

@@ -107,6 +107,14 @@ export interface AgentEvent {
                 name?: string;
                 summary?: string;
                 arguments?: string;
+                /** 参数原文超长时不下发，只给长度：界面点开「参数」再按需拉全文 */
+                argumentSize?: number;
+                /** apply_patch 类工具：按文件统计的增删行数，界面直接渲染文件清单 */
+                patchStat?: {
+                    files: Array<{ path: string; kind: "add" | "update" | "delete"; added: number; removed: number }>;
+                    added: number;
+                    removed: number;
+                };
                 /** 老数据兼容：原始 OpenAI 形状 */
                 function?: { name: string; arguments: string };
             }>;
@@ -128,6 +136,9 @@ export interface AgentEvent {
 }
 
 export type BoardColumnKey = "todo" | "doing" | "review" | "done" | "cancelled";
+
+/** 一次工具调用的视图形状：时间线渲染与按需拉参数都用它。 */
+export type ToolCallView = NonNullable<NonNullable<AgentEvent["payload"]["message"]>["tool_calls"]>[number];
 
 /** 落盘后的图片引用（发送消息时带上）。 */
 export interface ImageAsset {

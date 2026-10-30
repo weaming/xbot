@@ -7,8 +7,9 @@
  */
 
 import { Fragment, useState, type ReactNode } from "react";
-import type { AgentEvent } from "../lib/types";
+import type { AgentEvent, ToolCallView } from "../lib/types";
 import { formatDuration } from "../lib/format";
+import { cn } from "../lib/utils";
 import { AssetImage } from "./AssetImage";
 import { MarkdownBlock } from "./Markdown";
 
@@ -106,27 +107,92 @@ function Thinking() {
     return <div className="text-xs text-muted">🧠 思考中</div>;
 }
 
+const PATCH_KIND_LABEL = { add: "新增", update: "修改", delete: "删除" } as const;
+const PATCH_KIND_TONE = { add: "text-ok", update: "text-accent", delete: "text-bad" } as const;
+
+function PatchFiles({ stat }: { stat: NonNullable<ToolCallView["patchStat"]> }) {
+    if (!stat) return null;
+    return (
+        <ul className="flex flex-col gap-0.5 font-mono text-xs">
+            {stat.files.map(file => (
+                <li key={`${file.kind}-${file.path}`} className="flex items-center gap-2">
+                    <span className={cn("shrink-0", PATCH_KIND_TONE[file.kind])}>{PATCH_KIND_LABEL[file.kind]}</span>
+                    <span className="min-w-0 flex-1 truncate" title={file.path}>
+                        {file.path}
+                    </span>
+                    {file.kind !== "delete" && (
+                        <span className="shrink-0">
+                            {file.added > 0 && <span className="text-ok">+{file.added}</span>}
+                            {file.added > 0 && file.removed > 0 && " "}
+                            {file.removed > 0 && <span className="text-bad">−{file.removed}</span>}
+                        </span>
+                    )}
+                </li>
+            ))}
+        </ul>
+    );
+}
+
 function ToolCall({
     name,
     summary,
     args,
+    argSize,
+    patchStat,
+    seq,
+    callId,
+    loadArguments,
     durationMs,
     resultSize,
 }: {
     name: string;
     summary: string;
     args?: string;
+    /** 参数原文超长时只有长度：展开时按需拉取 */
+    argSize?: number;
+    patchStat?: ToolCallView["patchStat"];
+    seq: number;
+    callId?: string;
+    loadArguments?: (seq: number, callId?: string) => Promise<string>;
     /** 该工具调用的结果（同一条工具消息）已经到达：用时直接贴在原块上，不再另起一行 */
     durationMs?: number;
     resultSize?: number;
 }) {
     const [open, setOpen] = useState(false);
+    const [loaded, setLoaded] = useState<string | null>(null);
+    const [loading, setLoading] = useState(false);
+    const [loadFailed, setLoadFailed] = useState(false);
+
     const hasResult = durationMs !== undefined || resultSize !== undefined;
+    /** patch 类看文件清单，其余看参数原文；长参数要等服务端回传长度才知道能拉 */
+    const canExpand = patchStat !== undefined || args !== undefined || (argSize ?? 0) > 0;
+
+    const toggle = async () => {
+        if (open) {
+            setOpen(false);
+            return;
+        }
+        setOpen(true);
+        if (patchStat !== undefined || args !== undefined || loading || loaded !== null || !loadArguments || !argSize) {
+            return;
+        }
+        setLoading(true);
+        setLoadFailed(false);
+        try {
+            setLoaded(await loadArguments(seq, callId));
+        } catch {
+            setLoadFailed(true);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const raw = args ?? loaded ?? "";
     return (
         <div className="overflow-hidden rounded-md border border-border bg-col/60">
             <button
                 type="button"
-                onClick={() => setOpen(!open)}
+                onClick={() => void toggle()}
                 className="flex w-full items-center gap-2 px-2.5 py-1.5 text-xs"
             >
                 <span className="text-accent">▸</span>
@@ -143,14 +209,27 @@ function ToolCall({
                             {durationMs === undefined ? "✓" : formatDuration(durationMs)}
                         </span>
                     )}
-                    {/* 大参数只发摘要，参数面板自然也就没有 */}
-                    {args !== undefined && <span className="text-muted">{open ? "收起" : "参数"}</span>}
+                    {canExpand && (
+                        <span className="text-muted" title={argSize === undefined ? undefined : `${argSize} 字符`}>
+                            {patchStat ? (open ? "收起" : "变更") : open ? "收起" : "参数"}
+                        </span>
+                    )}
                 </span>
             </button>
-            {open && args !== undefined && (
-                <pre className="max-h-60 overflow-auto px-2.5 pb-2 font-mono text-xs break-all whitespace-pre-wrap">
-                    {formatArgs(args)}
-                </pre>
+            {open && (
+                <div className="px-2.5 pb-2">
+                    {patchStat ? (
+                        <PatchFiles stat={patchStat} />
+                    ) : loading ? (
+                        <span className="text-xs text-muted">加载参数…</span>
+                    ) : loadFailed ? (
+                        <span className="text-xs text-bad">参数加载失败，可去会话日志查看</span>
+                    ) : (
+                        <pre className="max-h-60 overflow-auto font-mono text-xs break-all whitespace-pre-wrap">
+                            {formatArgs(raw)}
+                        </pre>
+                    )}
+                </div>
             )}
         </div>
     );
@@ -188,7 +267,16 @@ function PeerMessage({ event }: { event: AgentEvent }) {
     );
 }
 
-export function Timeline({ events, live }: { events: AgentEvent[]; live?: { text: string; thinking: boolean } }) {
+export function Timeline({
+    events,
+    live,
+    onLoadArguments,
+}: {
+    events: AgentEvent[];
+    live?: { text: string; thinking: boolean };
+    /** 长参数不在事件里：展开某次调用时按需拉原文 */
+    onLoadArguments?: (seq: number, callId?: string) => Promise<string>;
+}) {
     // 工具输出只有 tool_call_id，先扫一遍建立 id → 名字/结果的映射。
     // 结果回填到发起它的那个工具块上，时间线里不再单独占一行。
     const callNames = new Map<string, string>();
@@ -267,6 +355,11 @@ export function Timeline({ events, live }: { events: AgentEvent[]; live?: { text
                                         name={name}
                                         summary={summary}
                                         args={args}
+                                        argSize={call.argumentSize}
+                                        patchStat={call.patchStat}
+                                        seq={event.seq}
+                                        callId={call.id}
+                                        loadArguments={onLoadArguments}
                                         durationMs={result?.durationMs}
                                         resultSize={result?.size}
                                     />
