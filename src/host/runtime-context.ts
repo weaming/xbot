@@ -10,6 +10,11 @@ import { setStartupToolCwd } from "../utils/runtime-paths.js";
 const DEFAULT_HOST_STATE_DIR = path.join(os.homedir(), ".zbot");
 const DEFAULT_HOST_SRC_ROOT = "src";
 const CONTAINER_PATH_PREFIX = "/app/";
+const STARTUP_LOG_MAX_BYTES = 2 * 1024 * 1024;
+const STARTUP_LOG_KEEP_LINES = 100;
+const STARTUP_LOG_TRIM_INTERVAL_MS = 60_000;
+const LOG_TAIL_CHUNK_BYTES = 64 * 1024;
+
 function expandHome(value: string): string {
     if (value === "~") return os.homedir();
     if (value.startsWith("~/")) return path.join(os.homedir(), value.slice(2));
@@ -50,6 +55,7 @@ function formatLogArgument(argument: unknown): string {
 }
 
 let currentLogFile: string | null = null;
+let trimTimer: ReturnType<typeof setInterval> | undefined;
 let startupCwd = "";
 
 /** TUI 启动时的 cwd：新会话默认工作目录的固定基准，不随会话切换而变化。 */
@@ -57,9 +63,61 @@ export function getStartupCwd(): string {
     return startupCwd || process.cwd();
 }
 
+/** 从文件末尾向前分块读取最后 count 行，避免整读大文件。 */
+function readLastLines(file: string, count: number): string[] {
+    const fd = fs.openSync(file, "r");
+
+    try {
+        let pos = fs.fstatSync(fd).size;
+        const chunks: string[] = [];
+        let lineCount = 0;
+
+        while (pos > 0 && lineCount <= count) {
+            const len = Math.min(LOG_TAIL_CHUNK_BYTES, pos);
+            pos -= len;
+            const buf = Buffer.allocUnsafe(len);
+            fs.readSync(fd, buf, 0, len, pos);
+            const chunk = buf.toString("utf8");
+            chunks.push(chunk);
+            // 块内完整行数，仅用于判断是否已覆盖足够行
+            lineCount += chunk.split("\n").length - 1;
+        }
+
+        const lines = chunks.reverse().join("").split("\n");
+        // 未读到文件头时首行是残片
+        if (pos > 0) lines.shift();
+        if (lines[lines.length - 1] === "") lines.pop();
+        return lines;
+    } finally {
+        fs.closeSync(fd);
+    }
+}
+
+/** startup.log 超过 2M 时裁剪为最后 100 行，避免长期运行无限膨胀。 */
+function trimStartupLog(file: string): void {
+    try {
+        if (fs.statSync(file).size <= STARTUP_LOG_MAX_BYTES) return;
+
+        const kept = readLastLines(file, STARTUP_LOG_KEEP_LINES).slice(-STARTUP_LOG_KEEP_LINES);
+        const header = `${new Date().toISOString()} startup.log trimmed, kept last ${STARTUP_LOG_KEEP_LINES} lines`;
+        fs.writeFileSync(file, `${[header, ...kept].join("\n")}\n`, "utf8");
+    } catch {
+        // 裁剪失败不应阻断日志写入。
+    }
+}
+
+/** 启动日志裁剪：启动时执行一次，之后每分钟一次，避免每写一行都 stat。 */
+function startTrimTimer(): void {
+    if (trimTimer) clearInterval(trimTimer);
+    trimStartupLog(getStartupLogFile());
+    trimTimer = setInterval(() => trimStartupLog(getStartupLogFile()), STARTUP_LOG_TRIM_INTERVAL_MS);
+    trimTimer.unref?.();
+}
+
 /** 将 agent 和 MCP 的后台日志写入文件，避免破坏 TUI 的终端绘制。 */
 export function redirectLogsToFile(): () => void {
     currentLogFile = getStartupLogFile();
+    startTrimTimer();
     const original = {
         log: console.log,
         info: console.info,
@@ -90,6 +148,10 @@ export function redirectLogsToFile(): () => void {
     (console as unknown as Record<symbol, unknown>)[CONSOLE_TIMESTAMP_MARK] = true;
 
     return () => {
+        if (trimTimer) {
+            clearInterval(trimTimer);
+            trimTimer = undefined;
+        }
         currentLogFile = null;
         console.log = original.log;
         console.info = original.info;

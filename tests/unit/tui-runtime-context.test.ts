@@ -51,4 +51,28 @@ describe("TUI 日志重定向", () => {
         expect(fs.existsSync(sessionFile)).toBe(false);
         expect(fs.readFileSync(getStartupLogFile(), "utf8")).toContain("after delete");
     });
+
+    test("启动时裁剪超过 2M 的 startup.log，只留最后 100 行", () => {
+        previousStateDir = process.env.ZBOT_STATE_DIR;
+        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "zbot-tui-log-trim-"));
+        process.env.ZBOT_STATE_DIR = tmpDir;
+
+        const startupFile = getStartupLogFile();
+        const padding = "x".repeat(8 * 1024);
+        const lines = Array.from({ length: 400 }, (_, index) => `line-${index} ${padding}`);
+        fs.writeFileSync(startupFile, `${lines.join("\n")}\n`, "utf8");
+        expect(fs.statSync(startupFile).size).toBeGreaterThan(2 * 1024 * 1024);
+
+        restoreLogs = redirectLogsToFile();
+        console.debug("after trim");
+
+        const content = fs.readFileSync(startupFile, "utf8");
+        expect(fs.statSync(startupFile).size).toBeLessThan(2 * 1024 * 1024);
+        expect(content).toContain("startup.log trimmed");
+        expect(content).toContain("line-399");
+        expect(content).not.toContain("line-299 ");
+        expect(content).toContain("after trim");
+        // header + 保留的 100 行 + 新写入的 1 行
+        expect(content.trimEnd().split("\n")).toHaveLength(102);
+    });
 });
