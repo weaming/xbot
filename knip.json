@@ -11,5 +11,8 @@
   ],
   "ignoreBinaries": [
     "pbpaste"
+  ],
+  "ignoreDependencies": [
+    "@effect/language-service"
   ]
 }

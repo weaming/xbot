@@ -11,6 +11,7 @@
     "tui": "bun src/tui/main.ts",
     "build:ui": "cd ui && bun install --silent && bun run build",
     "build": "bun run build:ui && tsc && bun run build.mjs",
+    "check": "effect-tsgo tsc --noEmit",
     "dev:ui": "cd ui && bun run dev",
     "dev": "bun --watch src/tui/main.ts",
     "test": "bash scripts/test.sh",
@@ -25,6 +26,7 @@
     "axios": "^1.15.0",
     "chokidar": "^5.0.0",
     "dotenv": "^17.4.2",
+    "effect": "^4.1.0",
     "get-east-asian-width": "1.7.0",
     "https-proxy-agent": "^9.1.0",
     "js-yaml": "^5.2.2",
@@ -33,6 +35,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@effect/tsgo": "0.63.0",
     "@types/chokidar": "^2.1.7",
     "@types/node": "^26.1.2",
     "@types/ws": "^8.18.1",
