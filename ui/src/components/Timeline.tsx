@@ -76,11 +76,12 @@ function UserMessage({ event, isFirst }: { event: AgentEvent; isFirst: boolean }
                 )}
                 {imageCount > 0 && <span>🖼 {imageCount}</span>}
             </div>
-            <div className="max-w-[85%] rounded-lg rounded-tr-sm bg-accent/10 px-3 py-2 text-sm break-words whitespace-pre-wrap">
+            {/* 手机屏窄，气泡放宽到 92%：85% 扣掉面板内边距后只剩两三个字一行 */}
+            <div className="max-w-[92%] rounded-lg rounded-tr-sm bg-accent/10 px-3 py-2 text-sm break-words whitespace-pre-wrap md:max-w-[85%]">
                 {event.payload.text}
             </div>
             {(event.payload.images?.length ?? 0) > 0 && (
-                <div className="flex max-w-[85%] flex-wrap justify-end gap-2">
+                <div className="flex max-w-[92%] flex-wrap justify-end gap-2 md:max-w-[85%]">
                     {event.payload.images!.map(image => (
                         <AssetImage
                             key={image.id}

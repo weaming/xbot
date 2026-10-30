@@ -266,7 +266,8 @@ export default function App() {
                     />
                 </div>
                 {selected && (
-                    <aside className="absolute inset-0 z-20 flex w-full flex-col border-l border-border bg-panel md:static md:inset-auto md:w-[520px] md:shrink-0">
+                    // 窄屏铺满整个视口（连顶部的应用栏一起盖住）：少一层头部就多一行历史
+                    <aside className="fixed inset-0 z-30 flex w-full flex-col bg-panel md:static md:w-[520px] md:shrink-0 md:border-l md:border-border">
                         <CardDetail
                             // 换卡片必须换实例：标题/超时是 defaultValue，复用实例会把上一张卡的值写回去
                             key={selected.id}

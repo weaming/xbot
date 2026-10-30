@@ -33,3 +33,12 @@ export function abbreviateHome(path: string, home: string): string {
     }
     return path;
 }
+
+/** 紧凑时间：`MM-DD HH:mm`。会话下拉这种窄位置放不下完整 locale 串。 */
+export function formatShortTime(iso?: string): string {
+    if (!iso) return "";
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return "";
+    const pad = (value: number): string => String(value).padStart(2, "0");
+    return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}

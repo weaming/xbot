@@ -9,16 +9,17 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, openEventStream } from "../lib/api";
 import type { AgentEvent, ImageAsset, Job, JobComment, JobSession, McpServer } from "../lib/types";
 import { cn } from "../lib/utils";
-import { abbreviateHome } from "../lib/format";
+import { abbreviateHome, formatShortTime } from "../lib/format";
 import { STATE_TONE, stateLabel } from "../lib/job-state";
 import { useInlineEdit } from "../lib/use-inline-edit";
+import { useNarrow } from "../lib/use-narrow";
 import { AssetImage } from "./AssetImage";
 import { DirInput } from "./DirInput";
 import { Timeline } from "./Timeline";
 import { TagInput } from "./TagInput";
 import { MarkdownBlock } from "./Markdown";
 import { MdEditor } from "./MdEditor";
-import { Badge, Button, Field, Input, Tabs, Textarea } from "./ui";
+import { Badge, Button, Field, Input, OverflowMenu, Tabs, Textarea } from "./ui";
 
 type TabKey = "props" | "sessions" | "comments";
 
@@ -27,6 +28,13 @@ const EVENT_PAGE_SIZE = 200;
 
 function formatTime(iso?: string): string {
     return iso ? new Date(iso).toLocaleString() : "";
+}
+
+/** 会话下拉的选项文案：窄屏只留「#短 id · 用途」，时间挤不下就算了。 */
+function sessionOptionLabel(item: JobSession, narrow: boolean): string {
+    const head = `#${item.sessionId.slice(-8)} · ${item.purpose === "branch" ? "分支" : "执行"}`;
+    const archived = item.archived ? " · 已归档" : "";
+    return narrow ? `${head}${archived}` : `${head} · ${formatShortTime(item.createdAt)}${archived}`;
 }
 
 export function CardDetail({
@@ -43,7 +51,12 @@ export function CardDetail({
     onChanged: () => Promise<unknown>;
     onClose: () => void;
 }) {
-    const [tab, setTab] = useState<TabKey>("props");
+    /** 默认停在会话：跑过的卡片十次有九次是来看历史的，别再让用户先点一次 tab */
+    const [tab, setTab] = useState<TabKey>(() => (job.sessionId ? "sessions" : "props"));
+    /** 窄屏下底部输入区是否展开：不聚焦时收成一行，把高度让给历史 */
+    const [composerFocus, setComposerFocus] = useState(false);
+    const composerRef = useRef<HTMLTextAreaElement>(null);
+    const narrow = useNarrow();
     const [comments, setComments] = useState<JobComment[]>([]);
     const [sessions, setSessions] = useState<JobSession[]>([]);
     const [activeSessionId, setActiveSessionId] = useState<string | null>(job.sessionId ?? null);
@@ -354,7 +367,116 @@ export function CardDetail({
         }
     };
 
+    /** 归档执行会话：历史仍保留，只是从默认列表隐藏。 */
+    const archiveSession = async () => {
+        if (!activeSessionId) return;
+        if (!window.confirm("归档这个执行会话？会话会从列表隐藏，历史仍保留。")) return;
+        try {
+            await api.archiveSession(activeSessionId);
+            // 归档后仍留在列表里（标「已归档」），否则取消归档的入口就没了
+            await refreshSessions();
+            await onChanged();
+        } catch (cause) {
+            setError(cause instanceof ApiError ? cause.message : String(cause));
+        }
+    };
+
+    const unarchiveSession = async () => {
+        if (!activeSessionId) return;
+        try {
+            await api.unarchiveSession(activeSessionId);
+            await refreshSessions();
+            await onChanged();
+        } catch (cause) {
+            setError(cause instanceof ApiError ? cause.message : String(cause));
+        }
+    };
+
     const isActive = job.state === "running" || job.state === "leased";
+    /** 窄屏且没在输入：输入区只留一行，历史区多出两三行可见高度 */
+    const composerExpanded = !narrow || composerFocus || attachments.length > 0;
+
+    // 桌面铺成一行按钮，窄屏塞进「⋯」菜单：两处共用同一批动作，免得两套状态机各自演进
+    const actionNodes = (
+        <>
+            {job.state === "queued" && job.input.autoStart !== true && (
+                <Button variant="primary" onClick={() => void start()}>
+                    开始
+                </Button>
+            )}
+            {!isActive &&
+                (job.input.archivedAt ? (
+                    <Button
+                        title="卡片回到看板（默认列表仍隐藏归档卡片，需要「含归档」才看得到）"
+                        onClick={async () => {
+                            try {
+                                await api.unarchiveJob(job.id);
+                                await onChanged();
+                            } catch (cause) {
+                                setError(cause instanceof ApiError ? cause.message : String(cause));
+                            }
+                        }}
+                    >
+                        取消归档
+                    </Button>
+                ) : (
+                    <Button
+                        title="卡片从看板隐藏，运行过的会话也一并归档"
+                        onClick={async () => {
+                            try {
+                                await api.archiveJob(job.id);
+                                onClose();
+                                await onChanged();
+                            } catch (cause) {
+                                setError(cause instanceof ApiError ? cause.message : String(cause));
+                            }
+                        }}
+                    >
+                        归档
+                    </Button>
+                ))}
+            {!isActive && (
+                <Button
+                    variant="danger"
+                    onClick={async () => {
+                        if (!window.confirm("删除这张卡片？评论、执行记录和它名下的会话都会被永久删除，不可恢复。")) return;
+                        try {
+                            await api.deleteJob(job.id);
+                            onClose();
+                            await onChanged();
+                        } catch (cause) {
+                            setError(cause instanceof ApiError ? cause.message : String(cause));
+                        }
+                    }}
+                >
+                    删除
+                </Button>
+            )}
+        </>
+    );
+
+    /** 标题：只读是按钮、点击原地变输入框，两个头部布局共用 */
+    const titleNode = titleEdit.editing ? (
+        <Input
+            autoFocus
+            value={titleEdit.draft}
+            onChange={event => titleEdit.setDraft(event.target.value)}
+            {...titleEdit.editorProps}
+            // flex-1 让输入框和只读文字占据同一份宽度，否则会把右侧的关闭按钮挤走
+            className="min-w-0 flex-1 font-medium"
+        />
+    ) : (
+        <button
+            type="button"
+            title={titleText}
+            onClick={titleEdit.begin}
+            // 盒模型与编辑态的 <Input> 完全一致（含移动端 16px 字号断点）：
+            // 切换只换边框颜色，不改变尺寸，下面一行不会跟着上下跳
+            className="min-w-0 flex-1 cursor-text truncate rounded-md border border-transparent px-2.5 py-1.5 text-left text-base font-medium sm:text-sm hover:border-border hover:bg-col"
+        >
+            {titleText}
+        </button>
+    );
 
     return (
         <div
@@ -372,29 +494,30 @@ export function CardDetail({
                 event.stopPropagation();
             }}
         >
-            <header className="flex flex-col gap-2 border-b border-border p-3">
+            {/* 窄屏：一行完事——状态、标题、⋯、关闭。卡片铺满整屏，纵向空间全给会话历史 */}
+            <header className="flex flex-col gap-1 border-b border-border px-2 py-1.5 md:hidden">
+                <div className="flex items-center gap-1">
+                    <span className="shrink-0">
+                        <Badge tone={STATE_TONE[job.state]}>{stateLabel(job)}</Badge>
+                    </span>
+                    {titleNode}
+                    <OverflowMenu>
+                        {actionNodes}
+                        <div className="mt-0.5 border-t border-border px-2 py-1 text-xs text-muted">
+                            #{job.id.slice(-8)} · {formatTime(job.createdAt)}
+                        </div>
+                    </OverflowMenu>
+                    <Button variant="ghost" onClick={onClose} aria-label="关闭">
+                        ×
+                    </Button>
+                </div>
+                {(job.error || error) && <p className="text-xs text-bad">{job.error ?? error}</p>}
+            </header>
+
+            {/* 桌面：标题 / 元信息 / 动作三行，宽度够用不必收 */}
+            <header className="hidden flex-col gap-2 border-b border-border p-3 md:flex">
                 <div className="flex items-start gap-2">
-                    {titleEdit.editing ? (
-                        <Input
-                            autoFocus
-                            value={titleEdit.draft}
-                            onChange={event => titleEdit.setDraft(event.target.value)}
-                            {...titleEdit.editorProps}
-                            // flex-1 让输入框和只读文字占据同一份宽度，否则会把右侧的关闭按钮挤走
-                            className="min-w-0 flex-1 font-medium"
-                        />
-                    ) : (
-                        <button
-                            type="button"
-                            title={titleText}
-                            onClick={titleEdit.begin}
-                            // 盒模型与编辑态的 <Input> 完全一致（含移动端 16px 字号断点）：
-                            // 切换只换边框颜色，不改变尺寸，下面一行不会跟着上下跳
-                            className="min-w-0 flex-1 cursor-text truncate rounded-md border border-transparent px-2.5 py-1.5 text-left text-base font-medium sm:text-sm hover:border-border hover:bg-col"
-                        >
-                            {titleText}
-                        </button>
-                    )}
+                    {titleNode}
                     <Button variant="ghost" onClick={onClose} aria-label="关闭">
                         ×
                     </Button>
@@ -405,66 +528,11 @@ export function CardDetail({
                     <span>{formatTime(job.createdAt)}</span>
                     {job.error && <span className="text-bad">{job.error}</span>}
                 </div>
-                <div className="flex flex-wrap gap-2">
-                    {job.state === "queued" && job.input.autoStart !== true && (
-                        <Button variant="primary" onClick={() => void start()}>
-                            开始
-                        </Button>
-                    )}
-                    {!isActive && (
-                        job.input.archivedAt ? (
-                            <Button
-                                title="卡片回到看板（默认列表仍隐藏归档卡片，需要「含归档」才看得到）"
-                                onClick={async () => {
-                                    try {
-                                        await api.unarchiveJob(job.id);
-                                        await onChanged();
-                                    } catch (cause) {
-                                        setError(cause instanceof ApiError ? cause.message : String(cause));
-                                    }
-                                }}
-                            >
-                                取消归档
-                            </Button>
-                        ) : (
-                            <Button
-                                title="卡片从看板隐藏，运行过的会话也一并归档"
-                                onClick={async () => {
-                                    try {
-                                        await api.archiveJob(job.id);
-                                        onClose();
-                                        await onChanged();
-                                    } catch (cause) {
-                                        setError(cause instanceof ApiError ? cause.message : String(cause));
-                                    }
-                                }}
-                            >
-                                归档
-                            </Button>
-                        )
-                    )}
-                    {!isActive && (
-                        <Button
-                            variant="danger"
-                            onClick={async () => {
-                                if (!window.confirm("删除这张卡片？评论、执行记录和它名下的会话都会被永久删除，不可恢复。")) return;
-                                try {
-                                    await api.deleteJob(job.id);
-                                    onClose();
-                                    await onChanged();
-                                } catch (cause) {
-                                    setError(cause instanceof ApiError ? cause.message : String(cause));
-                                }
-                            }}
-                        >
-                            删除
-                        </Button>
-                    )}
-                </div>
+                <div className="flex flex-wrap gap-2">{actionNodes}</div>
                 {error && <p className="text-xs text-bad">{error}</p>}
             </header>
 
-            <div className="px-3 pt-2">
+            <div className="px-2 pt-1.5 md:px-3 md:pt-2">
                 <Tabs
                     tabs={[
                         { key: "props", label: "属性" },
@@ -477,7 +545,7 @@ export function CardDetail({
             </div>
 
             {/* 外层只负责给高度：各 tab 自己决定滚动，会话历史才能吃满剩余空间 */}
-            <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-3">
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-2 md:p-3">
                 {tab === "props" && (
                     <div className="stable-scroll flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto text-sm">
                         {/* 上下结构：长内容（描述、MCP、结果）能用满面板宽度 */}
@@ -597,144 +665,160 @@ export function CardDetail({
                 )}
 
                 {tab === "sessions" && (
-                    <div className="flex min-h-0 flex-1 flex-col gap-2">
-                        <div className="flex shrink-0 items-center gap-2">
+                    <div className="flex min-h-0 flex-1 flex-col gap-1.5 md:gap-2">
+                        <div className="flex shrink-0 items-center gap-1.5">
                             {sessions.length === 0 ? (
                                 <span className="flex-1 text-xs text-muted">还没有执行会话</span>
                             ) : (
                                 <select
                                     value={activeSessionId ?? ""}
                                     onChange={event => setActiveSessionId(event.target.value)}
-                                    className="min-w-0 flex-1 rounded-md border border-border bg-bg px-2 py-1 text-sm"
+                                    className="min-w-0 flex-1 rounded-md border border-border bg-bg px-2 py-1.5 text-sm"
                                 >
                                     {sessions.map(item => (
                                         <option key={item.sessionId} value={item.sessionId}>
-                                            {item.sessionId.slice(-8)} · {item.purpose} · {formatTime(item.createdAt)}
-                                            {item.archived ? " · 已归档" : ""}
+                                            {sessionOptionLabel(item, narrow)}
                                         </option>
                                     ))}
                                 </select>
                             )}
-                            <Button onClick={() => void openBranch()}>+ 新会话</Button>
-                            {activeSessionId && (
-                                <Button
-                                    variant="danger"
-                                    disabled={activeSessionArchived}
-                                    onClick={async () => {
-                                        if (!window.confirm("归档这个执行会话？会话会从列表隐藏，历史仍保留。")) return;
-                                        try {
-                                            await api.archiveSession(activeSessionId);
-                                            // 归档后仍留在列表里（标「已归档」），否则取消归档的入口就没了
-                                            await refreshSessions();
-                                            await onChanged();
-                                        } catch (cause) {
-                                            setError(cause instanceof ApiError ? cause.message : String(cause));
-                                        }
-                                    }}
-                                >
-                                    归档
+                            {/* 「+ 新会话」最常用，桌面直接摆出来；窄屏连它一起收进「⋯」，下拉才腾得出宽度 */}
+                            <Button className="hidden md:inline-flex" onClick={() => void openBranch()}>
+                                + 新会话
+                            </Button>
+                            <OverflowMenu>
+                                <Button className="md:hidden" onClick={() => void openBranch()}>
+                                    + 新会话
                                 </Button>
-                            )}
+                                {activeSessionId && (
+                                    <Button
+                                        variant="danger"
+                                        disabled={activeSessionArchived}
+                                        onClick={() => void archiveSession()}
+                                    >
+                                        归档会话
+                                    </Button>
+                                )}
+                                {activeSessionArchived && (
+                                    <Button onClick={() => void unarchiveSession()}>取消归档</Button>
+                                )}
+                            </OverflowMenu>
                         </div>
                         <div ref={timelineRef} className="stable-scroll flex min-h-0 flex-1 flex-col overflow-y-auto pr-1">
                             <Timeline events={events} live={live} />
                         </div>
                         {activeSessionId && (
                             <div className="flex shrink-0 flex-col gap-2 border-t border-border pt-2">
-                                <Textarea
-                                    value={inputDraft}
-                                    placeholder="你的创意灵感（可直接粘贴图片）"
-                                    onChange={event => setInputDraft(event.target.value)}
-                                    onPaste={event => {
-                                        const file = Array.from(event.clipboardData.files)[0];
-                                        if (!file) return;
-                                        event.preventDefault();
-                                        void uploadImage(file);
-                                    }}
-                                    onKeyDown={event => {
-                                        if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                                <div className={cn("flex gap-1.5", composerExpanded ? "flex-col" : "items-end")}>
+                                    <Textarea
+                                        ref={composerRef}
+                                        rows={composerExpanded ? 3 : 1}
+                                        // 收起态压成一行：标签页里的历史能多露出两三行；一行的高度没什么可拖的
+                                        className={composerExpanded ? undefined : "min-h-0 resize-none py-1.5"}
+                                        value={inputDraft}
+                                        placeholder="你的创意灵感（可直接粘贴图片）"
+                                        onFocus={() => setComposerFocus(true)}
+                                        onBlur={() => setComposerFocus(false)}
+                                        onChange={event => setInputDraft(event.target.value)}
+                                        onPaste={event => {
+                                            const file = Array.from(event.clipboardData.files)[0];
+                                            if (!file) return;
                                             event.preventDefault();
-                                            void sendInput("request");
-                                        }
-                                    }}
-                                />
-                                {attachments.length > 0 && (
-                                    <div className="flex flex-wrap gap-2">
-                                        {attachments.map(asset => (
-                                            <div key={asset.id} className="relative">
-                                                <AssetImage
-                                                    id={asset.id}
-                                                    alt={asset.filename}
-                                                    className="h-16 w-16 rounded-md border border-border object-cover"
-                                                />
-                                                <button
-                                                    type="button"
-                                                    onClick={() =>
-                                                        setAttachments(current =>
-                                                            current.filter(item => item.id !== asset.id),
-                                                        )
-                                                    }
-                                                    className="absolute -top-1.5 -right-1.5 flex h-5 w-5 items-center justify-center rounded-full border border-border bg-panel text-xs text-muted hover:text-bad"
-                                                    aria-label="移除图片"
-                                                >
-                                                    ×
-                                                </button>
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
-                                <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
-                                    <input
-                                        ref={fileInputRef}
-                                        type="file"
-                                        accept="image/*"
-                                        className="hidden"
-                                        onChange={event => {
-                                            const file = event.target.files?.[0];
-                                            event.target.value = "";
-                                            if (file) void uploadImage(file);
+                                            void uploadImage(file);
+                                        }}
+                                        onKeyDown={event => {
+                                            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                                                event.preventDefault();
+                                                void sendInput("request");
+                                            }
                                         }}
                                     />
-                                    <Button
-                                        variant="ghost"
-                                        disabled={uploading}
-                                        onClick={() => fileInputRef.current?.click()}
-                                    >
-                                        {uploading ? "上传中…" : "图片"}
-                                    </Button>
-                                    <span className="flex-1" />
-                                    {(pending.request > 0 || pending.turn > 0) && (
-                                        <span>
-                                            排队中 请求 {pending.request} · 回合 {pending.turn}
-                                        </span>
-                                    )}
-                                    {activeSessionArchived && (
+                                    {/* 收起态在输入框旁留一个发送键：发一句话犯不上先展开整排按钮 */}
+                                    {!composerExpanded && (
                                         <Button
-                                            onClick={async () => {
-                                                if (!activeSessionId) return;
-                                                try {
-                                                    await api.unarchiveSession(activeSessionId);
-                                                    await refreshSessions();
-                                                    await onChanged();
-                                                } catch (cause) {
-                                                    setError(cause instanceof ApiError ? cause.message : String(cause));
-                                                }
-                                            }}
+                                            variant="primary"
+                                            className="shrink-0"
+                                            disabled={activeSessionArchived}
+                                            onMouseDown={event => event.preventDefault()}
+                                            onClick={() => void sendInput("request")}
                                         >
-                                            取消归档
+                                            发送
                                         </Button>
                                     )}
-                                    <Button disabled={activeSessionArchived} onClick={() => void sendInput("turn")}>
-                                        排队
-                                    </Button>
-                                    <Button
-                                        variant="primary"
-                                        disabled={activeSessionArchived}
-                                        onClick={() => void sendInput("request")}
-                                    >
-                                        尽快处理
-                                    </Button>
                                 </div>
+                                {/* 展开态的一排按钮：点按时别让输入框失焦，否则这一排刚点上去就自己收起来了 */}
+                                {composerExpanded && (
+                                    <div onMouseDown={event => event.preventDefault()} className="flex flex-col gap-2">
+                                        {attachments.length > 0 && (
+                                            <div className="flex flex-wrap gap-2">
+                                                {attachments.map(asset => (
+                                                    <div key={asset.id} className="relative">
+                                                        <AssetImage
+                                                            id={asset.id}
+                                                            alt={asset.filename}
+                                                            className="h-16 w-16 rounded-md border border-border object-cover"
+                                                        />
+                                                        <button
+                                                            type="button"
+                                                            onClick={() =>
+                                                                setAttachments(current =>
+                                                                    current.filter(item => item.id !== asset.id),
+                                                                )
+                                                            }
+                                                            className="absolute -top-1.5 -right-1.5 flex h-5 w-5 items-center justify-center rounded-full border border-border bg-panel text-xs text-muted hover:text-bad"
+                                                            aria-label="移除图片"
+                                                        >
+                                                            ×
+                                                        </button>
+                                                    </div>
+                                                ))}
+                                        </div>
+                                    )}
+                                    <div className="flex flex-wrap items-center gap-2 text-xs text-muted">
+                                        <input
+                                            ref={fileInputRef}
+                                            type="file"
+                                            accept="image/*"
+                                            className="hidden"
+                                            onChange={event => {
+                                                const file = event.target.files?.[0];
+                                                event.target.value = "";
+                                                if (file) void uploadImage(file);
+                                            }}
+                                        />
+                                        <Button
+                                            variant="ghost"
+                                            disabled={uploading}
+                                            onClick={() => fileInputRef.current?.click()}
+                                        >
+                                            {uploading ? "上传中…" : "图片"}
+                                        </Button>
+                                        <span className="flex-1" />
+                                        {(pending.request > 0 || pending.turn > 0) && (
+                                            <span>
+                                                排队中 请求 {pending.request} · 回合 {pending.turn}
+                                            </span>
+                                        )}
+                                        {activeSessionArchived && (
+                                            <Button
+                                                onClick={() => void unarchiveSession()}
+                                            >
+                                                取消归档
+                                            </Button>
+                                        )}
+                                        <Button disabled={activeSessionArchived} onClick={() => void sendInput("turn")}>
+                                            排队
+                                        </Button>
+                                        <Button
+                                            variant="primary"
+                                            disabled={activeSessionArchived}
+                                            onClick={() => void sendInput("request")}
+                                        >
+                                            尽快处理
+                                        </Button>
+                                    </div>
+                                    </div>
+                                )}
                             </div>
                         )}
                     </div>
