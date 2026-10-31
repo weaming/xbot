@@ -129,6 +129,25 @@ export function applyAgentEvent(
             state.firstReasoningAt = undefined;
             state.firstTextAt = undefined;
             break;
+        case "steer_update": {
+            if (event.phase === "accepted" || event.phase === "failed") break;
+            const assistant = requireAssistant(state, requestId, deps);
+            const timeline = assistant.timeline ??= [];
+            const ownText = timeline.slice(state.iterationStartIndex ?? 0)
+                .filter(item => item.type === "text");
+            if (ownText.length > 0) {
+                ownText[0]!.text = event.text ?? ownText.map(item => item.text).join("");
+                for (const item of ownText.slice(1)) item.text = "";
+            } else if (event.text) {
+                timeline.push({ type: "text", text: event.text });
+            }
+            timeline.push({ type: "steer_status", responseId: event.responseId, phase: event.phase });
+            state.iterationStartIndex = timeline.length;
+            state.activeChatAnchor = timeline.length;
+            touchAssistant(assistant);
+            deps.notifyMessages();
+            break;
+        }
         case "text_delta":
             {
                 if (state.firstTextAt === undefined) state.firstTextAt = Date.now();

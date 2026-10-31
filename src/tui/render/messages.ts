@@ -188,6 +188,8 @@ function updateAssistantTimeline(entry: MessageComponents, message: UiMessage, c
     const children: Component[] = [];
     // 末条正文只渲染一次：循环外算好，避免每个 text item 都从尾扫一遍 timeline
     const lastTextItem = findLastTextItem(timeline);
+    const hasSteerSegment = timeline.some(item => item.type === "steer_status"
+        && (item.phase === "completed" || item.phase === "steered"));
 
     if (message.streaming && timeline.length === 0) {
         const spinnerChar = SPINNER_FRAMES[ctx.spinnerIndex % SPINNER_FRAMES.length];
@@ -199,7 +201,7 @@ function updateAssistantTimeline(entry: MessageComponents, message: UiMessage, c
         const fileBlocks = !showDetail ? collectCollapsedFileBlocks(timeline, index) : [];
         const component = fileBlocks.length > 0
             ? new ToolBlockText(renderCollapsedFileBlocks(fileBlocks, showDiff), 1, true)
-            : renderTimelineItem(item, lastTextItem, showDetail, showDiff, entry, ctx);
+            : renderTimelineItem(item, lastTextItem, hasSteerSegment, showDetail, showDiff, entry, ctx);
         if (!component) continue;
         if (children.length > 0) children.push(new Spacer(1));
         children.push(component);
@@ -213,6 +215,7 @@ function updateAssistantTimeline(entry: MessageComponents, message: UiMessage, c
 function renderTimelineItem(
     item: AssistantTimelineItem,
     lastTextItem: AssistantTimelineItem | undefined,
+    hasSteerSegment: boolean,
     showDetail: boolean,
     showDiff: boolean,
     entry: MessageComponents,
@@ -246,8 +249,16 @@ function renderTimelineItem(
     if (item.type === "text") {
         if (!item.text) return undefined;
         const isLastText = lastTextItem === item;
-        if (!showDetail && !isLastText) return undefined;
+        if (!showDetail && !isLastText && !hasSteerSegment) return undefined;
         return new Markdown(item.text, 1, 0, markdownTheme);
+    }
+
+    if (item.type === "steer_status") {
+        const label = {
+            completed: "↪ 前段回复已完成 · 等待 Steer 续接",
+            steered: "↪ 前段回复已切换 · 以上为切换前快照",
+        }[item.phase];
+        return new Text(theme.dim(label), 1, 0);
     }
 
     if (item.type !== "tool") return undefined;

@@ -19,6 +19,7 @@ import {
     TuiAltScreen,
     matchesKey,
     truncateToWidth,
+    visibleWidth,
 } from "@earendil-works/pi-tui";
 import type { Component } from "@earendil-works/pi-tui";
 import { describeClaimFailure } from "../control/channel.js";
@@ -421,6 +422,12 @@ export class ChatApp {
             this.store.applyEvent(requestId, sessionId, event);
 
             switch (event.type) {
+                case "steer_update":
+                    if (event.phase === "accepted" || event.phase === "failed") {
+                        if (this.pending.updateSteerStatus(sessionId, event.responseId, event.phase)
+                            && sessionId === this.store.currentSessionId) this.renderPending();
+                    }
+                    break;
                 case "turn_start":
                     this.setSessionPhase(sessionId, "waiting");
                     break;
@@ -540,13 +547,30 @@ export class ChatApp {
             || this.switching
             || this.turnState.isBusy(sessionId)
             || (sessionId ? this.agent.isSessionBusy(sessionId) : false);
-        const message: PendingMessage = { text, images };
+        const message: PendingMessage = {
+            text,
+            images,
+            ...(images.length === 0 && this.agent.steerResponse ? { steer: { state: "sending" as const } } : {}),
+        };
         if (isBusy) {
             this.pending.push(sessionId, message);
             if (images.length === 0) {
                 void this.agent.steerResponse?.(sessionId, text, () => {
-                    this.pending.removeMessage(sessionId, message);
-                    if (!sessionId || sessionId === this.store.currentSessionId) this.renderPending();
+                    if (!this.pending.removeMessage(sessionId, message)) return;
+                    this.store.addPendingUserMessage(text, sessionId);
+                    if (sessionId === this.store.currentSessionId) {
+                        this.renderPending();
+                        if (!this.detailed) this.scrollView.scrollToEnd();
+                    }
+                }).then(accepted => {
+                    if (!accepted && typeof message !== "string" && message.steer?.state === "sending") {
+                        message.steer.state = "queued";
+                        if (sessionId === this.store.currentSessionId) this.renderPending();
+                    }
+                }).catch(error => {
+                    if (typeof message !== "string" && message.steer) message.steer.state = "failed";
+                    if (sessionId === this.store.currentSessionId) this.renderPending();
+                    this.tui.flash(`⚠️ Steer 失败，消息仍在待发队列：${error instanceof Error ? error.message : String(error)}`);
                 });
             }
             if (!sessionId || sessionId === this.store.currentSessionId) {
@@ -585,13 +609,24 @@ export class ChatApp {
         }
         const views = this.pendingRowViews();
         const width = process.stdout.columns > 0 ? process.stdout.columns : 80;
-        const innerWidth = Math.max(10, width - 2); // 预留「> 」前缀
         const header = `⏵ ${total} pending (${this.pending.index(sessionId) + 1}/${total})  ·  ⌥↑/⌥↓ 选择  ⌥⌫ 删除`;
         this.pendingList.addChild(new Text(theme.dim(truncateToWidth(header, width, "…")), 0, 0));
         for (const view of views) {
+            const status = view.status ? {
+                sending: "切入中",
+                accepted: "已接收",
+                failed: "切入失败",
+                queued: "待发",
+            }[view.status] : "";
+            const textWidth = Math.max(0, width - visibleWidth(view.prefix) - visibleWidth(status) - (status ? 2 : 1));
+            const preview = truncatePlain(view.text, textWidth);
+            const left = `${view.prefix} ${preview}`;
+            const line = status
+                ? `${left}${" ".repeat(Math.max(1, width - visibleWidth(left) - visibleWidth(status)))}${status}`
+                : left;
             const styled = view.selected
-                ? theme.tabActive(truncateToWidth(`${view.prefix} ${truncateInline(view.text, Math.max(0, innerWidth - view.prefix.length - 1))}`, width, "…"))
-                : theme.dim(truncateToWidth(`${view.prefix} ${truncateInline(view.text, Math.max(0, innerWidth - view.prefix.length - 1))}`, width, "…"));
+                ? theme.tabActive(truncateToWidth(line, width, "…"))
+                : theme.dim(truncateToWidth(line, width, "…"));
             this.pendingList.addChild(new Text(styled, 0, 0));
         }
         // 可见行 = header + 实际显示的消息行数（窗口化后取可见行数）
@@ -600,13 +635,18 @@ export class ChatApp {
     }
 
     /** 计算 pending 队列当前可见行的视图（窗口化规则在 PendingQueue 内）。 */
-    private pendingRowViews(): Array<{ prefix: string; selected: boolean; text: string }> {
+    private pendingRowViews(): Array<{ prefix: string; selected: boolean; text: string; status?: "sending" | "accepted" | "failed" | "queued" }> {
+        const sessionId = this.store.currentSessionId;
+        const messages = this.pending.messages(sessionId);
         return this.pending
-            .window(this.store.currentSessionId, ChatApp.PENDING_MAX_VISIBLE, message => this.formatPendingInput(message))
+            .window(sessionId, ChatApp.PENDING_MAX_VISIBLE, message => this.formatPendingInput(message))
             .map(view => ({
                 prefix: view.selected ? `> ${view.ordinal})` : `  ${view.ordinal})`,
                 selected: view.selected,
                 text: view.text,
+                status: typeof messages[view.ordinal - 1] === "string"
+                    ? undefined
+                    : (messages[view.ordinal - 1] as Exclude<PendingMessage, string>)?.steer?.state,
             }));
     }
 

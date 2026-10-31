@@ -168,10 +168,19 @@ export function CardDetail({
                 since,
                 {
                     onMessage: (data, seq) => {
+                        if (cancelled) return;
                         try {
                             const parsed = JSON.parse(data) as AgentEvent;
                             // 服务端省了 seq（在 id: 行）与 sessionId（在 URL 里），这里补回来
                             setEvents(current => [...current, { ...parsed, seq, sessionId: activeSessionId }]);
+                            if (parsed.type === "steer_update" && (parsed.payload.phase === "completed" || parsed.payload.phase === "steered")) {
+                                setLive({ text: "", thinking: false });
+                            }
+                            if (parsed.type === "user_message" && parsed.payload.trigger === "pending") {
+                                void api.getPendingInputs(activeSessionId)
+                                    .then(stats => { if (!cancelled) setPending(stats); })
+                                    .catch(() => undefined);
+                            }
                         } catch {
                             // 半帧或未知格式：丢掉一帧即可，不必打断整条时间线
                         }

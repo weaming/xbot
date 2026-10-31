@@ -271,6 +271,98 @@ describe("实时 vs 重放 投影一致性", () => {
         expect(reasoningTextOf(liveState)).toBe(reasoningTextOf(replayState));
     });
 
+    test("steer 前完整输出与未完成快照只在 UI 分段，实时和重放一致", () => {
+        const liveState = createSessionUiState();
+        const liveDeps = makeDeps();
+        const liveEvents: UIEvent[] = [
+            { type: "turn_start", iteration: 1 },
+            { type: "text_delta", delta: "前段文字" },
+            { type: "steer_update", responseId: "first", phase: "accepted" },
+            { type: "steer_update", responseId: "first", phase: "completed", text: "前段完整回复" },
+            { type: "text_delta", delta: "切换前文字" },
+            { type: "steer_update", responseId: "second", phase: "accepted" },
+            { type: "steer_update", responseId: "second", phase: "steered", text: "切换前文字" },
+            { type: "text_delta", delta: "最终回复" },
+            { type: "message_end", content: "最终回复", stopReason: "stop" },
+        ];
+        for (const uiEvent of liveEvents) applyAgentEvent(liveState, 1, uiEvent, liveDeps);
+
+        const replayState = createSessionUiState();
+        projectHistory(replayState, [
+            event(1, "user_message", { text: "原问题", trigger: "user", turnId: TURN_ID }),
+            event(2, "steer_update", { turnId: TURN_ID, responseId: "first", phase: "accepted" }),
+            event(3, "steer_update", { turnId: TURN_ID, responseId: "first", phase: "completed", text: "前段完整回复" }),
+            event(4, "steer_update", { turnId: TURN_ID, responseId: "second", phase: "accepted" }),
+            event(5, "steer_update", { turnId: TURN_ID, responseId: "second", phase: "steered", text: "切换前文字" }),
+            event(6, "turn_message", { turnId: TURN_ID, message: { role: "assistant", content: "最终回复" } }),
+            event(7, "turn_commit", {
+                turnId: TURN_ID, events: [2, 3, 4, 5, 6], userMessages: ["原问题"],
+                stopReason: "stop", interrupted: false, usage: emptyUsage(),
+            }),
+        ], makeDeps(), false);
+
+        expect(segmentsOf(liveState)).toEqual([
+            "text:前段完整回复", "steer_status", "text:切换前文字", "steer_status", "text:最终回复",
+        ]);
+        expect(segmentsOf(replayState)).toEqual(segmentsOf(liveState));
+        expect(textOf(replayState)).toBe("最终回复");
+    });
+
+    test("steer 被拒绝不在助手时间线插入状态或未提交内容", () => {
+        const liveState = createSessionUiState();
+        const deps = makeDeps();
+        applyAgentEvent(liveState, 1, { type: "turn_start", iteration: 1 }, deps);
+        applyAgentEvent(liveState, 1, { type: "steer_update", responseId: "first", phase: "accepted" }, deps);
+        applyAgentEvent(liveState, 1, { type: "steer_update", responseId: "first", phase: "failed" }, deps);
+        applyAgentEvent(liveState, 1, { type: "text_delta", delta: "原回答" }, deps);
+        applyAgentEvent(liveState, 1, { type: "message_end", content: "原回答", stopReason: "stop" }, deps);
+
+        const replayState = createSessionUiState();
+        projectHistory(replayState, [
+            event(1, "user_message", { text: "原问题", trigger: "user", turnId: TURN_ID }),
+            event(2, "steer_update", { turnId: TURN_ID, responseId: "first", phase: "accepted" }),
+            event(3, "steer_update", { turnId: TURN_ID, responseId: "first", phase: "failed" }),
+            event(4, "turn_message", { turnId: TURN_ID, message: { role: "assistant", content: "原回答" } }),
+            event(5, "turn_commit", {
+                turnId: TURN_ID, events: [2, 3, 4], userMessages: ["原问题"],
+                stopReason: "stop", interrupted: false, usage: emptyUsage(),
+            }),
+        ], makeDeps(), false);
+
+        expect(segmentsOf(liveState)).toEqual(["text:原回答"]);
+        expect(segmentsOf(replayState)).toEqual(segmentsOf(liveState));
+    });
+
+    test("等待工具结果的 parent 回复只显示一次，工具调用仍参与时间线", () => {
+        const replayState = createSessionUiState();
+        projectHistory(replayState, [
+            event(1, "user_message", { text: "开始", trigger: "user", turnId: TURN_ID }),
+            event(2, "steer_update", {
+                turnId: TURN_ID, responseId: "parent", phase: "completed",
+                text: "准备调用工具", isAwaitingToolInput: true,
+            }),
+            event(3, "turn_message", {
+                turnId: TURN_ID,
+                message: {
+                    role: "assistant", content: "准备调用工具",
+                    tool_calls: [{ id: "call_a", type: "function", function: { name: "lookup", arguments: "{}" } }],
+                },
+            }),
+            event(4, "turn_message", {
+                turnId: TURN_ID, message: { role: "tool", tool_call_id: "call_a", name: "lookup", content: "结果" },
+            }),
+            event(5, "turn_message", { turnId: TURN_ID, message: { role: "assistant", content: "最终回答" } }),
+            event(6, "turn_commit", {
+                turnId: TURN_ID, events: [2, 3, 4, 5], userMessages: ["开始"],
+                stopReason: "stop", interrupted: false, usage: emptyUsage(),
+            }),
+        ], makeDeps(), false);
+
+        expect(segmentsOf(replayState)).toEqual([
+            "text:准备调用工具", "steer_status", "tool:1", "text:最终回答",
+        ]);
+    });
+
     // 用户主动中止：实时（aborted 事件）与重放（turn_commit.interrupted + stopReason=aborted）
     // 的段与措辞必须一致，否则中止后切个会话/重启，屏幕上那句话就换了词。
     test("用户中止：实时与重放的收尾段逐字一致", () => {

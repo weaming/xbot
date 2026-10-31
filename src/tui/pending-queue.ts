@@ -9,7 +9,11 @@
 import type { ImageAssetRef } from "../types/image.js";
 
 /** 一条待发消息：纯文本，或带图片附件的文本。 */
-export type PendingMessage = string | { text: string; images: ImageAssetRef[] };
+export type PendingMessage = string | {
+    text: string;
+    images: ImageAssetRef[];
+    steer?: { state: "sending" | "accepted" | "failed" | "queued"; responseId?: string };
+};
 
 interface QueueState {
     messages: PendingMessage[];
@@ -101,10 +105,22 @@ export class PendingQueue {
         return true;
     }
 
-    /** 按对象身份移除已被上游接受 steering 的消息。 */
+    /** 按对象身份移除已提交的 steering 消息。 */
     removeMessage(sessionId: string | null, message: PendingMessage): boolean {
         const index = this.stateOf(sessionId).messages.indexOf(message);
         return index >= 0 && this.removeAt(sessionId, index);
+    }
+
+    /** steer 回执按响应 ID 归属到仍在队列中的消息；同一响应的 steer 串行发送。 */
+    updateSteerStatus(sessionId: string, responseId: string, state: "accepted" | "failed"): boolean {
+        const messages = this.queues.get(sessionId)?.messages ?? [];
+        const candidates = messages.filter((message): message is Exclude<PendingMessage, string> =>
+            typeof message !== "string" && message.steer !== undefined);
+        const message = candidates.find(item => item.steer?.responseId === responseId)
+            ?? candidates.find(item => item.steer?.state === "sending" && !item.steer.responseId);
+        if (!message?.steer) return false;
+        message.steer = { state, responseId };
+        return true;
     }
 
     /** 清空某会话队列（清空会话、新建、关闭、删除、退出时使用）。 */

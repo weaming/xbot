@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { recordLLMExchange } from "../../utils/logger.js";
 import { isInternalHostname } from "../../utils/proxy.js";
 import { buildResponsesContinuation, ResponsesBaselineStore, responsesIdentity, type ResponseBaseline } from "./responses-baseline.js";
+import type { SteerUpdate } from "../../types/chat.js";
 
 class WebSocketConnectError extends Error {}
 class WebSocketReconnectError extends Error {}
@@ -37,6 +38,8 @@ interface PendingSteer {
   input: string;
   onAccepted?: () => void;
   responseId?: string;
+  steerId?: string;
+  isAccepted?: boolean;
   resolve(accepted: boolean): void;
   timer: ReturnType<typeof setTimeout>;
 }
@@ -229,6 +232,8 @@ export class ResponsesSession {
 
   private sendSteer(steer: PendingSteer, responseId: string): void {
     if (steer.responseId || !this.socket) return;
+    // 失败回执可能没有 steer ID；同一 parent 的请求串行发送才能可靠关联。
+    if (this.pendingSteers.some(item => item !== steer && item.responseId === responseId)) return;
     steer.responseId = responseId;
     this.sendWs(this.socket, {
       type: "response.steer",
@@ -337,6 +342,7 @@ export class ResponsesSession {
     params: Record<string, any>,
     signal?: AbortSignal,
     onSteerAccepted?: (input: string) => Promise<void>,
+    onSteerUpdate?: (update: SteerUpdate) => Promise<void>,
   ): AsyncGenerator<any> {
     if (signal?.aborted) throw new DOMException("请求已取消", "AbortError");
     if (this.isBusy) throw new Error("Responses WebSocket 正在处理另一请求");
@@ -371,6 +377,15 @@ export class ResponsesSession {
     let isStarted = false;
     let canRetryFull = false;
     const outputItems: any[] = [];
+    const parentSnapshots = new Map<string, SteerUpdate>();
+    let currentOutputText = "";
+    const emitParentSegment = async (parentId: string | undefined, isAwaitingToolInput = false) => {
+      if (!parentId) return;
+      const snapshot = parentSnapshots.get(parentId);
+      if (!snapshot) return;
+      parentSnapshots.delete(parentId);
+      await onSteerUpdate?.(isAwaitingToolInput ? { ...snapshot, isAwaitingToolInput } : snapshot);
+    };
 
     try {
       await this.loadBaseline(fullRequest);
@@ -407,34 +422,53 @@ export class ResponsesSession {
         if (event.type !== "message") continue;
         const message: any = event.message;
         if (message.type === "response.created" && typeof message.response?.id === "string") {
-          if (expectedContinuation && message.response.id !== responseId) {
+          const previousResponseId = responseId;
+          if (expectedContinuation && message.response.id !== previousResponseId) {
             expectedContinuation = false;
             isTerminal = false;
+            await emitParentSegment(previousResponseId);
+            const committed = this.pendingSteers.filter(item => item.responseId === previousResponseId && item.isAccepted);
+            for (const steer of committed) {
+              this.finishSteer(steer, true);
+              await onSteerAccepted?.(steer.input);
+            }
           }
           responseId = message.response.id;
           this.activeResponseId = message.response.id;
+          currentOutputText = "";
           for (const steer of this.pendingSteers) this.sendSteer(steer, message.response.id);
           if (signal?.aborted) sendInterrupt();
         }
         if (message.type === "response.steer.accepted") {
           const targetId = message.steer?.previous_response_id;
           const steer = this.pendingSteers.find(item => item.responseId === targetId);
-          if (steer) {
+          if (steer && !steer.isAccepted) {
             hasSteered = true;
             expectedContinuation = true;
             steeredParentIds.add(targetId);
+            steer.isAccepted = true;
+            steer.steerId = message.steer?.id;
+            await onSteerUpdate?.({ responseId: targetId, phase: "accepted" });
             if (terminalResponseId === targetId) {
               isTerminal = false;
               isCompleted = false;
             }
-            await onSteerAccepted?.(steer.input);
-            this.finishSteer(steer, true);
           }
         }
         if (message.type === "response.steer.failed") {
           const targetId = message.steer?.previous_response_id;
-          const steer = this.pendingSteers.find(item => item.responseId === targetId);
-          if (steer) this.finishSteer(steer, false);
+          const steer = this.pendingSteers.find(item => item.responseId === targetId
+            && (!message.steer?.id || item.steerId === message.steer.id));
+          if (steer) {
+            this.finishSteer(steer, false);
+            await onSteerUpdate?.({ responseId: targetId, phase: "failed" });
+            if (steer.isAccepted) {
+              steeredParentIds.delete(targetId);
+              expectedContinuation = false;
+            }
+            const next = this.pendingSteers.find(item => !item.responseId);
+            if (next && targetId === responseId && !isTerminal) this.sendSteer(next, targetId);
+          }
           if (terminalResponseId === targetId && !this.pendingSteers.some(item => item.responseId === targetId)) {
             isTerminal = true;
           }
@@ -446,7 +480,26 @@ export class ResponsesSession {
           throw new Error(`Responses WebSocket 中断失败: ${JSON.stringify(message)}`);
         }
         if (typeof message.type === "string" && message.type.startsWith("response.")) isStarted = true;
+        if (message.type === "response.output_text.delta" && typeof message.delta === "string") currentOutputText += message.delta;
+        if (message.type === "response.output_text.done" && !currentOutputText && typeof message.text === "string") {
+          currentOutputText = message.text;
+        }
         if (message.type === "response.output_item.done") outputItems[message.output_index] = message.item;
+        if ((message.type === "response.completed" || message.type === "response.incomplete")
+          && typeof message.response?.id === "string") {
+          const output = Array.isArray(message.response.output) ? message.response.output : outputItems.filter(Boolean);
+          const outputText = output.flatMap((item: any) => item?.type === "message"
+            ? (item.content ?? []).filter((part: any) => part?.type === "output_text").map((part: any) => part.text ?? "")
+            : []).join("");
+          const text = message.type === "response.incomplete"
+            ? (currentOutputText || outputText)
+            : (outputText || currentOutputText);
+          parentSnapshots.set(message.response.id, {
+            responseId: message.response.id,
+            phase: message.type === "response.completed" ? "completed" : "steered",
+            ...(text ? { text } : {}),
+          });
+        }
         if (message.type === "response.completed") {
           const response = message.response;
           terminalResponseId = response?.id;
@@ -473,7 +526,15 @@ export class ResponsesSession {
           isTerminal = !isSteeredParent;
         }
         if (message.type === "response.steer.pending") {
+          // 客户端工具结果尚未提交：本轮结束时关闭当前 WS，下一请求用完整历史重放，
+          // 不在新连接上依赖旧连接里排队的 steering 输入。
           await this.saveBaseline(undefined, fullRequest);
+          await emitParentSegment(message.steer?.previous_response_id, true);
+          const steer = this.pendingSteers.find(item => item.steerId === message.steer?.id && item.isAccepted);
+          if (steer) {
+            this.finishSteer(steer, true);
+            await onSteerAccepted?.(steer.input);
+          }
           isTerminal = true;
         }
         yield message;
@@ -507,8 +568,9 @@ export class ResponsesSession {
     signal?: AbortSignal,
     onSteerAccepted?: (input: string) => Promise<void>,
     useWebSocket = true,
+    onSteerUpdate?: (update: SteerUpdate) => Promise<void>,
   ): Promise<any> {
-    const events = this.streamWithFallback(params, signal, onSteerAccepted, useWebSocket);
+    const events = this.streamWithFallback(params, signal, onSteerAccepted, useWebSocket, onSteerUpdate);
     if (params.stream) return events;
     for await (const event of events) {
       if (event.type === "response.completed") return event.response;
@@ -524,12 +586,13 @@ export class ResponsesSession {
     signal?: AbortSignal,
     onSteerAccepted?: (input: string) => Promise<void>,
     useWebSocket = true,
+    onSteerUpdate?: (update: SteerUpdate) => Promise<void>,
   ): AsyncGenerator<any> {
     if (useWebSocket && !this.useHttp) {
       let canReconnect = true;
       while (true) {
         try {
-          yield* this.stream(params, signal, onSteerAccepted);
+          yield* this.stream(params, signal, onSteerAccepted, onSteerUpdate);
           return;
         } catch (error) {
           if (signal?.aborted) throw error;

@@ -4,6 +4,7 @@ import {
     enqueueInput,
     joinInputs,
     pendingStats,
+    removeInput,
     takeInputs,
 } from "./pending-inputs.js";
 
@@ -28,6 +29,21 @@ describe("待发输入队列", () => {
         enqueueInput(sessionId, "   \n ", "request");
 
         expect(pendingStats(sessionId)).toEqual({ request: 0, turn: 0 });
+    });
+
+    test("相同文本的 steer 回执只移除对应入队项", () => {
+        const sessionId = "sess-duplicate-steer";
+        const first = enqueueInput(sessionId, "一样的指令", "request")!;
+        const second = enqueueInput(sessionId, "一样的指令", "request")!;
+
+        expect(removeInput(sessionId, second, "request")).toBe(true);
+        expect(pendingStats(sessionId).request).toBe(1);
+        expect(takeInputs(sessionId, "request")).toEqual(["一样的指令"]);
+        expect(removeInput(sessionId, first, "request")).toBe(false);
+        enqueueInput(sessionId, "一样的指令", "request");
+        expect(removeInput(sessionId, first, "request")).toBe(false);
+        expect(pendingStats(sessionId).request).toBe(1);
+        clearInputs(sessionId);
     });
 
     test("多条排队输入合成一段，不拆成多个回合", () => {

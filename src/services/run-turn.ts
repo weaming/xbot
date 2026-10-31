@@ -14,7 +14,7 @@ import { getToolDefinitionsTokens, runChatQuery } from "./chat-runtime.js";
 import { isAbortError, type ChatExecutionResult } from "../tools/chat-orchestrator.js";
 import { appendCompletedTurn, appendInterruptedTurn } from "../utils/conversation-history.js";
 import type { LLMRequestKind } from "../utils/logger.js";
-import type { StreamDelta, UsageInfo } from "../types/chat.js";
+import type { SteerUpdate, StreamDelta, UsageInfo } from "../types/chat.js";
 import type { ChatMessage, Session } from "../types/session.js";
 import type { ToolCall } from "../types/tool-call.js";
 import { toUserContent, type UserContent, type UserMessageInput } from "../types/image.js";
@@ -60,6 +60,7 @@ export interface TurnHooks {
     /** 回合内每条完整消息即时落盘，返回分配到的 seq。 */
     persistTurnMessage(message: ChatMessage, turnId: string): Promise<number>;
     persistStreamDelta?(delta: StreamDelta, turnId: string, requestIndex: number): Promise<void>;
+    persistSteerUpdate?(update: SteerUpdate, turnId: string): Promise<number>;
     /** 回合内压缩成功的落盘回调：摘要吸收掉的消息在重放时不能再物化。 */
     onTurnCompact?(compactedContext: string, turnId: string): Promise<void>;
     /** 段边界落盘，返回分配到的 seq。 */
@@ -213,6 +214,11 @@ export async function runTurnCore(spec: TurnSpec, hooks: TurnHooks): Promise<Tur
                     images: pending.flatMap(input => typeof input === "string" ? [] : input.images ?? []),
                 }, turnId);
                 tracker.pendingUser();
+            },
+            onSteerUpdate: async update => {
+                const seq = await hooks.persistSteerUpdate?.(update, turnId);
+                if (seq !== undefined) eventSeqs.push(Promise.resolve(seq));
+                void hooks.onEvent?.({ type: "steer_update", ...update });
             },
             onTurnMessage: async message => {
                 const seqPromise = hooks.persistTurnMessage(message, turnId);

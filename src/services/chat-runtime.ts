@@ -17,7 +17,7 @@ import {
 import { isToolSearchEnabled, supportsAudioInput } from "../tools/orchestrator/turn-request.js";
 import { resolveProtocol } from "../tools/orchestrator/request-builder.js";
 import type { ChatMessage, Session } from "../types/session.js";
-import type { StreamDelta } from "../types/chat.js";
+import type { SteerUpdate, StreamDelta } from "../types/chat.js";
 import { toUserContent, type UserContent, type UserMessageInput } from "../types/image.js";
 import type { ToolCall } from "../types/tool-call.js";
 import { getSessionContextHistory } from "../utils/conversation-history.js";
@@ -265,6 +265,7 @@ export interface ChatRunOptions {
     disableToolCalls?: boolean;
     consumePendingMessages?: () => Array<string | UserMessageInput> | undefined;
     onConsumePending?: (text: string, messages: Array<string | UserMessageInput>) => void | Promise<void>;
+    onSteerUpdate?: (update: SteerUpdate) => Promise<void>;
     onToolCall?: (name: string, args: any, mode: "serial" | "parallel") => void;
     onToolResult?: (name: string, result: string) => void;
     onAssistantToolCallContent?: (content: string) => Promise<void> | void;
@@ -473,6 +474,7 @@ export async function runChatQuery(options: ChatRunOptions) {
             stream: options.stream,
             consumePendingMessages: options.consumePendingMessages,
             onConsumePending: options.onConsumePending,
+            onSteerUpdate: options.onSteerUpdate,
             compactMessagesIfNeeded: options.autoCompactActiveTurn || options.compactOnProviderOverflow
                 ? async (messages, lastPromptTokens, providerMaxTokens) => {
                     if (!options.autoCompactActiveTurn && providerMaxTokens === undefined) return undefined;

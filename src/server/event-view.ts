@@ -189,6 +189,17 @@ export function toSessionEventView(event: AgentEvent): SessionEventView | null {
         case "peer_result":
             // 时间线只显示一行提示，正文不下发
             return { ...base, payload: { ok: event.payload.ok } };
+        case "steer_update":
+            return {
+                ...base,
+                payload: {
+                    turnId: event.payload.turnId,
+                    responseId: event.payload.responseId,
+                    phase: event.payload.phase,
+                    ...(event.payload.text ? { text: event.payload.text } : {}),
+                    ...(event.payload.isAwaitingToolInput ? { isAwaitingToolInput: true } : {}),
+                },
+            };
         case "context_compacted":
         case "assistant_history_repaired":
             return { ...base, payload: {} };

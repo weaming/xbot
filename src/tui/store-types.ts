@@ -34,6 +34,7 @@ export type AssistantTimelineItem =
     | { type: "reasoning"; text: string; renderedOffset?: number }
     | { type: "text"; text: string }
     | { type: "user"; text: string }
+    | { type: "steer_status"; responseId: string; phase: "completed" | "steered" }
     | { type: "tool"; block: ToolBlock }
     /** 回合执行期间到达的会话间消息/结果：按到达时机与文本/工具片段交错。 */
     | { type: "peer"; text: string; peer: PeerMeta }

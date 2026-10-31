@@ -6,7 +6,7 @@
 
 import OpenAI from "openai";
 import type { UIEvent } from "../events/ui-events.js";
-import type { StreamDelta } from "../types/chat.js";
+import type { SteerUpdate, StreamDelta } from "../types/chat.js";
 import { toUserContent, type UserContent, type UserMessageInput } from "../types/image.js";
 import type { ChatMessage } from "../types/session.js";
 import { type ToolCall } from "../types/tool-call.js";
@@ -104,7 +104,7 @@ export function createChatClient(
     },
     async createResponse(params, options) {
       const useWebSocket = isResponsesWebSocketEnabled(undefined, params.model);
-      return responsesSession.session.create(params, options?.signal, options?.onSteerAccepted, useWebSocket);
+      return responsesSession.session.create(params, options?.signal, options?.onSteerAccepted, useWebSocket, options?.onSteerUpdate);
     },
     close() { responsesSession.release(); },
     preconnect() {
@@ -162,6 +162,7 @@ export interface OrchestratorOptions {
   /** 消费执行期间累积的 pending 消息（组合成一条附加到后续请求） */
   consumePendingMessages?: () => Array<string | UserMessageInput> | undefined;
   onConsumePending?: (text: string, messages: Array<string | UserMessageInput>) => void | Promise<void>;
+  onSteerUpdate?: (update: SteerUpdate) => Promise<void>;
   /** 后续工具轮次发请求前，可替换仅用于请求的上下文；完整本轮消息仍单独保留。 */
   compactMessagesIfNeeded?: (messages: ChatMessage[], lastPromptTokens?: number, providerMaxTokens?: number) => Promise<ChatMessage[] | undefined>;
   /** 每轮请求前返回仅用于本次请求的提醒消息（不落盘、不进历史），用于任务清单等状态回环。 */
@@ -212,6 +213,7 @@ export async function executeWithChat(
     initialRequestKind = "user_request",
     consumePendingMessages,
     onConsumePending,
+    onSteerUpdate,
     compactMessagesIfNeeded,
     getContextReminders,
     onTurnMessage,
@@ -334,6 +336,7 @@ export async function executeWithChat(
         appendTurnMessage({ role: "user", content: toUserContent(input) });
         await onConsumePending?.(text, [input]);
       },
+      onSteerUpdate,
     }),
   };
 
@@ -368,11 +371,12 @@ async function sendProtocolRequest(input: {
   emit: (event: UIEvent) => void;
   persistDelta?: (delta: StreamDelta) => Promise<void>;
   onSteerAccepted?: (input: string) => Promise<void>;
+  onSteerUpdate?: (update: SteerUpdate) => Promise<void>;
 }): Promise<any> {
-  const { client, protocol, requestBody, stream, signal, emit, persistDelta, onSteerAccepted } = input;
+  const { client, protocol, requestBody, stream, signal, emit, persistDelta, onSteerAccepted, onSteerUpdate } = input;
   if (protocol === "responses") {
     return stream
-      ? collectResponsesResponse(client, requestBody, signal, emit, persistDelta, onSteerAccepted)
+      ? collectResponsesResponse(client, requestBody, signal, emit, persistDelta, onSteerAccepted, onSteerUpdate)
       : client.createResponse?.(requestBody, { signal });
   }
   return stream
@@ -406,8 +410,9 @@ async function collectResponsesResponse(
   emit: (event: UIEvent) => void,
   persistDelta?: (delta: StreamDelta) => Promise<void>,
   onSteerAccepted?: (input: string) => Promise<void>,
+  onSteerUpdate?: (update: SteerUpdate) => Promise<void>,
 ): Promise<any> {
-  const stream = await client.createResponse?.(requestBody, { signal, onSteerAccepted });
+  const stream = await client.createResponse?.(requestBody, { signal, onSteerAccepted, onSteerUpdate });
   if (!stream || typeof stream[Symbol.asyncIterator] !== "function") return stream;
   return collectResponsesStream(stream, emit, persistDelta);
 }

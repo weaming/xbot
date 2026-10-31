@@ -327,6 +327,61 @@ describe("ChatApp pending queue", () => {
         expect(store.currentSessionId).toBeNull();
     });
 
+    test("steer 接受后移除待发项并立即在当前时间线显示用户补充消息", () => {
+        const agent = makeFakeAgent();
+        const store = new ChatStore();
+        const app = new ChatApp(agent as any, store);
+        const sessionId = "sess-steer";
+        store.setCurrentSession(sessionId);
+        (agent as any).isSessionBusy = () => true;
+        let accept: (() => void) | undefined;
+        (agent as any).steerResponse = (_id: string, _text: string, onAccepted: () => void) => {
+            accept = onAccepted;
+            return Promise.resolve(true);
+        };
+
+        app.enqueueOrSend("正在运行时的补充");
+        expect(app.pendingMessages).toEqual(["正在运行时的补充"]);
+        expect(store.messages).toHaveLength(0);
+
+        accept?.();
+        expect(app.pendingMessages).toEqual([]);
+        expect(store.messages.some(message =>
+            message.text === "正在运行时的补充"
+            || message.timeline?.some(item => item.type === "user" && item.text === "正在运行时的补充"),
+        )).toBe(true);
+    });
+
+    test("steer 状态贴在对应 pending 消息右侧，不占助手时间线", async () => {
+        const agent = makeFakeAgent();
+        const store = new ChatStore();
+        const app = new ChatApp(agent as any, store);
+        await app.init();
+        const sessionId = "sess-steer-status";
+        store.setCurrentSession(sessionId);
+        (agent as any).isSessionBusy = () => true;
+        (agent as any).steerResponse = () => new Promise<boolean>(() => {});
+
+        app.enqueueOrSend("第一条");
+        app.enqueueOrSend("第二条");
+        const lines = () => (app as any).pendingList.children.slice(1)
+            .map((child: any) => stripTerminalSequences(child.getText()));
+
+        expect(lines()[0]).toMatch(/第一条\s+切入中$/);
+        expect(lines()[1]).toMatch(/第二条\s+切入中$/);
+        expect(visibleWidth(lines()[0])).toBe(visibleWidth(lines()[1]));
+
+        agent.onEvent?.(1, sessionId, { type: "steer_update", responseId: "response-a", phase: "accepted" });
+        expect(lines()[0]).toMatch(/第一条\s+已接收$/);
+        expect(lines()[1]).toMatch(/第二条\s+切入中$/);
+
+        agent.onEvent?.(1, sessionId, { type: "steer_update", responseId: "response-a", phase: "failed" });
+        agent.onEvent?.(1, sessionId, { type: "steer_update", responseId: "response-b", phase: "accepted" });
+        expect(lines()[0]).toMatch(/第一条\s+切入失败$/);
+        expect(lines()[1]).toMatch(/第二条\s+已接收$/);
+        expect(store.messages.every(message => message.role !== "assistant")).toBe(true);
+    });
+
     test("deletePending 按索引删除，pendingIndex 越界时收回", () => {
         const agent = makeFakeAgent();
         const store = new ChatStore();

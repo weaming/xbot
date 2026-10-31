@@ -85,6 +85,9 @@ export interface AgentEvent {
         text?: string;
         /** user_message 的来源：user=本人输入，pending=回合中补发，peer=别的会话 */
         trigger?: "user" | "pending" | "peer";
+        responseId?: string;
+        phase?: "accepted" | "failed" | "completed" | "steered";
+        isAwaitingToolInput?: boolean;
         /** 所属回合：配合 turn_commit 判断该回合是否已收尾 */
         turnId?: string;
         images?: Array<{ id: string; path: string; filename: string; mimeType: string }>;

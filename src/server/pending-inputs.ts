@@ -15,9 +15,13 @@ export interface PendingStats {
     turn: number;
 }
 
-const queues = new Map<string, Record<PendingMode, string[]>>();
+export interface PendingInput {
+    text: string;
+}
 
-function stateOf(sessionId: string): Record<PendingMode, string[]> {
+const queues = new Map<string, Record<PendingMode, PendingInput[]>>();
+
+function stateOf(sessionId: string): Record<PendingMode, PendingInput[]> {
     let state = queues.get(sessionId);
     if (!state) {
         state = { request: [], turn: [] };
@@ -26,16 +30,18 @@ function stateOf(sessionId: string): Record<PendingMode, string[]> {
     return state;
 }
 
-export function enqueueInput(sessionId: string, text: string, mode: PendingMode): void {
+export function enqueueInput(sessionId: string, text: string, mode: PendingMode): PendingInput | undefined {
     const trimmed = text.trim();
-    if (!trimmed) return;
-    stateOf(sessionId)[mode].push(trimmed);
+    if (!trimmed) return undefined;
+    const input = { text: trimmed };
+    stateOf(sessionId)[mode].push(input);
+    return input;
 }
 
-/** 移除 steering 已接受的消息，避免下一请求再次附加。 */
-export function removeInput(sessionId: string, text: string, mode: PendingMode): boolean {
+/** 移除已提交的 steering 消息，避免下一请求再次附加。 */
+export function removeInput(sessionId: string, input: PendingInput, mode: PendingMode): boolean {
     const inputs = queues.get(sessionId)?.[mode];
-    const index = inputs?.indexOf(text) ?? -1;
+    const index = inputs?.indexOf(input) ?? -1;
     if (!inputs || index < 0) return false;
     inputs.splice(index, 1);
     return true;
@@ -47,7 +53,7 @@ export function takeInputs(sessionId: string, mode: PendingMode): string[] | und
     if (!state || state[mode].length === 0) return undefined;
     const taken = state[mode];
     state[mode] = [];
-    return taken;
+    return taken.map(input => input.text);
 }
 
 export function pendingStats(sessionId: string): PendingStats {

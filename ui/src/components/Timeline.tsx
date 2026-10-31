@@ -311,9 +311,31 @@ export function Timeline({
     const firstUserSeq = events.find(event => event.type === "user_message")?.seq;
 
     const nodes: ReactNode[] = [];
+    let pendingSteerText: string | undefined;
     for (const event of events) {
         const payload = event.payload;
         switch (event.type) {
+            case "steer_update": {
+                const phase = payload.phase;
+                if (phase === "accepted") {
+                    nodes.push(<Notice key={event.seq} text="↪ Steer 已接收，等待应用" />);
+                } else if (phase === "failed") {
+                    nodes.push(<Notice key={event.seq} text="↪ Steer 未应用，消息仍在待发队列" />);
+                } else if (phase === "completed" || phase === "steered") {
+                    pendingSteerText = payload.isAwaitingToolInput ? payload.text : undefined;
+                    nodes.push(
+                        <div key={event.seq} className="flex flex-col gap-1">
+                            <span className="text-xs text-muted">
+                                {phase === "completed"
+                                    ? payload.isAwaitingToolInput ? "↪ 前段回复已完成 · 等待工具结果" : "↪ 前段回复已完成 · 等待 Steer 续接"
+                                    : "↪ 前段回复已切换 · 以下为切换前快照"}
+                            </span>
+                            {payload.text && <AssistantMessage content={payload.text} />}
+                        </div>,
+                    );
+                }
+                break;
+            }
             case "user_message":
                 nodes.push(
                     <UserMessage key={event.seq} event={event} isFirst={event.seq === firstUserSeq} />,
@@ -337,7 +359,9 @@ export function Timeline({
                 const message = payload.message;
                 if (!message) break;
                 if (message.role === "assistant") {
-                    const hasContent = typeof message.content === "string" && message.content.trim().length > 0;
+                    const hasContent = typeof message.content === "string" && message.content.trim().length > 0
+                        && message.content !== pendingSteerText;
+                    pendingSteerText = undefined;
                     // 只有"最后一轮、还没收尾"的那条 assistant 消息显示，历史轮不显示
                     const hasReasoning = event.seq === pendingThinkSeq;
                     nodes.push(

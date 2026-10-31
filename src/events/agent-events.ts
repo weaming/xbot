@@ -9,7 +9,7 @@
  */
 
 import type { ChatMessage, SessionOrigin } from "../types/session.js";
-import type { StreamDelta, UsageInfo } from "../types/chat.js";
+import type { SteerUpdate, StreamDelta, UsageInfo } from "../types/chat.js";
 import type { ImageInputRef, UserMessageInput } from "../types/image.js";
 import type { ChatModelSelection } from "../types/chat-model.js";
 
@@ -20,6 +20,7 @@ export type AgentEventType =
     | "peer_result"
     | "turn_message"
     | "turn_stream_delta"
+    | "steer_update"
     | "turn_segment_start"
     | "turn_commit"
     | "context_compacted"
@@ -93,6 +94,8 @@ export interface AgentEventPayloads {
     turn_message: { turnId: string; message: ChatMessage };
     /** 流式片段先落盘再展示；完整 assistant 消息落盘后不再用这些片段恢复。 */
     turn_stream_delta: { turnId: string; requestIndex: number; delta: StreamDelta };
+    /** UI 专用的 steer 状态与前响应快照；不进入模型消息历史。 */
+    steer_update: { turnId: string } & SteerUpdate;
     /**
      * 回合内的段边界（时间线分段）：每段**开始**时落一条，seq 即该段的起始时间。
      * 群消息按 seq 与段边界比较，就能在重放时插到与实时一致的段位。

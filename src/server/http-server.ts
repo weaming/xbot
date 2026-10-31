@@ -442,9 +442,13 @@ export function startHttpServer(options: HttpServerOptions): HttpServerHandle {
                         if (images && images.length > 0) {
                             return fail("当前回合进行中，带图片的消息请等它结束后再发", 409);
                         }
-                        enqueueInput(sessionId, text, mode);
+                        const pendingInput = enqueueInput(sessionId, text, mode);
                         if (mode === "request") {
-                            void host.steerResponse?.(sessionId, text, () => removeInput(sessionId, text, mode));
+                            void host.steerResponse?.(sessionId, text, () => {
+                                if (pendingInput) removeInput(sessionId, pendingInput, mode);
+                            }).catch(error => {
+                                console.error(`[serve] 会话 ${sessionId} steer 失败，保留待发消息:`, error);
+                            });
                         }
                         return json({ started: false, queued: true, mode, unarchived, pending: pendingStats(sessionId) }, 202);
                     }

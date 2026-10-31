@@ -200,6 +200,211 @@ describe("Responses WebSocket", () => {
     }
   });
 
+  test("同一响应的多个 steer 逐个确认，且每条只记录一次接受事件", async () => {
+    const sent: any[] = [];
+    const updates: string[] = [];
+    let acceptFirst: (() => void) | undefined;
+    let commitFirst: (() => void) | undefined;
+    const server = Bun.serve({
+      port: 0,
+      fetch(request, server) {
+        if (server.upgrade(request)) return;
+        return new Response("upgrade required", { status: 400 });
+      },
+      websocket: {
+        message(socket, data) {
+          const request = JSON.parse(data.toString());
+          if (request.generate === false) {
+            socket.send(JSON.stringify({ type: "response.completed", response: { id: "warmup", output: [] } }));
+            return;
+          }
+          if (request.type === "response.create") {
+            socket.send(JSON.stringify({ type: "response.created", response: { id: "parent" } }));
+            return;
+          }
+          sent.push(request);
+          if (sent.length === 1) {
+            acceptFirst = () => {
+              socket.send(JSON.stringify({ type: "response.steer.accepted", steer: { previous_response_id: "parent" } }));
+            };
+            commitFirst = () => {
+              socket.send(JSON.stringify({ type: "response.completed", response: {
+                id: "parent", output: [{ type: "message", content: [{ type: "output_text", text: "前段完整回复" }] }],
+              } }));
+              socket.send(JSON.stringify({ type: "response.created", response: { id: "continuation" } }));
+            };
+          } else {
+            socket.send(JSON.stringify({ type: "response.steer.accepted", steer: { previous_response_id: "continuation" } }));
+            socket.send(JSON.stringify({ type: "response.output_text.delta", delta: "切换前的片段" }));
+            socket.send(JSON.stringify({
+              type: "response.incomplete",
+              response: { id: "continuation", incomplete_details: { reason: "steered" }, output: [] },
+            }));
+            socket.send(JSON.stringify({ type: "response.created", response: { id: "final" } }));
+            socket.send(JSON.stringify({ type: "response.completed", response: { id: "final", output: [] } }));
+          }
+        },
+      },
+    });
+    const client = new OpenAI({ apiKey: "test-key", baseURL: `http://127.0.0.1:${server.port}/v1` });
+    const session = new ResponsesSession(client, true);
+    const accepted: string[] = [];
+    const events: string[] = [];
+    try {
+      const reading = (async () => {
+        for await (const event of session.stream(
+          { model: "test", input: [], store: false }, undefined,
+          async text => { accepted.push(text); updates.push(`applied:${text}`); },
+          async update => { updates.push(`${update.phase}:${update.responseId}:${update.text ?? ""}`); },
+        )) events.push(event.type);
+      })();
+      for (let attempt = 0; attempt < 100 && !(session as any).activeResponseId; attempt++) await Bun.sleep(5);
+      expect((session as any).activeResponseId).toBe("parent");
+
+      const first = session.steer("第一条");
+      const second = session.steer("第二条");
+      for (let attempt = 0; attempt < 100 && !acceptFirst; attempt++) await Bun.sleep(5);
+      expect(sent.map(item => item.input)).toEqual(["第一条"]);
+      acceptFirst?.();
+      for (let attempt = 0; attempt < 100 && !events.includes("response.steer.accepted"); attempt++) await Bun.sleep(5);
+      expect(accepted).toEqual([]);
+      expect(sent).toHaveLength(1);
+      commitFirst?.();
+      expect(await first).toBe(true);
+      expect(await second).toBe(true);
+      await reading;
+      expect(sent.map(item => [item.previous_response_id, item.input])).toEqual([
+        ["parent", "第一条"],
+        ["continuation", "第二条"],
+      ]);
+      expect(accepted).toEqual(["第一条", "第二条"]);
+      expect(updates).toEqual([
+        "accepted:parent:",
+        "completed:parent:前段完整回复",
+        "applied:第一条",
+        "accepted:continuation:",
+        "steered:continuation:切换前的片段",
+        "applied:第二条",
+      ]);
+      expect(events.filter(type => type === "response.steer.accepted")).toHaveLength(2);
+    } finally {
+      session.close();
+      server.stop(true);
+    }
+  });
+
+  test("steer 已接受但后续提交失败时不消费用户消息", async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch(request, server) {
+        if (server.upgrade(request)) return;
+        return new Response("upgrade required", { status: 400 });
+      },
+      websocket: {
+        message(socket, data) {
+          const request = JSON.parse(data.toString());
+          if (request.generate === false) {
+            socket.send(JSON.stringify({ type: "response.completed", response: { id: "warmup", output: [] } }));
+          } else if (request.type === "response.create") {
+            socket.send(JSON.stringify({ type: "response.created", response: { id: "parent" } }));
+          } else {
+            socket.send(JSON.stringify({ type: "response.steer.accepted", steer: { id: "steer_1", previous_response_id: "parent" } }));
+            socket.send(JSON.stringify({ type: "response.steer.failed", steer: { id: "steer_1", previous_response_id: "parent" } }));
+            socket.send(JSON.stringify({ type: "response.completed", response: { id: "parent", output: [] } }));
+          }
+        },
+      },
+    });
+    const client = new OpenAI({ apiKey: "test-key", baseURL: `http://127.0.0.1:${server.port}/v1` });
+    const session = new ResponsesSession(client, true);
+    const accepted: string[] = [];
+    try {
+      const reading = (async () => {
+        for await (const _event of session.stream({ model: "test", input: [], store: false }, undefined, async text => {
+          accepted.push(text);
+        })) { /* consume */ }
+      })();
+      for (let attempt = 0; attempt < 100 && !(session as any).activeResponseId; attempt++) await Bun.sleep(5);
+      expect(await session.steer("不能丢")).toBe(false);
+      await reading;
+      expect(accepted).toEqual([]);
+    } finally {
+      session.close();
+      server.stop(true);
+    }
+  });
+
+  test("steer 等待工具结果时记录补充消息，并在下轮断开旧连接后完整重放", async () => {
+    let connections = 0;
+    const requests: any[] = [];
+    const warmups: any[] = [];
+    const server = Bun.serve({
+      port: 0,
+      fetch(request, server) {
+        if (server.upgrade(request)) return;
+        return new Response("upgrade required", { status: 400 });
+      },
+      websocket: {
+        open() { connections++; },
+        message(socket, data) {
+          const request = JSON.parse(data.toString());
+          if (request.generate === false) {
+            warmups.push(request);
+            socket.send(JSON.stringify({ type: "response.completed", response: { id: "warmup", output: [] } }));
+          } else if (request.type === "response.create") {
+            requests.push(request);
+            if (requests.length === 2) {
+              socket.send(JSON.stringify({ type: "response.completed", response: { id: "next", output: [] } }));
+            } else {
+              socket.send(JSON.stringify({ type: "response.created", response: { id: "parent" } }));
+            }
+          } else {
+            socket.send(JSON.stringify({ type: "response.steer.accepted", steer: { id: "steer_1", previous_response_id: "parent" } }));
+            socket.send(JSON.stringify({ type: "response.completed", response: { id: "parent", output: [] } }));
+            socket.send(JSON.stringify({
+              type: "response.steer.pending",
+              steer: { id: "steer_1", previous_response_id: "parent" },
+              reason: "waiting_for_required_input",
+              required_input: [],
+            }));
+          }
+        },
+      },
+    });
+    const client = new OpenAI({ apiKey: "test-key", baseURL: `http://127.0.0.1:${server.port}/v1` });
+    const session = new ResponsesSession(client, true);
+    const accepted: string[] = [];
+    const updates: Array<{ phase: string; isAwaitingToolInput?: boolean }> = [];
+    try {
+      const reading = (async () => {
+        for await (const _event of session.stream(
+          { model: "test", input: [], store: false }, undefined,
+          async text => { accepted.push(text); },
+          async update => { updates.push({ phase: update.phase, isAwaitingToolInput: update.isAwaitingToolInput }); },
+        )) { /* consume */ }
+      })();
+      for (let attempt = 0; attempt < 100 && !(session as any).activeResponseId; attempt++) await Bun.sleep(5);
+      expect(await session.steer("补充")).toBe(true);
+      await reading;
+      expect(accepted).toEqual(["补充"]);
+      expect(updates).toEqual([
+        { phase: "accepted", isAwaitingToolInput: undefined },
+        { phase: "completed", isAwaitingToolInput: true },
+      ]);
+      expect((session as any).socket).toBeUndefined();
+
+      for await (const _event of session.stream({
+        model: "test", input: [{ role: "user", content: "补充" }], store: false,
+      })) { /* consume */ }
+      expect(connections).toBe(2);
+      expect(warmups[1].input).toEqual([{ role: "user", content: "补充" }]);
+      expect(requests[1].previous_response_id).toBe("warmup");
+    } finally {
+      session.close();
+      server.stop(true);
+    }
+  });
+
   test("连接超过 50 分钟存活上限即视为过期", () => {
     const client = new OpenAI({ apiKey: "test-key", baseURL: "http://127.0.0.1:1/v1" });
     const session = new ResponsesSession(client, true, "session-age");

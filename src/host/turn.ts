@@ -150,6 +150,11 @@ export async function runSessionTurn(
                 // 片段不推进 seq：seq 是会话状态时间轴，不能被逐 token 数据抬高
                 await host.eventLog.appendStreamDelta(sessionId, tid, requestIndex, delta);
             },
+            persistSteerUpdate: async (update, tid) => {
+                const appended = await host.eventLog.append(sessionId, "steer_update", { turnId: tid, ...update });
+                host.updateActiveSeq(sessionId, appended.seq);
+                return appended.seq;
+            },
             onTurnCompact: async (compactedContext, tid) => {
                 // 摘要已经取代本回合此前的全部消息（含更早的回合）：
                 // 落事件让重放同样丢弃这些 turn_message，否则重启后上下文又回涨到压缩前。

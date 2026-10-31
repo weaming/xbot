@@ -35,3 +35,12 @@ export interface StreamDelta {
         thoughtSignature?: string;
     }>;
 }
+
+/** Responses steer 的展示事实；不作为模型输入。 */
+export interface SteerUpdate {
+    responseId: string;
+    phase: "accepted" | "failed" | "completed" | "steered";
+    text?: string;
+    /** 云端等待客户端工具结果，下一条助手消息可能再次包含此段正文。 */
+    isAwaitingToolInput?: boolean;
+}

@@ -263,6 +263,9 @@ export async function runServe(argv: string[]): Promise<void> {
             case "aborted":
                 pushLiveEnd(sessionId);
                 break;
+            case "steer_update":
+                if (event.phase === "completed" || event.phase === "steered") pushLiveEnd(sessionId);
+                break;
             default:
                 break;
         }

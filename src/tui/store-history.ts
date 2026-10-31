@@ -14,6 +14,7 @@
 import type { AgentEvent } from "../events/agent-events.js";
 import { isCancelledStopReason } from "../control/protocol.js";
 import type { ChatMessage } from "../types/session.js";
+import type { SteerUpdate } from "../types/chat.js";
 import { StreamRecovery } from "../utils/stream-recovery.js";
 import type { AssistantTimelineItem, SessionUiState, ToolBlock, UiMessage } from "./store-types.js";
 import {
@@ -91,7 +92,9 @@ interface SegmentEntry {
 /**
  * 从回合消息里取最后一条助手正文，包括失败前已收到的部分输出。
  */
-function deriveContent(messages: ChatMessage[]): string {
+type HistoryDisplayMessage = ChatMessage | ({ role: "steer_update"; content?: string } & SteerUpdate);
+
+function deriveContent(messages: HistoryDisplayMessage[]): string {
     for (let i = messages.length - 1; i >= 0; i--) {
         const message = messages[i]!;
         if (message.role !== "assistant") continue;
@@ -106,7 +109,7 @@ function deriveContent(messages: ChatMessage[]): string {
  * chats / segments 用于把回合执行期间到达的群消息按段位插进时间线。
  */
 function buildHistoryTimeline(
-    messages: Array<{ role: string; [key: string]: any }>,
+    messages: HistoryDisplayMessage[],
     content: string,
     interruptMark: string | undefined,
     nextBlockId: () => number,
@@ -118,13 +121,21 @@ function buildHistoryTimeline(
     const toolCalls = extractToolCalls(messages);
     const timeline: AssistantTimelineItem[] = [];
     let reasoning = "";
+    let pendingSteerText: string | undefined;
     // 与实时路径（orchestrator 的 ++toolIdCounter）口径一致：按出现序赋 1..N，
     // 让两侧 toolId 都等于数组序，排序语义统一。
     let toolIdCounter = 0;
 
     for (const message of messages) {
+        if (message.role === "steer_update") {
+            if (message.phase === "accepted" || message.phase === "failed") continue;
+            if (message.content) timeline.push({ type: "text", text: message.content });
+            pendingSteerText = message.isAwaitingToolInput ? message.content : undefined;
+            timeline.push({ type: "steer_status", responseId: message.responseId, phase: message.phase });
+            continue;
+        }
         if (message.role === "user") {
-            const userContent = message.content ?? message.text;
+            const userContent = message.content ?? ("text" in message ? message.text : undefined);
             if (typeof userContent === "string" && userContent) {
                 timeline.push({ type: "user", text: userContent });
             }
@@ -138,9 +149,10 @@ function buildHistoryTimeline(
                 appendTimelineTextToList(timeline, "reasoning", messageReasoning);
             }
 
-            if (typeof message.content === "string" && message.content) {
+            if (typeof message.content === "string" && message.content && message.content !== pendingSteerText) {
                 appendTimelineTextToList(timeline, "text", message.content);
             }
+            pendingSteerText = undefined;
 
             // 托管工具引用：与实时投影一致，排在正文之后
             if (Array.isArray(message.citations) && message.citations.length > 0) {
@@ -258,7 +270,7 @@ export function projectHistory(
     };
 
     // 回合消息（turn_message）按 turnId 归组：内容只存这一份，终态事件只引用。
-    const messagesByTurn = new Map<string, ChatMessage[]>();
+    const messagesByTurn = new Map<string, HistoryDisplayMessage[]>();
     const streamByTurn = new Map<string, StreamRecovery>();
     const appendRecoveredStream = (turnId: string, stream: StreamRecovery): void => {
         const partial = stream.message();
@@ -273,6 +285,16 @@ export function projectHistory(
             const stream = streamByTurn.get(turnId) ?? new StreamRecovery();
             stream.push(requestIndex, delta);
             streamByTurn.set(turnId, stream);
+        } else if (event.type === "steer_update") {
+            const list = messagesByTurn.get(event.payload.turnId) ?? [];
+            list.push({
+                role: "steer_update",
+                responseId: event.payload.responseId,
+                phase: event.payload.phase,
+                content: event.payload.text,
+                isAwaitingToolInput: event.payload.isAwaitingToolInput,
+            });
+            messagesByTurn.set(event.payload.turnId, list);
         } else if (event.type === "turn_message") {
             const list = messagesByTurn.get(event.payload.turnId) ?? [];
             list.push(event.payload.message);
@@ -437,6 +459,7 @@ export function projectHistory(
                 break;
             }
             case "turn_message":
+            case "steer_update":
             case "turn_stream_delta":
                 // 每个未闭合回合在首条消息处渲染一次。
                 if (

@@ -1,4 +1,4 @@
-import type { UsageInfo } from "../types/chat.js";
+import type { SteerUpdate, UsageInfo } from "../types/chat.js";
 import type { Citation } from "../types/session.js";
 
 /**
@@ -41,6 +41,7 @@ export function mergeUsage(total: UsageInfo, usage: UsageInfo): UsageInfo {
 }
 
 export type UIEvent =
+    | ({ type: "steer_update" } & SteerUpdate)
     // 回合边界
     | { type: "turn_start"; iteration: number }
     | { type: "turn_end"; iteration: number }
