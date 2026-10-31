@@ -24,7 +24,6 @@ function toCustomToolCallItem(item: any): any {
     ...(item.id ? { id: item.id } : {}),
     name: item.name,
     input: patchFromArguments(item.arguments) ?? "",
-    status: "completed",
   };
 }
 
@@ -36,7 +35,6 @@ function toFunctionCallItem(item: any): any {
     ...(item.id ? { id: item.id } : {}),
     name: item.name,
     arguments: patchArgumentsJson(typeof item.input === "string" ? item.input : ""),
-    status: "completed",
   };
 }
 
@@ -176,7 +174,6 @@ export async function materializeResponsesInput(messages: ChatMessage[]): Promis
         result.push({
           type: "message",
           role: "assistant",
-          status: "completed",
           content: [{ type: "output_text", text: message.content }],
         });
       }
@@ -187,7 +184,6 @@ export async function materializeResponsesInput(messages: ChatMessage[]): Promis
             call_id: toolCall.id,
             name: toolCall.custom?.name,
             input: typeof toolCall.custom?.input === "string" ? toolCall.custom.input : "",
-            status: "completed",
           });
           continue;
         }
@@ -196,7 +192,6 @@ export async function materializeResponsesInput(messages: ChatMessage[]): Promis
           call_id: toolCall.id,
           name: toolCall.function?.name,
           arguments: toolCall.function?.arguments ?? "{}",
-          status: "completed",
         });
       }
       continue;

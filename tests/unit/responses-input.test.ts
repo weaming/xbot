@@ -26,4 +26,14 @@ describe("Responses input repair", () => {
     expect(repaired[0]).toBe(call);
     expect(repaired[1]).toBe(message);
   });
+
+  test("removes output status without modifying the original item", () => {
+    const call = { type: "function_call", id: "fc_original", status: "completed" };
+
+    const [repaired] = repairResponsesFunctionCallItemIds([call]);
+
+    expect(repaired).toEqual({ type: "function_call", id: "fc_original" });
+    expect(repaired).not.toBe(call);
+    expect(call.status).toBe("completed");
+  });
 });

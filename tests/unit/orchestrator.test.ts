@@ -460,7 +460,6 @@ describe("Chat Orchestrator", () => {
       call_id: "call_00_u5h6LBjP3G1biuashXC12188",
       name: "get_time",
       arguments: "{}",
-      status: "completed",
     });
     expect(request.input[0]).not.toHaveProperty("id");
     expect(request.input[1].call_id).toBe(request.input[0].call_id);

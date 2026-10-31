@@ -242,7 +242,6 @@ describe("历史物化", () => {
                 call_id: "call_1",
                 name: "codex__apply_patch",
                 input: PATCH_TEXT,
-                status: "completed",
             },
             {
                 type: "custom_tool_call_output",
@@ -310,12 +309,53 @@ describe("历史物化", () => {
             call_id: "call_1",
             name: "codex__apply_patch",
             arguments: JSON.stringify({ patch: PATCH_TEXT }),
-            status: "completed",
         }]);
 
         const items = await materializeResponsesInput([shaped[0]] as any);
         expect(items[0].type).toBe("function_call");
         expect(items[0].id.startsWith("fc_")).toBe(true);
+    });
+
+    test("重放历史 reasoning 与工具输出时移除上游输出态 status", async () => {
+        const items = await materializeResponsesInput([
+            {
+                role: "assistant",
+                content: null,
+                response_output: [
+                    {
+                        type: "reasoning",
+                        id: "reasoning_1",
+                        status: "completed",
+                        encrypted_content: "opaque",
+                        summary: [],
+                    },
+                    {
+                        type: "function_call",
+                        id: "fc_1",
+                        call_id: "call_1",
+                        name: "read_file",
+                        arguments: "{}",
+                        status: "completed",
+                    },
+                ],
+            },
+        ] as any);
+
+        expect(items).toEqual([
+            {
+                type: "reasoning",
+                id: "reasoning_1",
+                encrypted_content: "opaque",
+                summary: [],
+            },
+            {
+                type: "function_call",
+                id: "fc_1",
+                call_id: "call_1",
+                name: "read_file",
+                arguments: "{}",
+            },
+        ]);
     });
 });
 
