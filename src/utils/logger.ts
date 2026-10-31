@@ -131,6 +131,7 @@ export function getSessionExchangeLogFile(sessionId: string): string {
 /** 已写入全量 tools 的请求：响应回显同一份 tools 时只记引用，避免每轮重复写。 */
 interface ToolsEchoRef {
     hash: string;
+    echoHash: string;
     requestId: string;
 }
 
@@ -199,7 +200,7 @@ function parseChainEntry(line: string): SessionChainState | null {
         toolsHash,
         // 只有写了 tools 全量的请求才能被引用
         toolsRef: Array.isArray(c.tools) && toolsHash && typeof c.requestId === 'string'
-            ? { hash: toolsHash, requestId: c.requestId } : undefined,
+            ? { hash: toolsHash, echoHash: toolsEchoHashOf(c.tools), requestId: c.requestId } : undefined,
     };
 }
 
@@ -262,28 +263,38 @@ function hashOf(value: unknown): string {
     return createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 16);
 }
 
-/**
- * 工具定义的比对形状：上游回显会给每个工具补 `strict: null/false` 等默认值，键顺序也可能不同；
- * 先做键排序并去掉这些默认值，才能判断响应回显与请求里是否同一份 tools。
- */
-function canonicalizeTools(tools: any[]): unknown[] {
-    const canonical = (value: any): any => {
-        if (Array.isArray(value)) return value.map(canonical);
-        if (!value || typeof value !== "object") return value;
-
-        const out: Record<string, any> = {};
-        for (const key of Object.keys(value).sort()) {
-            if (key === "strict" && (value[key] === null || value[key] === false)) continue;
-            out[key] = canonical(value[key]);
-        }
-        return out;
-    };
-    return tools.map(canonical);
+/** 请求工具 hash 保留 schema 语义及数组顺序，仅忽略对象键顺序。 */
+function toolsHashOf(tools: any[]): string {
+    return hashOf(tools.map(tool => canonicalizeTool(tool, false)));
 }
 
-/** 工具定义 hash：请求与响应用同一套规范化规则，避免回显默认值导致比对失败。 */
-function toolsHashOf(tools: any[]): string {
-    return hashOf(canonicalizeTools(tools));
+/** 回显比对只放宽上游生成的 strict schema 和内置 web_search 默认值。 */
+function canonicalizeTool(value: any, isEcho: boolean): any {
+    if (Array.isArray(value)) return value.map(item => canonicalizeTool(item, isEcho));
+    if (!value || typeof value !== "object") return value;
+
+    const out: Record<string, any> = {};
+    for (const key of Object.keys(value).sort()) {
+        if (isEcho && (key === "required" || key === "output_schema" || key === "strict")) continue;
+        if (isEcho && key === "additionalProperties" && value[key] === false) continue;
+        if (isEcho && value.type === "web_search" && [
+            "return_token_budget", "search_content_types", "search_context_size", "user_location",
+        ].includes(key)) continue;
+        out[key] = canonicalizeTool(value[key], isEcho);
+    }
+    return out;
+}
+
+/** 上游可能把 custom 工具移到列表末尾；仅在身份唯一时按身份排序。 */
+function toolsEchoHashOf(tools: any[]): string {
+    const identities = tools.map(tool => `${tool?.type}:${tool?.name ?? tool?.function?.name ?? ""}`);
+    const isUnique = new Set(identities).size === identities.length;
+    const ordered = isUnique
+        ? tools.map((tool, index) => ({ tool, identity: identities[index] }))
+            .sort((left, right) => left.identity.localeCompare(right.identity))
+            .map(({ tool }) => tool)
+        : tools;
+    return hashOf(ordered.map(tool => canonicalizeTool(tool, true)));
 }
 
 /**
@@ -294,7 +305,7 @@ function referEchoedTools(content: any, ref: ToolsEchoRef | undefined): any {
     if (!ref || !content || typeof content !== "object") return content;
     const response = content.response ?? content;
     if (!response || typeof response !== "object" || !Array.isArray(response.tools)) return content;
-    if (toolsHashOf(response.tools) !== ref.hash) return content;
+    if (toolsEchoHashOf(response.tools) !== ref.echoHash) return content;
 
     const rest = { ...response, toolsRef: ref.requestId };
     delete rest.tools;
@@ -370,7 +381,7 @@ export function recordLLMExchange(
         const toolsHash = toolsHashOf(tools);
         const prevToolsRef = meta.sessionId ? chain.toolsRef : lastLoggedToolsRef;
         const toolsChanged = toolsHash !== prevToolsRef?.hash;
-        const toolsRef = toolsChanged ? { hash: toolsHash, requestId } : prevToolsRef;
+        const toolsRef = toolsChanged ? { hash: toolsHash, echoHash: toolsEchoHashOf(tools), requestId } : prevToolsRef;
         content = {
             ...content,
             requestId,
