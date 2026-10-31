@@ -1,8 +1,9 @@
-/** 清理历史 Responses 输出项中不应作为 input 重放的状态，并修复工具调用 item ID。 */
+/** 清理可选的输出状态，并修复历史 Responses 工具调用 item ID。 */
 export function repairResponsesFunctionCallItemIds(items: any[]): any[] {
   return items.map((item) => {
     if (!item || typeof item !== "object") return item;
-    const hasStatus = Object.hasOwn(item, "status");
+    const hasStatus = Object.hasOwn(item, "status")
+      && ["function_call", "custom_tool_call", "message", "reasoning"].includes(item.type);
     const hasInvalidFunctionCallId = item.type === "function_call" && item.id !== undefined
       && (typeof item.id !== "string" || !item.id.startsWith("fc"));
     const hasInvalidCustomCallId = item.type === "custom_tool_call" && item.id !== undefined

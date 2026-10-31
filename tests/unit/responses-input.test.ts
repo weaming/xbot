@@ -36,4 +36,19 @@ describe("Responses input repair", () => {
     expect(repaired).not.toBe(call);
     expect(call.status).toBe("completed");
   });
+
+  test("preserves required hosted tool statuses during replay", () => {
+    const hostedItems = [
+      { type: "web_search_call", id: "ws_1", status: "completed", action: { type: "search", queries: ["nginx"] } },
+      { type: "file_search_call", id: "fs_1", status: "completed", queries: ["nginx"] },
+      { type: "code_interpreter_call", id: "ci_1", status: "completed", code: "print(1)" },
+      { type: "image_generation_call", id: "ig_1", status: "completed", result: "image" },
+      { type: "tool_search_call", id: "ts_1", status: "completed", call_id: "call_1" },
+    ];
+
+    const repaired = repairResponsesFunctionCallItemIds(hostedItems);
+
+    expect(repaired).toEqual(hostedItems);
+    repaired.forEach((item, index) => expect(item).toBe(hostedItems[index]));
+  });
 });

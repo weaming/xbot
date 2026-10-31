@@ -316,7 +316,7 @@ describe("历史物化", () => {
         expect(items[0].id.startsWith("fc_")).toBe(true);
     });
 
-    test("重放历史 reasoning 与工具输出时移除上游输出态 status", async () => {
+    test("重放历史时移除可选 status，保留托管工具必需的 status", async () => {
         const items = await materializeResponsesInput([
             {
                 role: "assistant",
@@ -337,6 +337,12 @@ describe("历史物化", () => {
                         arguments: "{}",
                         status: "completed",
                     },
+                    {
+                        type: "web_search_call",
+                        id: "ws_1",
+                        action: { type: "search", queries: ["nginx"] },
+                        status: "completed",
+                    },
                 ],
             },
         ] as any);
@@ -354,6 +360,12 @@ describe("历史物化", () => {
                 call_id: "call_1",
                 name: "read_file",
                 arguments: "{}",
+            },
+            {
+                type: "web_search_call",
+                id: "ws_1",
+                action: { type: "search", queries: ["nginx"] },
+                status: "completed",
             },
         ]);
     });
