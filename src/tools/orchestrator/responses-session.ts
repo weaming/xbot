@@ -22,7 +22,8 @@ function isWebSocketConnectionLimit(error: unknown): boolean {
 }
 
 const MAX_CACHED_SESSIONS = 16;
-const IDLE_TIMEOUT_MS = 60_000;
+/** 服务端单条 WS 连接硬上限 60 分钟：提前轮换，别把请求赌在临界点上。 */
+const MAX_AGE_MS = 50 * 60 * 1000;
 const MAX_BASELINE_BYTES = 2_000_000;
 const STEER_TIMEOUT_MS = 120_000;
 
@@ -30,7 +31,6 @@ interface CachedSession {
   identity: string;
   session: ResponsesSession;
   isLeased: boolean;
-  timer?: ReturnType<typeof setTimeout>;
 }
 
 interface PendingSteer {
@@ -48,7 +48,6 @@ export function closeResponsesSession(sessionId: string): void {
   const entry = sessions.get(sessionId);
   if (!entry) return;
   sessions.delete(sessionId);
-  if (entry.timer) clearTimeout(entry.timer);
   entry.session.close();
 }
 
@@ -61,7 +60,7 @@ export function steerResponsesSession(
   return sessions.get(sessionId)?.session.steer(input, onAccepted) ?? Promise.resolve(false);
 }
 
-/** 按会话和连接配置复用空闲连接，并限制缓存数量及寿命。 */
+/** 按会话和连接配置复用空闲连接；连接常驻，超过存活上限或身份变化才重建。 */
 export function acquireResponsesSession(
   client: OpenAI,
   hasApiKey: boolean,
@@ -72,15 +71,12 @@ export function acquireResponsesSession(
     .digest("hex");
   let entry = sessionId ? sessions.get(sessionId) : undefined;
   if (entry?.isLeased) entry = undefined;
-  else if (entry && entry.identity !== identity) {
-    if (entry.timer) clearTimeout(entry.timer);
+  else if (entry && (entry.identity !== identity || entry.session.isExpired())) {
     entry.session.close();
     sessions.delete(sessionId!);
     entry = undefined;
   }
   if (entry) {
-    if (entry.timer) clearTimeout(entry.timer);
-    entry.timer = undefined;
     entry.isLeased = true;
     entry.session.setIdle(false);
   } else {
@@ -90,7 +86,6 @@ export function acquireResponsesSession(
       if (sessions.size >= MAX_CACHED_SESSIONS) {
         const oldest = [...sessions].find(([, cached]) => !cached.isLeased);
         if (oldest) {
-          if (oldest[1].timer) clearTimeout(oldest[1].timer);
           oldest[1].session.close();
           sessions.delete(oldest[0]);
         }
@@ -109,14 +104,9 @@ export function acquireResponsesSession(
         leased.session.close();
         return;
       }
+      // 不按空闲时长回收：连接留到存活上限、身份变化或进程结束
       leased.isLeased = false;
       leased.session.setIdle(true);
-      leased.timer = setTimeout(() => {
-        if (sessions.get(sessionId) !== leased || leased.isLeased) return;
-        sessions.delete(sessionId);
-        leased.session.close();
-      }, IDLE_TIMEOUT_MS);
-      leased.timer.unref?.();
     },
   };
 }
@@ -131,8 +121,15 @@ export class ResponsesSession {
   private pendingSteers: PendingSteer[] = [];
   private readonly baselineStore: ResponsesBaselineStore;
 
+  private readonly createdAt = Date.now();
+
   constructor(private readonly client: OpenAI, private readonly hasApiKey: boolean, private readonly sessionId?: string) {
     this.baselineStore = new ResponsesBaselineStore(sessionId, responsesIdentity(client.baseURL, client.apiKey ?? "", client.organization, client.project));
+  }
+
+  /** 连接是否已超过存活上限（服务端 60 分钟硬限之前先轮换）。 */
+  isExpired(now = Date.now()): boolean {
+    return now - this.createdAt > MAX_AGE_MS;
   }
 
   private sendWs(socket: ResponsesWS, message: Record<string, any>): void {

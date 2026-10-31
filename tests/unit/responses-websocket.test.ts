@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import OpenAI from "openai";
 import { createChatClient } from "../../src/tools/chat-orchestrator.js";
+import { ResponsesSession } from "../../src/tools/orchestrator/responses-session.js";
 
 describe("Responses WebSocket", () => {
   const previous = process.env.OPENAI_RESPONSES_WEBSOCKET;
@@ -195,6 +197,17 @@ describe("Responses WebSocket", () => {
     } finally {
       client.close?.();
       server.stop(true);
+    }
+  });
+
+  test("连接超过 50 分钟存活上限即视为过期", () => {
+    const client = new OpenAI({ apiKey: "test-key", baseURL: "http://127.0.0.1:1/v1" });
+    const session = new ResponsesSession(client, true, "session-age");
+    try {
+      expect(session.isExpired()).toBe(false);
+      expect(session.isExpired(Date.now() + 51 * 60 * 1000)).toBe(true);
+    } finally {
+      session.close();
     }
   });
 });
